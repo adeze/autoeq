@@ -114,10 +114,10 @@ serial_test = "4"
 wide = "0.6.1"
 
 # Math-Audio crates from GitHub
-math-iir-fir = { git = "https://github.com/pierreaubert/math-audio", version = "0.5" }
-math-dsp = { git = "https://github.com/pierreaubert/math-audio", version = "0.5" }
-math-optimisation = { git = "https://github.com/pierreaubert/math-audio", version = "0.5" }
-math-rir = { git = "https://github.com/pierreaubert/math-audio", version = "0.5" }
+math-iir-fir = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
+math-dsp = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
+math-optimisation = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
+math-rir = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
 sofa-reader = "0.1"
 
 # Core numerical computing
@@ -156,6 +156,7 @@ math-optimisation = { workspace = true }
 [features]
 default = []
 cli = ["dep:autoeq-cli", "dep:roomeq-cli"]
+measurement-zarr = ["roomeq-workflow/measurement-zarr"]
 qa = ["cli", "dep:roomeq-qa"]
 plotly = ["dep:plotly", "dep:autoeq-plot", "autoeq-plot/plotly", "autoeq-cli?/plotly"]
 # Static PNG export has no browser, WebDriver, display-server, or network dependency.

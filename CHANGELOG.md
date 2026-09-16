@@ -1,5 +1,10 @@
 # Unreleased
 
+## Optional saved-IR temporal FIR refinement
+
+- Add `provenance.temporal_fir` for one independent channel with an existing phase-linear FIR. Strict measurement sidecars bind saved mono raw isolated IRs, explicit anchors and stimulus reference, training/held-out partitions, and source WAV digests. A finite delay/strength search selects on training IRs; held-out early/tail limits decide whether the existing FIR stays or the realized candidate is retained. Final sidecar export binds the selected taps; later FIR mutation fails closed.
+- Add optional read-only schema-v1 `.orcmeasurement` verification with `measurement-zarr`; package identity and decoded samples must match the qualified WAV. No receiver transfer or acoustic-success claim follows from this comparison.
+
 ## Opt-in physical-driver FIR correction
 
 - Add RoomEQ input schema 2.2.0 and `optimizer.fir.placement`: `shared`

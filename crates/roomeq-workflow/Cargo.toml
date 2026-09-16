@@ -10,6 +10,9 @@ homepage = "https://github.com/pierreaubert/autoeq"
 [lints]
 workspace = true
 
+[features]
+measurement-zarr = ["roomeq-engine/measurement-zarr"]
+
 [dependencies]
 anyhow = { workspace = true }
 autoeq-core = { workspace = true }
@@ -30,6 +33,7 @@ rustfft = { workspace = true }
 serde = { workspace = true }
 serde_ignored = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sofa-reader = { workspace = true }
 tokio = { workspace = true }
 

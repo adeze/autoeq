@@ -1,3 +1,4 @@
+use super::temporal_fir_config::TemporalFirConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,6 +34,9 @@ pub struct ProvenanceConfig {
     pub validation_mode: ProvenanceValidationMode,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub measurements: HashMap<String, MeasurementProvenanceReference>,
+    /// Optional saved-IR temporal FIR strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_fir: Option<TemporalFirConfig>,
 }
 
 impl ProvenanceConfig {
@@ -80,6 +84,19 @@ impl ProvenanceConfig {
                 }
             }
         }
+        if let Some(temporal) = &self.temporal_fir {
+            if temporal.channel.trim().is_empty() || temporal.evidence.is_empty() {
+                errors.push("temporal_fir requires a channel and saved IR evidence".into());
+            }
+            if temporal.frequencies_hz.is_empty()
+                || temporal.frequencies_hz.len() != temporal.frequency_weights.len()
+                || temporal.starts_seconds.len() < 2
+                || temporal.delays_seconds.is_empty()
+                || temporal.strengths.is_empty()
+            {
+                errors.push("temporal_fir has incomplete objective or search settings".into());
+            }
+        }
         errors
     }
 
@@ -89,6 +106,13 @@ impl ProvenanceConfig {
                 && path.is_relative()
             {
                 *path = base_dir.join(&*path);
+            }
+        }
+        if let Some(temporal) = &mut self.temporal_fir {
+            for item in &mut temporal.evidence {
+                if item.sidecar_path.is_relative() {
+                    item.sidecar_path = base_dir.join(&item.sidecar_path);
+                }
             }
         }
     }

@@ -81,6 +81,8 @@ pub mod height_channel_alignment;
 pub mod home_cinema;
 /// Inter-channel tonal matching using broadband spectral correction.
 pub mod inter_channel_timbre_matching;
+#[cfg(feature = "measurement-zarr")]
+pub mod measurement_array;
 /// Path-free frequency-split FIR/IIR channel processing.
 pub mod mixed_crossover;
 /// Mixed IIR/FIR phase decomposition and excess-phase correction.

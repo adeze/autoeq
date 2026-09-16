@@ -96,12 +96,58 @@ FIR energy spread and spatial validity require final-chain measurements/listenin
 
 ## Measurement provenance
 
+### Saved-IR temporal FIR refinement
+
+`provenance.temporal_fir` is optional. It refines one existing `phase_linear` or
+`hybrid` FIR for an independent `Single` channel whose final chain has one
+convolution and, at most, constant gain. Routed bass, driver groups, multiple
+FIRs, and other frequency-dependent stages are rejected. The configured FIR
+tap count and selected output sample rate bound every candidate; there is no
+receiver-specific tap or rate default.
+
+Set `channel`, `evidence`, `frequencies_hz`, nonnegative
+`frequency_weights`, `window_seconds`, `starts_seconds` (first 0),
+`delays_seconds`, `strengths` (0–1), `minimum_late_improvement_db`, and
+`maximum_early_change_db`, plus `maximum_spectral_change_db`. Candidate
+spectral changes are sampled on an oversampled FFT grid (at least four bins
+per FIR tap) from DC through Nyquist before temporal ranking;
+the existing FIR boost bound and final correction safety gate still apply.
+Each evidence entry has `sidecar_path`,
+`position_id`, and `partition` (`training` or `held_out`). At least one of
+each partition is required. A linked `MeasurementRecord` sidecar must contain
+`provenance.extensions.temporal_ir_v1` with `wav_path`, `sha256`,
+`anchor_sample`, `processing_state: "isolated_raw"`,
+`stimulus_reference`, `capture_rate_hz`, `channel`, `position_id`, and
+`partition`. The WAV must be mono and bound by a source-artifact digest in
+that sidecar. Training and held-out records and decoded samples must differ;
+repeat captures at the same position are allowed.
+The configuration explicitly associates these IRs with the target channel.
+These checks do not establish that a separately supplied magnitude curve came
+from the same acquisition campaign; that association remains caller-supplied.
+
+If `temporal_ir_v1.orcmeasurement` is present, enable the
+`measurement-zarr` Cargo feature and provide `package_path`, `array_path`,
+`logical_sha256`, `source_digest`, and `campaign_id`. The schema-v1 package
+is read only; its isolated impulse samples must equal the qualified raw WAV
+exactly. A repeat-averaged derived array therefore cannot substitute for a
+single raw capture. `source_digest` identifies a campaign, not the WAV bytes.
+
+Only training IRs rank finite-tap candidates. Both absolute late-window and
+normalized relative-tail energy must improve by the configured threshold;
+early-window change stays within its limit. The same tests on held-out IRs
+gate the winner. A failed gate preserves the baseline;
+`metadata.stage_outcomes` records the decision, training/held-out window
+changes, and hashes of configuration, WAVs, provenance sidecars, selected
+realized taps, and output chain. This is a software
+qualification result, not proof of measured acoustic improvement.
+
 The optional top-level `provenance` object links each speaker measurement to a
 versioned `.provenance.json` sidecar without embedding private acquisition data
 in the RoomEQ config. `validation_mode` defaults to `"warn"` for legacy
 configurations. RoomEQ currently records these references in the input/output
-contract but does not validate sidecars at CLI runtime; do not rely on this
-field as an integrity or SHA-256 enforcement mechanism.
+contract. The optional temporal strategy performs strict sidecar and source-WAV
+checks regardless of the global provenance validation mode. Other references
+follow `validation_mode`; a reference alone is not acoustic qualification.
 
 ```json
 {
