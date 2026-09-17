@@ -109,7 +109,10 @@ Set `channel`, `evidence`, `frequencies_hz`, nonnegative
 `frequency_weights`, `window_seconds`, `starts_seconds` (first 0),
 `delays_seconds`, `strengths` (0–1), `minimum_late_improvement_db`, and
 `maximum_early_change_db`, plus `maximum_spectral_change_db`. Candidate
-spectral changes are sampled on an oversampled FFT grid (at least four bins
+acceptance can additionally set `minimum_relative_tail_improvement_db`,
+`minimum_absolute_late_improvement_db`, signed `minimum_early_change_db`,
+signed `maximum_early_increase_db`, and `minimum_positions` (at least 3).
+Candidate spectral changes are sampled on an oversampled FFT grid (at least four bins
 per FIR tap) from DC through Nyquist before temporal ranking;
 the existing FIR boost bound and final correction safety gate still apply.
 Each evidence entry has `sidecar_path`,

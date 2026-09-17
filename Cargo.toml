@@ -114,10 +114,10 @@ serial_test = "4"
 wide = "0.6.1"
 
 # Math-Audio crates from GitHub
-math-iir-fir = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
-math-dsp = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
-math-optimisation = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
-math-rir = { git = "https://github.com/adeze/math-audio", rev = "caf51aa6280715546256520d1137956ab51ce3fd", version = "0.5" }
+math-iir-fir = { git = "https://github.com/adeze/math-audio", rev = "dd62b1b082f8701e5e80ad09e3455963417508b4", version = "0.5" }
+math-dsp = { git = "https://github.com/adeze/math-audio", rev = "dd62b1b082f8701e5e80ad09e3455963417508b4", version = "0.5" }
+math-optimisation = { git = "https://github.com/adeze/math-audio", rev = "dd62b1b082f8701e5e80ad09e3455963417508b4", version = "0.5" }
+math-rir = { git = "https://github.com/adeze/math-audio", rev = "dd62b1b082f8701e5e80ad09e3455963417508b4", version = "0.5" }
 sofa-reader = "0.1"
 
 # Core numerical computing

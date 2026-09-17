@@ -1,5 +1,10 @@
 # Unreleased
 
+## Swift spatial diagnostics and temporal policy parity
+
+- Expose Math-Audio's read-only ideal LR4 multi-seat summation and spatial DRC headroom/Q diagnostics through `roomeq_engine::analysis::spatial_evaluation`. These model outputs do not represent measured receiver crossover transfer or authorize filter promotion.
+- Allow optional signed early-window bounds, separate relative-tail and absolute-late improvement thresholds, and a minimum distinct-position count in `provenance.temporal_fir`. Existing configurations retain their prior acceptance behavior.
+
 ## Optional saved-IR temporal FIR refinement
 
 - Add `provenance.temporal_fir` for one independent channel with an existing phase-linear FIR. Strict measurement sidecars bind saved mono raw isolated IRs, explicit anchors and stimulus reference, training/held-out partitions, and source WAV digests. A finite delay/strength search selects on training IRs; held-out early/tail limits decide whether the existing FIR stays or the realized candidate is retained. Final sidecar export binds the selected taps; later FIR mutation fails closed.

@@ -127,6 +127,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         minimum_late_improvement_db: 0.1,
         maximum_early_change_db: 1.0,
         maximum_spectral_change_db: 12.0,
+        minimum_relative_tail_improvement_db: None,
+        minimum_absolute_late_improvement_db: None,
+        minimum_early_change_db: None,
+        maximum_early_increase_db: None,
+        minimum_positions: None,
     });
     fs::write(dir.join("input.json"), serde_json::to_vec_pretty(&config)?)?;
     let result = optimize_room(&config, 48_000.0, None, Some(&dir))?;

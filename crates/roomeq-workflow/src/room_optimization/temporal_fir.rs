@@ -72,6 +72,23 @@ fn prepared(config: &RoomConfig, sample_rate: f64, tap_count: usize) -> Result<V
         || !strategy.maximum_spectral_change_db.is_finite()
         || strategy.maximum_spectral_change_db < 0.0
         || strategy
+            .minimum_relative_tail_improvement_db
+            .is_some_and(|v| !v.is_finite() || v < 0.1)
+        || strategy
+            .minimum_absolute_late_improvement_db
+            .is_some_and(|v| !v.is_finite() || v < 0.1)
+        || strategy
+            .minimum_early_change_db
+            .is_some_and(|v| !v.is_finite() || v < -0.75)
+        || strategy
+            .maximum_early_increase_db
+            .is_some_and(|v| !v.is_finite() || v > 0.25)
+        || strategy
+            .minimum_early_change_db
+            .zip(strategy.maximum_early_increase_db)
+            .is_some_and(|(minimum, maximum)| minimum > maximum)
+        || strategy.minimum_positions.is_some_and(|count| count < 3)
+        || strategy
             .delays_seconds
             .iter()
             .any(|d| !d.is_finite() || *d <= 0.0)
@@ -278,6 +295,18 @@ fn prepared(config: &RoomConfig, sample_rate: f64, tap_count: usize) -> Result<V
             "at least one training and one held-out IR are required",
         ));
     }
+    if strategy.minimum_positions.is_some_and(|required| {
+        seen_positions
+            .iter()
+            .map(|(_, position)| position)
+            .collect::<HashSet<_>>()
+            .len()
+            < required
+    }) {
+        return Err(invalid(
+            "insufficient independent positions for temporal qualification",
+        ));
+    }
     Ok(evidence)
 }
 
@@ -299,9 +328,30 @@ fn acceptable(
     let (relative_gain, absolute_gain, early) =
         partition_metrics(evidence, candidate, baseline, partition)?;
     (early <= strategy.maximum_early_change_db
-        && relative_gain >= strategy.minimum_late_improvement_db
-        && absolute_gain >= strategy.minimum_late_improvement_db)
-        .then_some(relative_gain.min(absolute_gain))
+        && relative_gain
+            >= strategy
+                .minimum_relative_tail_improvement_db
+                .unwrap_or(strategy.minimum_late_improvement_db)
+        && absolute_gain
+            >= strategy
+                .minimum_absolute_late_improvement_db
+                .unwrap_or(strategy.minimum_late_improvement_db)
+        && evidence
+            .iter()
+            .filter(|item| item.partition == partition)
+            .all(|item| {
+                item.objective
+                    .compare(candidate, baseline)
+                    .is_ok_and(|comparison| {
+                        strategy
+                            .minimum_early_change_db
+                            .is_none_or(|minimum| comparison.early_change_db >= minimum)
+                            && strategy
+                                .maximum_early_increase_db
+                                .is_none_or(|maximum| comparison.early_change_db <= maximum)
+                    })
+            }))
+    .then_some(relative_gain.min(absolute_gain))
 }
 
 fn partition_metrics(
@@ -757,6 +807,11 @@ mod tests {
             minimum_late_improvement_db: 0.1,
             maximum_early_change_db: 1.0,
             maximum_spectral_change_db: 12.0,
+            minimum_relative_tail_improvement_db: None,
+            minimum_absolute_late_improvement_db: None,
+            minimum_early_change_db: None,
+            maximum_early_increase_db: None,
+            minimum_positions: None,
         });
         let mut result = crate::test_fixtures::single_channel_room_result("L");
         result.channel_results.get_mut("L").unwrap().fir_coeffs = Some(
@@ -964,6 +1019,52 @@ mod tests {
             .plugins
             .push(roomeq_engine::output::create_gain_plugin(1.0));
         assert!(verify_final(&result, &config).is_err());
+    }
+
+    #[test]
+    fn configured_position_and_signed_early_limits_are_enforced() {
+        let (_dir, mut config, _result, _store) = fixture(0.45);
+        config
+            .provenance
+            .temporal_fir
+            .as_mut()
+            .unwrap()
+            .minimum_positions = Some(3);
+        assert!(validate_evidence(&config, 48_000.0).is_err());
+        config
+            .provenance
+            .temporal_fir
+            .as_mut()
+            .unwrap()
+            .minimum_positions = None;
+        let evidence = prepared(&config, 48_000.0, 128).unwrap();
+        let baseline = std::iter::once(1.0)
+            .chain(std::iter::repeat_n(0.0, 127))
+            .collect::<Vec<_>>();
+        let strategy = config.provenance.temporal_fir.as_mut().unwrap();
+        strategy.minimum_late_improvement_db = 0.0;
+        strategy.maximum_early_increase_db = Some(-0.1);
+        assert!(
+            acceptable(
+                &evidence,
+                &baseline,
+                &baseline,
+                strategy,
+                TemporalPartition::Training
+            )
+            .is_none()
+        );
+        strategy.maximum_early_increase_db = Some(0.25);
+        assert!(
+            acceptable(
+                &evidence,
+                &baseline,
+                &baseline,
+                strategy,
+                TemporalPartition::Training
+            )
+            .is_some()
+        );
     }
 
     #[cfg(feature = "measurement-zarr")]

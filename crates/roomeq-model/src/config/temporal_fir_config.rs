@@ -16,6 +16,17 @@ pub struct TemporalFirConfig {
     pub minimum_late_improvement_db: f64,
     pub maximum_early_change_db: f64,
     pub maximum_spectral_change_db: f64,
+    /// Optional tighter, signed acceptance limits from the calibrated study.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_relative_tail_improvement_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_absolute_late_improvement_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_early_change_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_early_increase_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_positions: Option<usize>,
 }
 
 /// Identity and processing declaration stored in a linked measurement sidecar.

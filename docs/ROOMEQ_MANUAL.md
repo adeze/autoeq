@@ -1387,6 +1387,16 @@ it is not a recommendation to attenuate blindly.
 
 ## Saved-IR temporal FIR refinement
 
+The optional `minimum_relative_tail_improvement_db`,
+`minimum_absolute_late_improvement_db`, signed `minimum_early_change_db` and
+`maximum_early_increase_db`, and `minimum_positions` tighten qualification.
+The position count uses distinct positions across training and held-out
+evidence; set it to at least 3.
+
+The reusable `roomeq_engine::analysis::spatial_evaluation` API evaluates ideal
+LR4 multi-seat summation and DRC Q/boost diagnostics. It does not change
+candidate selection or assert measured receiver behavior.
+
 Independent single-channel phase-linear or Hybrid FIR outputs can opt into
 `provenance.temporal_fir`. This finite saved-IR strategy evaluates realized
 FIR taps against explicit isolated raw training captures, then requires
