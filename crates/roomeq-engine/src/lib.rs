@@ -11,6 +11,7 @@ pub use autoeq_optim::optim::{OptimProgressCallback, OptimizerConfidence, Optimi
 /// Acoustic analysis used by engine and workflow orchestration without adding
 /// parallel ownership of the underlying implementations.
 pub mod analysis {
+    pub use math_audio_dsp::spatial_evaluation;
     pub use roomeq_analysis::{
         crossover_utils, frequency_grid, ir_waveform, response_metrics, slope, time_align,
     };
@@ -81,6 +82,8 @@ pub mod height_channel_alignment;
 pub mod home_cinema;
 /// Inter-channel tonal matching using broadband spectral correction.
 pub mod inter_channel_timbre_matching;
+#[cfg(feature = "measurement-zarr")]
+pub mod measurement_array;
 /// Path-free frequency-split FIR/IIR channel processing.
 pub mod mixed_crossover;
 /// Mixed IIR/FIR phase decomposition and excess-phase correction.

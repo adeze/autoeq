@@ -3809,7 +3809,7 @@
           "type": "integer"
         },
         "tol": {
-          "default": 1e-08,
+          "default": 1E-8,
           "description": "DE convergence tolerance.",
           "format": "double",
           "type": "number"
@@ -5381,7 +5381,7 @@
           "description": "Asymmetric loss weights. `None` preserves the built-in default."
         },
         "atolerance": {
-          "default": 1e-05,
+          "default": 0.00001,
           "description": "Optimization convergence tolerance (absolute)",
           "format": "double",
           "type": "number"
@@ -5905,7 +5905,7 @@
           "description": "Unified target response configuration (shape + preference shelves + broadband pre-correction)"
         },
         "tolerance": {
-          "default": 1e-05,
+          "default": 0.00001,
           "description": "Optimization convergence tolerance (relative)",
           "format": "double",
           "type": "number"
@@ -6593,6 +6593,17 @@
             "$ref": "#/$defs/MeasurementProvenanceReference"
           },
           "type": "object"
+        },
+        "temporal_fir": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TemporalFirConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional saved-IR temporal FIR strategy."
         },
         "validation_mode": {
           "$ref": "#/$defs/ProvenanceValidationMode",
@@ -7445,7 +7456,7 @@
           "default": {
             "algorithm": "autoeq:cmaes",
             "asymmetric_loss": true,
-            "atolerance": 1e-05,
+            "atolerance": 0.00001,
             "elimination_threshold": 0.005,
             "local_algo": "cobyla",
             "loss_type": "flat",
@@ -7465,7 +7476,7 @@
             "refine": true,
             "smooth_n": 2,
             "strategy": "lshade",
-            "tolerance": 1e-05
+            "tolerance": 0.00001
           },
           "description": "Optimizer configuration"
         },
@@ -8697,6 +8708,142 @@
         }
       ]
     },
+    "TemporalFirConfig": {
+      "description": "Optional, saved-IR temporal candidate search for one independent FIR output.",
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "delays_seconds": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/TemporalIrEvidence"
+          },
+          "type": "array"
+        },
+        "frequencies_hz": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "frequency_weights": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "maximum_early_change_db": {
+          "format": "double",
+          "type": "number"
+        },
+        "maximum_early_increase_db": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "maximum_spectral_change_db": {
+          "format": "double",
+          "type": "number"
+        },
+        "minimum_absolute_late_improvement_db": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum_early_change_db": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum_late_improvement_db": {
+          "format": "double",
+          "type": "number"
+        },
+        "minimum_positions": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minimum_relative_tail_improvement_db": {
+          "description": "Optional tighter, signed acceptance limits from the calibrated study.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "starts_seconds": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "strengths": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "window_seconds": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "channel",
+        "evidence",
+        "frequencies_hz",
+        "frequency_weights",
+        "window_seconds",
+        "starts_seconds",
+        "delays_seconds",
+        "strengths",
+        "minimum_late_improvement_db",
+        "maximum_early_change_db",
+        "maximum_spectral_change_db"
+      ],
+      "type": "object"
+    },
+    "TemporalIrEvidence": {
+      "description": "Identity and processing declaration stored in a linked measurement sidecar.",
+      "properties": {
+        "partition": {
+          "$ref": "#/$defs/TemporalPartition"
+        },
+        "position_id": {
+          "type": "string"
+        },
+        "sidecar_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sidecar_path",
+        "position_id",
+        "partition"
+      ],
+      "type": "object"
+    },
     "TemporalIrMaskingMetrics": {
       "description": "True impulse-response temporal masking metrics for FIR / phase correction.",
       "properties": {
@@ -8830,6 +8977,13 @@
           "type": "string"
         }
       ]
+    },
+    "TemporalPartition": {
+      "enum": [
+        "training",
+        "held_out"
+      ],
+      "type": "string"
     },
     "TemporalQualityEvidence": {
       "properties": {

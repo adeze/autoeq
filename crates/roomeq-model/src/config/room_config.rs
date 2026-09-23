@@ -212,4 +212,5 @@ impl RoomConfig {
 fn is_default_provenance(provenance: &ProvenanceConfig) -> bool {
     provenance.measurements.is_empty()
         && provenance.validation_mode == super::ProvenanceValidationMode::Warn
+        && provenance.temporal_fir.is_none()
 }

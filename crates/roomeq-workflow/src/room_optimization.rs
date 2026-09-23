@@ -32,6 +32,7 @@ mod gd;
 mod per_driver_fir;
 mod phase;
 mod reports;
+mod temporal_fir;
 
 mod misc;
 mod process;
@@ -136,6 +137,7 @@ pub(super) fn optimize_room_pipeline_impl_with_frequency_samples(
     observer: Option<Box<dyn PipelineObserver>>,
     frequency_samples: usize,
 ) -> Result<RoomOptimizationResult> {
+    temporal_fir::validate_evidence(request.config, request.sample_rate)?;
     let seat_captures = seat_replay::capture_training(request.config)?;
     let mut result = optimize_room_impl_with_frequency_samples(
         request.config,
@@ -146,6 +148,7 @@ pub(super) fn optimize_room_pipeline_impl_with_frequency_samples(
         context.artifact_store,
         frequency_samples,
     )?;
+    temporal_fir::verify_final(&result, request.config)?;
     seat_replay::validate_final_seats(
         &mut result,
         &seat_captures,
@@ -1932,6 +1935,14 @@ fn assemble_workflow_result_with_frequency_samples(
     // that add FIR taps late (e.g. redirected bass) must have that evidence
     // computed before the gate runs, not only in the post-gate refresh.
     let sidecar_dir = output_dir.unwrap_or(Path::new("."));
+    temporal_fir::apply(&mut result, config, sample_rate, sidecar_dir, store)?;
+    workflow_refresh_needed |= result
+        .metadata
+        .stage_outcomes
+        .last()
+        .is_some_and(|outcome| {
+            outcome.stage == "temporal_fir" && outcome.status == StageStatus::Applied
+        });
     refresh_temporal_ir_evidence(&mut result, config, sample_rate, sidecar_dir);
     apply_final_correction_safety_gate_preserving_routed_crossover(
         &mut result,
@@ -1966,6 +1977,7 @@ fn assemble_workflow_result_with_frequency_samples(
     update_perceptual_metrics(&mut result.metadata, Some(&result.channels), Some(config));
     apply_ctc_if_enabled(&mut result, config, sample_rate, output_dir)?;
     crate::export::bind_final_convolution_artifacts(&mut result, sidecar_dir, store, sample_rate)?;
+    temporal_fir::verify_final(&result, config)?;
     emit_pipeline_event(
         observer_shared,
         PipelineEvent::completed(PipelineStepId::MetadataRefresh, "Reports refreshed")
@@ -3664,6 +3676,7 @@ fn assemble_generic_result_with_frequency_samples(
     }
 
     let sidecar_dir = output_dir.unwrap_or(Path::new("."));
+    temporal_fir::apply(&mut result, config, sample_rate, sidecar_dir, store)?;
     refresh_temporal_ir_evidence(&mut result, config, sample_rate, sidecar_dir);
     apply_final_correction_safety_gate_preserving_routed_crossover(
         &mut result,
@@ -3689,6 +3702,7 @@ fn assemble_generic_result_with_frequency_samples(
     refresh_final_reports(&mut result, config, sample_rate, sidecar_dir);
     apply_ctc_if_enabled(&mut result, config, sample_rate, output_dir)?;
     crate::export::bind_final_convolution_artifacts(&mut result, sidecar_dir, store, sample_rate)?;
+    temporal_fir::verify_final(&result, config)?;
     emit_pipeline_event(
         observer_shared,
         PipelineEvent::completed(PipelineStepId::MetadataRefresh, "Reports refreshed"),

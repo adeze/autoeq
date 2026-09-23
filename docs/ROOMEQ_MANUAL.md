@@ -1385,6 +1385,31 @@ headroom, native-backend agreement, acoustic benefit or device assignment.
 Required attenuation must be reconciled with calibrated useful-output goals;
 it is not a recommendation to attenuate blindly.
 
+## Saved-IR temporal FIR refinement
+
+The optional `minimum_relative_tail_improvement_db`,
+`minimum_absolute_late_improvement_db`, signed `minimum_early_change_db` and
+`maximum_early_increase_db`, and `minimum_positions` tighten qualification.
+The position count uses distinct positions across training and held-out
+evidence; set it to at least 3.
+
+The reusable `roomeq_engine::analysis::spatial_evaluation` API evaluates ideal
+LR4 multi-seat summation and DRC Q/boost diagnostics. It does not change
+candidate selection or assert measured receiver behavior.
+
+Independent single-channel phase-linear or Hybrid FIR outputs can opt into
+`provenance.temporal_fir`. This finite saved-IR strategy evaluates realized
+FIR taps against explicit isolated raw training captures, then requires
+independent held-out captures to pass early-window, absolute late-window, and
+normalized-tail limits.
+The configured FIR tap count, output rate, spectral-change ceiling, and
+existing boost/safety checks bound candidates. If no candidate passes acceptance,
+the baseline remains; invalid or unsupported evidence returns an error.
+Strict provenance sidecars bind anchors, sample rates, stimulus
+reference, WAV bytes, partition, and position identity. An optional read-only
+schema-v1 `.orcmeasurement` check requires decoded samples to match the
+qualified WAV exactly. See [the input contract](../src/bin/roomeq/INPUT_FORMAT.md#saved-ir-temporal-fir-refinement).
+
 ## Per-driver FIR placement (input schema 2.2.0)
 
 Set `optimizer.fir.placement` to `per_driver` to try separate FIRs for the
