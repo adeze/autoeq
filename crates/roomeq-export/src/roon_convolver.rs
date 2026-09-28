@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 #[derive(Debug)]
 pub(super) struct RoonConvolutionArchive {
@@ -111,7 +111,7 @@ pub(super) fn build_roon_convolution_archive(
         config.push_str(&format!("{wav_name}\n0\n{index}.0\n{index}.0\n"));
     }
 
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
         .last_modified_time(zip::DateTime::default())
         .unix_permissions(0o644);

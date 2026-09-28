@@ -44,7 +44,10 @@ check_output_*.txt
 /.tokensave
 /.superpowers
 /docs/superpowers
-/.codex
+/.codex/*
+!/.codex/environments/
+/.codex/environments/*
+!/.codex/environments/environment.toml
 /.claude
 /.evo
 /.muse

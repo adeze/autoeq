@@ -1,0 +1,15 @@
+version = 1
+name = "autoeq"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "update-dependencies"
+icon = "tool"
+command = '''
+set -euo pipefail
+cargo update
+cargo check --workspace --locked
+cargo test -p roomeq-export --lib --locked
+'''

@@ -1,5 +1,9 @@
 # Unreleased
 
+## Dependency updates
+
+- Update Plotly to 0.14.1, SOFA reader to 0.2.0, and ZIP to 8.6.0. Roon Convolver archives use ZIP's typed simple file options while retaining stored entries and fixed timestamps.
+
 ## Swift spatial diagnostics and temporal policy parity
 
 - Expose Math-Audio's read-only ideal LR4 multi-seat summation and spatial DRC headroom/Q diagnostics through `roomeq_engine::analysis::spatial_evaluation`. These model outputs do not represent measured receiver crossover transfer or authorize filter promotion.

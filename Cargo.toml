@@ -93,7 +93,7 @@ hound = "3.5"
 # under `src/plot/` and the `roomeq-fuzzer` binary require it; the main
 # `autoeq` binary degrades gracefully and skips chart generation when off.
 # currently we have compilation errors in 0.14.1
-plotly = "0.13.3"
+plotly = "0.14.1"
 rand = "0.10.2"
 rand_chacha = "0.10.0"
 reqwest = { version = "0.13", features = ["json"] }
@@ -106,7 +106,7 @@ strsim = "0.11"
 thiserror = "2.0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "macros", "io-util", "process", "signal"] }
 urlencoding = "2.1"
-zip = { version = "0.6.6", default-features = false }
+zip = { version = "8", default-features = false }
 tempfile = "3.23"
 assert_fs = "1.0"
 proptest = { version = "1.8", default-features = false, features = ["std"] }
@@ -118,7 +118,7 @@ math-iir-fir = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e012
 math-dsp = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
 math-optimisation = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
 math-rir = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
-sofa-reader = "0.1"
+sofa-reader = "0.2"
 
 # Core numerical computing
 ndarray = { version = "0.17", default-features = false, features = ["rayon", "serde"] }
