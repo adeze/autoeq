@@ -1,5 +1,10 @@
 # Unreleased
 
+## QA error causes and bounded Python comparison vectors
+
+- Preserve typed workflow errors and underlying causes through QA optimization adapters, including validation-measurement runs. Seed selection and failure-record behavior are unchanged.
+- Add reproducible synthetic Python target and serialized-FIR response vectors with Rust checks for the common pure-tilt target subset, explicit sampled-target level normalization, signed coefficients, and 128/512-tap response evaluation. These checks do not establish optimizer, FIR synthesis, candidate/OCA, or acoustic parity; see `docs/PYTHON_WORKFLOW_COMPARISON.md`.
+
 ## Dependency updates
 
 - Update Plotly to 0.14.1, SOFA reader to 0.2.0, and ZIP to 8.6.0. Roon Convolver archives use ZIP's typed simple file options while retaining stored entries and fixed timestamps.

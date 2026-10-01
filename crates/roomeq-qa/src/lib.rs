@@ -375,13 +375,12 @@ pub(crate) fn optimize_room_with_selected_seed(
     output_dir: Option<&Path>,
 ) -> anyhow::Result<(RoomOptimizationResult, u64)> {
     let (selected_seed, scores) = select_median_seed(config, sample_rate, |seeded| {
-        roomeq_workflow::optimize_room(seeded, sample_rate, None, None)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))
+        roomeq_workflow::optimize_room(seeded, sample_rate, None, None).map_err(anyhow::Error::new)
     })?;
     let mut selected = config.clone();
     selected.optimizer.seed = Some(selected_seed);
     let result = roomeq_workflow::optimize_room(&selected, sample_rate, None, output_dir)
-        .map_err(|error| anyhow::anyhow!(error.to_string()));
+        .map_err(anyhow::Error::new);
     let result = finish_selected_seed(config, selected_seed, &scores, result, |record| {
         append_seed_record_at_rate(record, sample_rate)
     })?;
@@ -392,8 +391,7 @@ pub(crate) fn optimize_room_single_seed(
     config: &RoomConfig,
     sample_rate: f64,
 ) -> anyhow::Result<RoomOptimizationResult> {
-    roomeq_workflow::optimize_room(config, sample_rate, None, None)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
+    roomeq_workflow::optimize_room(config, sample_rate, None, None).map_err(anyhow::Error::new)
 }
 
 pub(crate) fn optimize_room_with_validation(
@@ -411,7 +409,7 @@ pub(crate) fn optimize_room_with_validation(
         })
         .with_validation_measurements(validation_measurements.clone())
         .run(None)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
+        .map_err(anyhow::Error::new)
     })?;
     let mut selected = config.clone();
     selected.optimizer.seed = Some(selected_seed);
@@ -423,7 +421,7 @@ pub(crate) fn optimize_room_with_validation(
     })
     .with_validation_measurements(validation_measurements)
     .run(None)
-    .map_err(|error| anyhow::anyhow!(error.to_string()));
+    .map_err(anyhow::Error::new);
     finish_selected_seed(config, selected_seed, &scores, result, |record| {
         append_seed_record_at_rate(record, sample_rate)
     })
@@ -432,6 +430,52 @@ pub(crate) fn optimize_room_with_validation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_adapter_preserves_typed_error() {
+        let error = optimize_room_single_seed(&RoomConfig::default(), 48_000.0)
+            .expect_err("empty configuration must fail");
+        assert!(error.downcast_ref::<roomeq_model::AutoeqError>().is_some());
+    }
+
+    #[test]
+    fn selected_seed_failure_preserves_io_cause() {
+        let config = RoomConfig::default();
+        let source = roomeq_model::AutoeqError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "candidate output denied",
+        ));
+        let mut records = Vec::new();
+        let error = finish_selected_seed(
+            &config,
+            42,
+            &[],
+            Err(anyhow::Error::new(source)),
+            |record| {
+                records.push(record.clone());
+                Ok(())
+            },
+        )
+        .expect_err("selected artifact failure must propagate");
+        assert!(error.downcast_ref::<roomeq_model::AutoeqError>().is_some());
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["selected_seed"], 42);
+        assert_eq!(records[0]["final_artifact_delivered"], false);
+        assert!(
+            records[0]["errors"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("candidate output denied")
+        );
+    }
 
     fn seed_fixture(post_score: f64) -> RoomOptimizationResult {
         RoomOptimizationResult {
