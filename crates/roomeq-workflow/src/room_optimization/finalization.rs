@@ -1320,6 +1320,9 @@ fn select_inner(
                 physical,
                 policy.output_ceiling_dbfs,
             );
+            log::debug!(
+                "trial strength={strength:.5} sub={sub_strength:.5} mode={attenuation_mode} required_attenuation={required:?}"
+            );
             if capture_target && let Some(capture) = diagnostics.as_deref_mut() {
                 let graph_hashes = diagnostic_graph_hashes(&candidate)?;
                 capture.write(
@@ -3703,7 +3706,7 @@ mod tests {
         }
         assert_eq!(
             record.baseline_kind,
-            "pre_finalization_optimized_graph_without_tagged_correction"
+            "pre_finalization_optimized_graph_without_eq_correction"
         );
         assert_eq!(
             record
@@ -4720,7 +4723,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_removes_spectral_level_fit_but_preserves_speaker_calibration() {
+    fn baseline_removes_spectral_level_fit_but_preserves_calibration_and_safety() {
         let (mut result, _) = fixture();
         let calibration = roomeq_engine::output::create_gain_plugin(-1.5);
         let alignment = roomeq_engine::spectral_align::SpectralAlignmentResult {
@@ -4748,9 +4751,13 @@ mod tests {
 
         seat_replay::restore_structural_baseline(&mut result);
 
+        // Spectral fit and derived alignment strip as rejected correction;
+        // speaker calibration and deployed headroom safety stay structural.
+        let mut expected_safety = roomeq_engine::output::create_gain_plugin(-6.0);
+        expected_safety.parameters["label"] = serde_json::json!("post_dsp_output_headroom_safety");
         assert_eq!(
             serde_json::to_value(&result.channels["L"].plugins).unwrap(),
-            serde_json::to_value(vec![calibration]).unwrap(),
+            serde_json::to_value(vec![calibration, expected_safety]).unwrap(),
             "rollback must not retain the rejected correction's broadband trim"
         );
     }

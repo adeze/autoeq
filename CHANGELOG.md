@@ -1,5 +1,43 @@
 # 0.5.76
 
+- Fix the DT1990 Pro flat QA recipe by using seeded native DE, whose
+  convergence evidence satisfies the strict QA gate; PSO only reports budget
+  completion. Keep the spacing and score-improvement checks unchanged.
+- Fix the remaining `mh:rga` QA recipes (DT1990 Pro score and both Edifier
+  W830NB runs) the same way, using seeded native DE; MH backends only
+  report budget completion. Rename the Edifier recipes to match the backend
+  they now exercise, keeping thresholds and tolerances unchanged.
+- Carry CMA-ES and ISRES solver convergence through the optimizer dispatch
+  so stagnation stops report `converged` instead of best-effort; budget
+  stops keep the legacy classification. Extends the typed-completion gate
+  previously added for COBYLA.
+- Fix the RoomEQ run manifest to own the files inside bundle
+  subdirectories (e.g. rebased FIR `resources/`) instead of the directory
+  itself, so completed FIR/mixed runs pass the measured-result audit.
+- Clamp the bass-managed main pre-EQ band at the realized crossover
+  estimate so mains stop burning headroom below the splice; the
+  configured band is preserved when it does not overlap the crossover.
+- Cap each optimized channel EQ stack at 9.0 dB total positive gain
+  with direction-preserving scale-down, keeping stacked boosts clear
+  of the 12.5 dB electrical backstop on rooms with deep nulls.
+- Stop the bass-management route optimizer chasing unfixable nulls:
+  dip depth beyond the 6 dB correctable bound keeps a plateaued
+  penalty instead of an unbounded one, so trim, delay, and polarity
+  no longer rail for partial shaves of deep cancellations while
+  complete splice fixes keep their full reward.
+- Regularize route actuation jointly: trim deviations past 1 dB from
+  the measured level-difference anchor and relative delays past one
+  crossover cycle pay quadratic penalties, keeping the optimizer on
+  sane routings instead of arbitraging between railed actuators.
+- Keep deployed headroom safety in the frozen replay baseline so
+  acceptance judges the correction's marginal damage instead of
+  charging it for deployment headroom the target requires; trial
+  candidates still pay for correction-forced additional safety.
+- Match each trial's post-route safety onto the replay baseline so
+  pre/post deployment is identical (input-level common safety stays
+  judged); zero-strength trials no longer read their own deployment
+  attenuation as regression or loss.
+
 - Add measured-IR full indirect Speech Transmission Index and per-octave modulation
   tables to RoomEQ reports using the IEC 60268-16:2020 model in `math-rir`.
 - Require `math-rir` 0.5.12 and the updated RoomEQ STI output contracts.

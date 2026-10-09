@@ -891,6 +891,83 @@ fn passband_observation_config(
     Ok(observation)
 }
 
+/// Trial safety transplantable onto the replay baseline.
+///
+/// Only per-output (post_route) ceiling compliance is deployment-inherent.
+/// Pre-route (input-level, e.g. common-mode blanket) safety is the trial's
+/// own blunt choice and stays judged.
+fn transplantable_trial_safety(plugin: &PluginConfigWrapper) -> bool {
+    let post_route = plugin
+        .parameters
+        .get("room_eq_stage")
+        .and_then(serde_json::Value::as_str)
+        == Some("post_route");
+    if !post_route {
+        return false;
+    }
+    plugin
+        .parameters
+        .get("room_eq_safety_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || plugin
+            .parameters
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            == Some("post_dsp_output_headroom_safety")
+}
+
+/// Copy the trial's post-route safety onto a baseline clone for replay.
+///
+/// The baseline predates trial safety, so without matching the trial's
+/// per-output attenuation reads as loss/regression even at zero correction
+/// strength. Transplanting makes pre/post deployment-identical, leaving pure
+/// correction-marginal judgment. Unmatched chains/drivers keep baseline
+/// values (fail-closed: unmatched trial safety stays charged).
+fn transplant_trial_safety(
+    baseline: &RoomOptimizationResult,
+    trial: &RoomOptimizationResult,
+) -> RoomOptimizationResult {
+    fn transplant_plugins(
+        base: &mut Vec<PluginConfigWrapper>,
+        trial_plugins: &[PluginConfigWrapper],
+    ) -> bool {
+        let before = base.len();
+        base.retain(|plugin| !transplantable_trial_safety(plugin));
+        let mut changed = base.len() != before;
+        for plugin in trial_plugins
+            .iter()
+            .filter(|plugin| transplantable_trial_safety(plugin))
+        {
+            base.insert(0, plugin.clone());
+            changed = true;
+        }
+        changed
+    }
+    let mut matched = baseline.clone();
+    for (name, trial_chain) in &trial.channels {
+        let Some(base_chain) = matched.channels.get_mut(name) else {
+            continue;
+        };
+        if transplant_plugins(&mut base_chain.plugins, &trial_chain.plugins) {
+            base_chain.final_curve.take();
+        }
+        if let (Some(base_drivers), Some(trial_drivers)) =
+            (base_chain.drivers.as_mut(), trial_chain.drivers.as_ref())
+        {
+            for trial_driver in trial_drivers {
+                if let Some(base_driver) = base_drivers
+                    .iter_mut()
+                    .find(|driver| driver.name == trial_driver.name)
+                {
+                    transplant_plugins(&mut base_driver.plugins, &trial_driver.plugins);
+                }
+            }
+        }
+    }
+    matched
+}
+
 fn replay(
     result: &RoomOptimizationResult,
     physical: &BTreeMap<String, Vec<Curve>>,
@@ -1289,8 +1366,15 @@ fn physical_main_quality(
         config: &observation,
         ..*context
     };
+    let matched_baseline;
+    let baseline_for_pre = if std::ptr::eq(baseline, result) {
+        baseline
+    } else {
+        matched_baseline = transplant_trial_safety(baseline, result);
+        &matched_baseline
+    };
     let (pre, baseline_outputs) = replay_output(
-        baseline,
+        baseline_for_pre,
         physical,
         input,
         seat,
@@ -1444,7 +1528,7 @@ fn physical_main_quality(
             partition: context.partition.to_string(),
             seat_index: seat,
             sample_rate_hz: context.fs,
-            baseline_kind: "pre_finalization_optimized_graph_without_tagged_correction".into(),
+            baseline_kind: "pre_finalization_optimized_graph_without_eq_correction".into(),
             replayed_serialized_dsp_graph_projection_sha256: None,
             replayed_playback_graph_sha256: None,
             baseline_measurement_contributors: capture_measurement_contributors(
@@ -1866,14 +1950,18 @@ fn validate_final_seats_body(
                     fs,
                     dir,
                 };
-                let (pre, outputs) = replay(
-                    baseline.unwrap_or(result),
-                    physical,
-                    input,
-                    seat,
-                    true,
-                    &context,
-                )?;
+                let baseline_source = baseline.unwrap_or(result);
+                // Self-baseline replays already share deployment; cross-graph
+                // trials need the trial's safety matched onto the baseline.
+                let matched_baseline;
+                let baseline_for_pre = if std::ptr::eq(baseline_source, result) {
+                    baseline_source
+                } else {
+                    matched_baseline = transplant_trial_safety(baseline_source, result);
+                    &matched_baseline
+                };
+                let (pre, outputs) =
+                    replay(baseline_for_pre, physical, input, seat, true, &context)?;
                 let (post, delivered_outputs) =
                     replay(result, physical, input, seat, false, &context)?;
                 let uncertainty_db = pre.uncertainty_db() + post.uncertainty_db();
@@ -1959,7 +2047,7 @@ fn validate_final_seats_body(
                         partition: partition.into(),
                         seat_index: seat,
                         sample_rate_hz: fs,
-                        baseline_kind: "pre_finalization_optimized_graph_without_tagged_correction"
+                        baseline_kind: "pre_finalization_optimized_graph_without_eq_correction"
                             .into(),
                         replayed_serialized_dsp_graph_projection_sha256: None,
                         replayed_playback_graph_sha256: None,
@@ -2351,6 +2439,84 @@ fn concealment_stage(findings: Vec<String>) -> roomeq_model::StageOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transplant_matches_post_route_safety_but_not_common_input_safety() {
+        fn safety_gain(gain_db: f64, stage: &str) -> PluginConfigWrapper {
+            let mut plugin = roomeq_engine::output::create_gain_plugin(gain_db);
+            plugin.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+            plugin.parameters["room_eq_stage"] = serde_json::json!(stage);
+            plugin
+        }
+        let mut baseline = crate::test_fixtures::single_channel_room_result("L");
+        baseline
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-2.0, "post_route"));
+        let mut trial = baseline.clone();
+        // Trial preparation strips stale safety, then installs recomputed
+        // post-route safety plus blunt common input safety.
+        trial.channels.get_mut("L").unwrap().plugins.clear();
+        trial
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-5.0, "post_route"));
+        trial
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-5.5, "pre_route"));
+        let matched = super::transplant_trial_safety(&baseline, &trial);
+        let gains: Vec<f64> = matched.channels["L"]
+            .plugins
+            .iter()
+            .filter_map(|plugin| plugin.parameters["gain_db"].as_f64())
+            .collect();
+        // Baseline's stale -2.0 replaced by trial's -5.0; pre-route -5.5 refused.
+        assert_eq!(gains, vec![-5.0]);
+        // Trial itself untouched.
+        assert_eq!(trial.channels["L"].plugins.len(), 2);
+    }
+
+    #[test]
+    fn transplant_matches_driver_safety_by_driver_name() {
+        let mut safety = roomeq_engine::output::create_gain_plugin(-4.3);
+        safety.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+        safety.parameters["room_eq_stage"] = serde_json::json!("post_route");
+        let mut baseline = crate::test_fixtures::single_channel_room_result("Sub1");
+        baseline.channels.get_mut("Sub1").unwrap().drivers =
+            Some(vec![roomeq_model::DriverDspChain {
+                measured_acoustics: None,
+                name: "Sub1".into(),
+                index: 0,
+                initial_curve: None,
+                measured_band_hz: None,
+                plugins: Vec::new(),
+            }]);
+        let mut trial = baseline.clone();
+        trial
+            .channels
+            .get_mut("Sub1")
+            .unwrap()
+            .drivers
+            .as_mut()
+            .unwrap()[0]
+            .plugins
+            .push(safety);
+        let matched = super::transplant_trial_safety(&baseline, &trial);
+        let driver = &matched.channels["Sub1"].drivers.as_ref().unwrap()[0];
+        let gains: Vec<f64> = driver
+            .plugins
+            .iter()
+            .filter_map(|plugin| plugin.parameters["gain_db"].as_f64())
+            .collect();
+        assert_eq!(gains, vec![-4.3]);
+    }
 
     #[test]
     fn native_routed_acceptance_recomputes_identity_and_refuses_in_band_damage() {

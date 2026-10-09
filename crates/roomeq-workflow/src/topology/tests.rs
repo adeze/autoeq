@@ -381,8 +381,10 @@ fn bass_management_target_objective_penalizes_narrow_cancellation() {
         super::bass_management_objective_with_target(Some(&cancellation), Some(&target), 100.0)
             .unwrap();
 
+    // The 12 dB dip pays the full correctable-depth price (2 x 6 dB hinge);
+    // an RMS-diluted score would sit near the ~3 dB residual floor instead.
     assert!(
-        score > 20.0,
+        score > 12.0,
         "narrow crossover cancellation was diluted (score={score})"
     );
 }

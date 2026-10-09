@@ -8,6 +8,33 @@ pub const MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB: f64 = 3.0;
 /// The objective still penalizes every amount above the nominal 3 dB limit.
 pub const CROSSOVER_UNDERFILL_ACCEPTANCE_TOLERANCE_DB: f64 = 0.05;
 
+/// Deepest crossover dip the route optimizers may chase, in dB.
+///
+/// Routing-level actuation (trim, delay, polarity) reshapes the splice but
+/// cannot create energy inside a true cancellation null. Penalizing dip depth
+/// without bound makes the DE rail every actuator for partial shaves of
+/// unfixable nulls (measured: +6 dB railed trims, 15 ms delays, polarity flips
+/// against 20+ dB nulls that persist regardless). Depths beyond this bound keep
+/// a plateaued penalty: complete fixes of deep splice cancellations are still
+/// strongly rewarded, but 25 dB and 20 dB residuals score identically, so the
+/// optimizer spends its actuators on the correctable remainder instead. The
+/// bound matches the default route-trim authority and doubles the 3 dB
+/// crossover acceptance target, keeping full gradient across the actionable
+/// zone. Reporting metrics keep true depth; only optimizer penalties hinge.
+pub const ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB: f64 = 6.0;
+
+/// Cap a dip depth at the correctable bound for optimizer penalties.
+///
+/// Non-finite depths pass through untouched so downstream fail-closed
+/// handling still sees them.
+pub fn correctable_dip_depth_db(depth_db: f64) -> f64 {
+    if depth_db.is_finite() {
+        depth_db.min(ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB)
+    } else {
+        depth_db
+    }
+}
+
 /// Minimum relative reduction in dB shortfall for a still-imperfect Post-EQ pass.
 ///
 /// This product policy admits useful partial correction; it is not a loudness
@@ -127,7 +154,7 @@ pub fn bass_management_objective_with_target(
         .into_iter()
         .fold(0.0_f64, |worst, error| worst.max((-error).max(0.0)));
 
-    Some(base_loss + 2.0 * deepest_underfill)
+    Some(base_loss + 2.0 * correctable_dip_depth_db(deepest_underfill))
 }
 
 /// Return the deepest target-relative dip across one octave centered on the
@@ -406,6 +433,61 @@ mod tests {
         assert!(bass_management_underfill_is_acceptable(3.0));
         assert!(bass_management_underfill_is_acceptable(3.049));
         assert!(!bass_management_underfill_is_acceptable(3.051));
+    }
+
+    #[test]
+    fn correctable_dip_depth_hinges_finite_depths_only() {
+        assert_eq!(correctable_dip_depth_db(0.0), 0.0);
+        assert_eq!(correctable_dip_depth_db(2.0), 2.0);
+        assert_eq!(
+            correctable_dip_depth_db(ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB),
+            ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB
+        );
+        assert_eq!(
+            correctable_dip_depth_db(25.0),
+            ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB
+        );
+        assert!(correctable_dip_depth_db(f64::NAN).is_nan());
+        assert_eq!(correctable_dip_depth_db(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn route_objective_stops_paying_for_partial_shaves_of_deep_nulls() {
+        // Narrow null inside the [40, 160] Hz crossover octave (xover 80 Hz),
+        // mirroring the measured 25 dB nulls the route DE used to chase.
+        let target = curve_with_levels(|_| 0.0);
+        let nulled = |depth: f64| {
+            curve_with_levels(|frequency| {
+                if (70.0..=90.0).contains(&frequency) {
+                    -depth
+                } else {
+                    0.0
+                }
+            })
+        };
+        let loss = |curve: &Curve| {
+            bass_management_objective_with_target(Some(curve), Some(&target), 80.0)
+                .expect("finite loss")
+        };
+        let deep = loss(&nulled(25.0));
+        let shaved = loss(&nulled(20.0));
+        let fixed = loss(&nulled(2.0));
+        let shave_reward = deep - shaved;
+        let fix_reward = shaved - fixed;
+        // The underfill term plateaus, so a 5 dB shave of a deep null earns
+        // only its small RMS change instead of the old uncapped depth price.
+        assert!(
+            shave_reward < 5.0,
+            "partial null shave over-rewarded: {shave_reward}"
+        );
+        assert!(
+            fix_reward > shave_reward,
+            "complete fix must beat a partial shave: fix={fix_reward} shave={shave_reward}"
+        );
+        assert!(
+            fix_reward > 8.0,
+            "complete fix lost its underfill-term reward: {fix_reward}"
+        );
     }
 
     #[test]

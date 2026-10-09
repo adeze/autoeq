@@ -1037,6 +1037,124 @@ mod backend_tests {
     }
 
     #[test]
+    fn registered_cmaes_completion_evidence_preserves_legacy_candidate() {
+        use super::super::optimize::{
+            optimize_filters_with_de_completion, optimize_filters_with_typed_completion_evidence,
+        };
+
+        let (objective, mut params, lower, upper, x) = scalar_objective();
+        params.algo = "autoeq:cmaes".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let mut legacy_x = x.clone();
+        let mut evidence_x = x;
+        let (legacy_result, legacy_de) = optimize_filters_with_de_completion(
+            &mut legacy_x,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+        );
+        let (evidence_result, evidence_de, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut evidence_x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+            );
+
+        assert_eq!(evidence_result, legacy_result);
+        assert_eq!(evidence_x, legacy_x);
+        assert!(legacy_de.is_none());
+        assert!(evidence_de.is_none());
+        assert!(search.is_none());
+        // Ten generations cannot stagnate: the budget stop keeps the legacy
+        // classification with no typed completion.
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn registered_isres_completion_evidence_preserves_legacy_candidate() {
+        use super::super::optimize::{
+            optimize_filters_with_de_completion, optimize_filters_with_typed_completion_evidence,
+        };
+
+        let (objective, mut params, lower, upper, x) = scalar_objective();
+        params.algo = "autoeq:isres".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let mut legacy_x = x.clone();
+        let mut evidence_x = x;
+        let (legacy_result, legacy_de) = optimize_filters_with_de_completion(
+            &mut legacy_x,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+        );
+        let (evidence_result, evidence_de, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut evidence_x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+            );
+
+        assert_eq!(evidence_result, legacy_result);
+        assert_eq!(evidence_x, legacy_x);
+        assert!(legacy_de.is_none());
+        assert!(evidence_de.is_none());
+        assert!(search.is_none());
+        // A single generation cannot stagnate: the budget stop keeps the
+        // legacy classification with no typed completion.
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn registered_cmaes_stagnation_carries_convergence_through_dispatch() {
+        use super::super::optimize::OptimizerBackendCompletion;
+        use super::super::optimize::optimize_filters_with_typed_completion_evidence;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:cmaes".into();
+        params.population = 6;
+        params.maxeval = 6000;
+        params.seed = Some(7);
+        let (result, de_completion, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut x, &lower, &upper, objective, &params,
+            );
+
+        assert!(result.is_ok(), "CMA-ES should run: {result:?}");
+        assert!(de_completion.is_none());
+        assert!(search.is_none());
+        assert_eq!(completion, Some(OptimizerBackendCompletion::Converged));
+    }
+
+    #[test]
+    fn registered_isres_stagnation_carries_convergence_through_dispatch() {
+        use super::super::optimize::OptimizerBackendCompletion;
+        use super::super::optimize::optimize_filters_with_typed_completion_evidence;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:isres".into();
+        params.population = 6;
+        params.maxeval = 30000;
+        params.seed = Some(7);
+        let (result, de_completion, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut x, &lower, &upper, objective, &params,
+            );
+
+        assert!(result.is_ok(), "ISRES should run: {result:?}");
+        assert!(de_completion.is_none());
+        assert!(search.is_none());
+        assert_eq!(completion, Some(OptimizerBackendCompletion::Converged));
+    }
+
+    #[test]
     fn registered_rga_callback_stop_preserves_run_control_priority() {
         use super::super::backend::BackendSearchStopCause;
         use super::super::optimize::{

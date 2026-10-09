@@ -2332,9 +2332,37 @@ fn correction_stage(plugin: &roomeq_model::PluginConfigWrapper) -> Option<Correc
 }
 
 /// Classify complete owned correction stages for frozen-baseline replay.
-/// Unlike runtime reversion, the comparison also excludes newly added safety
-/// attenuation so its acoustic cost cannot disappear into the baseline.
+///
+/// Deployment headroom safety stays in the baseline: it is the cost of
+/// deploying the graph, not damage done by the correction under judgment.
+/// Charging it as loss rejects net-beneficial corrections whenever the
+/// target exceeds rig headroom (measured: +12 dB stacked sub boost needs
+/// ~5 dB of safety, netting a bass lift the target requires). Seat replay
+/// additionally transplants each trial's post-route safety onto the baseline
+/// clone, so pre/post deployment matches exactly; pre-route (input-level)
+/// safety is the trial's own blunt choice and stays judged, and the benefit
+/// floor plus the electrical backstop still gate boost-then-attenuate
+/// placebos.
 pub(super) fn is_baseline_correction(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    // Electrical headroom gains are hard safety controls, not acoustic
+    // correction stages; this mirrors the correction_stage exemption so the
+    // frozen baseline keeps deployed safety on both sides of the replay.
+    if plugin
+        .parameters
+        .get("room_eq_safety_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return false;
+    }
+    if plugin
+        .parameters
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        == Some("post_dsp_output_headroom_safety")
+    {
+        return false;
+    }
     correction_stage(plugin).is_some()
         || plugin
             .parameters
@@ -2345,11 +2373,7 @@ pub(super) fn is_baseline_correction(plugin: &roomeq_model::PluginConfigWrapper)
         // physical speaker calibration and must be recomputed after rollback.
         || matches!(
             plugin.parameters.get("label").and_then(serde_json::Value::as_str),
-            Some(
-                "post_dsp_input_level_alignment"
-                    | "final_channel_level_alignment"
-                    | "post_dsp_output_headroom_safety"
-            )
+            Some("post_dsp_input_level_alignment" | "final_channel_level_alignment")
         )
         // Compile-appended padding carries optimized relative timing, not a
         // structural alignment. Refused graphs must not assert it.
@@ -2755,6 +2779,26 @@ mod tests {
         assert!(super::is_baseline_correction(&padding));
         let structural = roomeq_engine::output::create_delay_plugin(4.86);
         assert!(!super::is_baseline_correction(&structural));
+    }
+
+    #[test]
+    fn baseline_restoration_keeps_deployed_safety_but_strips_correction() {
+        // Tagged safety gains stay: deployment headroom is not correction.
+        let mut safety = roomeq_engine::output::create_gain_plugin(-5.0);
+        safety.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+        safety.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+        assert!(!super::is_baseline_correction(&safety));
+        // Labeled post-DSP headroom safety has no flag; still deployment.
+        let mut post_dsp = roomeq_engine::output::create_gain_plugin(-5.89);
+        post_dsp.parameters["label"] = serde_json::json!("post_dsp_output_headroom_safety");
+        assert!(!super::is_baseline_correction(&post_dsp));
+        // Untagged correction gains and alignment still strip.
+        let mut correction_gain = roomeq_engine::output::create_gain_plugin(-2.0);
+        correction_gain.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+        assert!(super::is_baseline_correction(&correction_gain));
+        let mut alignment = roomeq_engine::output::create_gain_plugin(-0.5);
+        alignment.parameters["label"] = serde_json::json!("final_channel_level_alignment");
+        assert!(super::is_baseline_correction(&alignment));
     }
 
     #[test]

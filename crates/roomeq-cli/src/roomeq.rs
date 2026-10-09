@@ -322,11 +322,26 @@ fn owned_assets(
 ) -> Vec<PathBuf> {
     let mut owned = vec![output_path.to_path_buf()];
     let assets_dir = bundle::assets_dir_for(output_path);
-    if let Ok(entries) = std::fs::read_dir(&assets_dir) {
-        let mut names: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-        names.sort();
-        owned.extend(names);
+    // Owned assets are files: recurse into real subdirectories (e.g. the
+    // rebased FIR `resources/` bundle) instead of claiming the directory
+    // itself, which no artifact check can verify as bytes. Symlinks are
+    // listed as-is so a dangling link still fails verification downstream.
+    let mut pending_dirs = vec![assets_dir];
+    let mut names = Vec::new();
+    while let Some(dir) = pending_dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending_dirs.push(entry.path());
+            } else {
+                names.push(entry.path());
+            }
+        }
     }
+    names.sort();
+    owned.extend(names);
     for required in [
         manifest_path_for(output_path),
         run_log_path_for(output_path),
@@ -3384,6 +3399,26 @@ mod tests {
         assert!(
             owned.contains(&assets.join("left_fir_48000hz.wav")),
             "sidecars in the assets directory must be owned"
+        );
+    }
+
+    #[test]
+    fn owned_assets_expand_subdirectories_to_owned_files() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let output = dir.path().join("dsp.json");
+        std::fs::write(&output, "{}").expect("write native graph");
+        let assets = roomeq_workflow::assets_dir_for(&output);
+        let resources = assets.join("resources");
+        std::fs::create_dir_all(&resources).expect("create resources dir");
+        std::fs::write(resources.join("fir.wav"), b"waves").expect("write bundled fir");
+        let owned = super::owned_assets(&output, None);
+        assert!(
+            !owned.contains(&resources),
+            "owned assets must be files, never the bundle directory itself"
+        );
+        assert!(
+            owned.contains(&resources.join("fir.wav")),
+            "files inside bundle subdirectories must be owned"
         );
     }
 

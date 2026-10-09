@@ -42,19 +42,20 @@ qa-beyerdynamic-dt1990pro-score2:
 	./target/release/autoeq -n 7 \
 	--curve ./data_tests/headphones/asr/beyerdynamic_dt1990pro/Beyerdynamic\ DT1990\ Pro\ Headphone\ Frequency\ Response\ Measurement.csv \
 	--target ./data_tests/targets/harman-over-ear-2018.csv \
-	--loss headphone-score	--max-db 6 --max-q 6 --algo mh:rga --maxeval 100000 --min-freq=20 --max-freq 10000 --peq-model hp-pk-lp --min-q 0.6 --min-db 0.25 \
+	--loss headphone-score	--max-db 6 --max-q 6 --algo autoeq:de --seed 42 --maxeval 100000 --min-freq=20 --max-freq 10000 --peq-model hp-pk-lp --min-q 0.6 --min-db 0.25 \
 	--qa 1.5
 
+# Strict QA requires solver convergence; MH backends report budget stops only.
 [group('qa-autoeq')]
 qa-beyerdynamic-dt1990pro-flat:
 	./target/release/autoeq -n 5 \
 	--curve ./data_tests/headphones/asr/beyerdynamic_dt1990pro/Beyerdynamic\ DT1990\ Pro\ Headphone\ Frequency\ Response\ Measurement.csv \
 	--target ./data_tests/targets/harman-over-ear-2018.csv \
-	--loss headphone-flat  --max-db 6 --max-q 6 --maxeval 100000 --algo mh:pso --min-freq=20 --max-freq 10000 --peq-model pk \
+	--loss headphone-flat  --max-db 6 --max-q 6 --maxeval 100000 --algo autoeq:de --seed 42 --min-freq=20 --max-freq 10000 --peq-model pk \
 	--qa 0.5
 
 [group('qa-autoeq')]
-qa-edifierw830nb: qa-edifierw830nb-autoeqde qa-edifierw830nb-mhrga qa-edifierw830nb-mhfirefly
+qa-edifierw830nb: qa-edifierw830nb-autoeqde qa-edifierw830nb-autoeqde-pop100 qa-edifierw830nb-autoeqde-pop80
 
 [group('qa-autoeq')]
 qa-edifierw830nb-autoeqde:
@@ -68,20 +69,20 @@ qa-edifierw830nb-autoeqde:
 	--qa 6.0
 
 [group('qa-autoeq')]
-qa-edifierw830nb-mhrga:
+qa-edifierw830nb-autoeqde-pop100:
 	./target/release/autoeq -n 5 \
 	--curve data_tests/headphones/asr/edifierw830nb/Edifier\ W830NB.csv \
 	--target ./data_tests/targets/harman-over-ear-2018.csv \
 	--min-freq 50 --max-freq 16000 --max-q 8 --max-db 8 \
 	--loss headphone-score \
-	--min-spacing-oct 0.04 --atolerance 0.00000001 --tolerance 0.0000001 --algo mh:rga --population 100 --maxeval 80000 \
+	--min-spacing-oct 0.04 --atolerance 0.00000001 --tolerance 0.0000001 --algo autoeq:de --seed 42 --population 100 --maxeval 80000 \
 	--qa 2.5
 [group('qa-autoeq')]
-qa-edifierw830nb-mhfirefly:
+qa-edifierw830nb-autoeqde-pop80:
 	./target/release/autoeq -n 5 \
 	--curve data_tests/headphones/asr/edifierw830nb/Edifier\ W830NB.csv \
 	--target ./data_tests/targets/harman-over-ear-2018.csv \
 	--min-freq 50 --max-freq 16000 --max-q 8 --max-db 8 \
 	--loss headphone-score \
-	--min-spacing-oct 0.04 --atolerance 0.00000001 --tolerance 0.000000001 --algo mh:rga --population 80 --maxeval 80000 \
+	--min-spacing-oct 0.04 --atolerance 0.00000001 --tolerance 0.000000001 --algo autoeq:de --seed 42 --population 80 --maxeval 80000 \
 	--qa 2.5

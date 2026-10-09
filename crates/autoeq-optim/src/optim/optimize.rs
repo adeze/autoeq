@@ -721,7 +721,9 @@ pub fn optimize_filters_with_typed_completion_evidence(
 ) -> super::optimizer_backend::OptimizerBackendTypedCompletionEvidence {
     if let Some(backend) = super::registry::resolve(&params.algo)
         && (backend.name().starts_with("mh:")
-            || backend.name().eq_ignore_ascii_case("autoeq:cobyla"))
+            || backend.name().eq_ignore_ascii_case("autoeq:cobyla")
+            || backend.name().eq_ignore_ascii_case("autoeq:cmaes")
+            || backend.name().eq_ignore_ascii_case("autoeq:isres"))
     {
         let snapshot = objective_data.clone();
         let (output, backend_completion) = backend.optimize_with_typed_completion(

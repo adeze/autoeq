@@ -16,8 +16,8 @@ use crate::topology::{
     apply_crossover_response_to_curve, apply_delay_and_polarity_to_curve, average_mains_magnitude,
     bass_management_crossover_type_candidates, bass_management_max_underfill_db_with_target,
     bass_management_objective, bass_management_objective_with_target, complex_sum_mains,
-    curve_has_usable_phase, normalize_crossover_delays, predict_bass_management_sum,
-    select_bass_management_crossover_type,
+    correctable_dip_depth_db, curve_has_usable_phase, normalize_crossover_delays,
+    predict_bass_management_sum, select_bass_management_crossover_type,
 };
 use crate::{Curve, crossover, home_cinema};
 use math_audio_dsp::analysis::compute_average_response;
@@ -47,12 +47,61 @@ fn cancellation_penalty_excess(evidence: &roomeq_model::CrossoverCancellationEvi
     (evidence.final_db - ceiling).max(0.0)
 }
 
+/// Free trim deviation from the measured level-difference anchor, in dB.
+///
+/// Crossover interaction shifts the optimal trim slightly off the measured
+/// main/sub gap plus target lift; chase deviations run several dB further.
+const TRIM_ANCHOR_TOLERANCE_DB: f64 = 1.0;
+/// Quadratic price of trim deviation beyond the anchor tolerance.
+///
+/// Calibrated so a ~2 dB chase deviation costs ~20 units (more than the RMS
+/// crumbs hole filling earns) while legitimate tracking inside tolerance
+/// stays free.
+const TRIM_DEVIATION_WEIGHT: f64 = 30.0;
+
+/// Price extreme route actuation so the DE prefers sane trims and delays.
+///
+/// The splice rewards (even hinged) still pay RMS crumbs for hole filling
+/// with no counter-pressure, so capping one actuator merely pushes the DE to
+/// rail another (measured: +6 dB railed trims, then 17 ms delays once trim
+/// was capped). Trim is therefore priced by deviation from its measured
+/// anchor (main/sub level gap plus target lift): pricing raw magnitude would
+/// also kill legitimate tracking once the dip hinge plateaus its reward.
+/// Relative main/bass delay is free within one cycle at the crossover
+/// (genuine arrival alignment) and quadratic beyond it, where phase wraps
+/// make larger values redundant for the splice and only add latency and
+/// seat-dependent combing. Polarity is binary and stays unpriced. A
+/// non-finite anchor prices nothing rather than masking through `f64::max`.
+fn route_actuation_regularization_db(
+    trim_db: f64,
+    trim_anchor_db: f64,
+    main_delay_ms: f64,
+    bass_delay_ms: f64,
+    crossover_hz: f64,
+) -> f64 {
+    let trim_price = if trim_anchor_db.is_finite() {
+        let deviation = (trim_db - trim_anchor_db).abs() - TRIM_ANCHOR_TOLERANCE_DB;
+        TRIM_DEVIATION_WEIGHT * deviation.max(0.0).powi(2)
+    } else {
+        0.0
+    };
+    let relative_delay_ms = (main_delay_ms - bass_delay_ms).abs();
+    let cycle_ms = if crossover_hz.is_finite() && crossover_hz > 0.0 {
+        1000.0 / crossover_hz
+    } else {
+        0.0
+    };
+    let delay_excess_ms = (relative_delay_ms - cycle_ms).max(0.0);
+    trim_price + delay_excess_ms * delay_excess_ms
+}
+
 fn constrained_route_loss(
     loss: f64,
     underfill: f64,
     evidence: &roomeq_model::CrossoverCancellationEvidence,
 ) -> f64 {
-    let excess = (underfill - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
+    let excess =
+        (correctable_dip_depth_db(underfill) - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
     let unsafe_excess = cancellation_penalty_excess(evidence);
     // Preserve the established separation of scales: target deficits dominate
     // flatness, and policy violations dominate target fitting. Accepted measured
@@ -1756,6 +1805,12 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
             ]);
         }
 
+        // Anchor trim regularization at the measured level-difference seed
+        // (initial trim per source) so the penalty prices chase deviations,
+        // not legitimate target tracking.
+        let trim_anchors: Vec<f64> = (0..sources.len()).map(|i| initial[2 + i * 4 + 3]).collect();
+        log::debug!("source route group '{group_id}' trim anchors: {trim_anchors:?}");
+
         type CrossoverEvaluation = (
             f64,
             Vec<f64>,
@@ -1773,6 +1828,7 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
             let mut cancellation_underfills = Vec::with_capacity(sources.len());
             let mut cancellation_evidence = Vec::with_capacity(sources.len());
             let mut constrained_underfills = Vec::with_capacity(sources.len());
+            let mut actuation_penalties = Vec::with_capacity(sources.len());
             for (source_index, (source_channel, source_curve)) in sources.iter().enumerate() {
                 let base = 2 + source_index * 4;
                 let (main_delay_ms, bass_delay_ms) = normalize_crossover_delays(
@@ -1816,6 +1872,13 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
                     target,
                     frequency,
                 )?);
+                actuation_penalties.push(route_actuation_regularization_db(
+                    trim_db,
+                    trim_anchors[source_index],
+                    main_delay_ms,
+                    bass_delay_ms,
+                    frequency,
+                ));
                 let evidence = crate::topology::assess_configured_crossover_cancellation(
                     config,
                     source_channel,
@@ -1841,8 +1904,9 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
                 .iter()
                 .zip(&constrained_underfills)
                 .zip(&cancellation_evidence)
-                .map(|((loss, underfill), evidence)| {
-                    constrained_route_loss(*loss, *underfill, evidence)
+                .zip(&actuation_penalties)
+                .map(|(((loss, underfill), evidence), penalty)| {
+                    constrained_route_loss(*loss, *underfill, evidence) + penalty
                 })
                 .collect::<Vec<_>>();
             let mean = constrained_losses.iter().sum::<f64>() / constrained_losses.len() as f64;
@@ -1933,11 +1997,23 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
                     .and_then(|(_, losses, underfills, _)| {
                         let loss = *losses.get(source_index)?;
                         let underfill = *underfills.get(source_index)?;
-                        let excess = (underfill
+                        let excess = (correctable_dip_depth_db(underfill)
                             - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB
                                 .min(config.optimizer.max_crossover_cancellation_db))
                         .max(0.0);
-                        Some(loss + 1_000.0 * excess * excess)
+                        let (main_delay_ms, bass_delay_ms) = normalize_crossover_delays(
+                            route[0].clamp(0.0, 20.0),
+                            route[1].clamp(0.0, 20.0),
+                        );
+                        let frequency = refined[0].clamp(minimum_frequency, maximum_frequency);
+                        let penalty = route_actuation_regularization_db(
+                            route[3].clamp(headroom_budget.max_route_trim_down_db, max_route_trim),
+                            trim_anchors[source_index],
+                            main_delay_ms,
+                            bass_delay_ms,
+                            frequency,
+                        );
+                        Some(loss + 1_000.0 * excess * excess + penalty)
                     })
                     .unwrap_or(1.0e12)
             };
@@ -2201,6 +2277,59 @@ mod tests {
             super::apply_common_sub_correction(&driver_sum, &measured, &corrected).unwrap();
         assert!((result.spl[2] + 97.0).abs() < 1e-9);
         assert!((result.spl[3] + 237.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn constrained_route_loss_plateaus_beyond_correctable_dip_depth() {
+        let evidence = roomeq_model::CrossoverCancellationEvidence {
+            source_channel: "L".into(),
+            baseline_db: None,
+            baseline_worst_frequency_hz: None,
+            final_db: 0.0,
+            final_worst_frequency_hz: 80.0,
+            comparison_band_hz: [40.0, 160.0],
+            limit_db: 3.0,
+            improvement_db: None,
+            accepted: true,
+            reason: String::new(),
+        };
+        let priced = |underfill: f64| constrained_route_loss(0.0, underfill, &evidence);
+        assert_eq!(priced(25.0), priced(20.0));
+        assert_eq!(priced(25.0), priced(6.0));
+        assert!(priced(6.0) > priced(2.0));
+        assert_eq!(priced(0.5), 0.0);
+    }
+
+    #[test]
+    fn actuation_regularization_prices_anchor_deviations_and_wrapped_delays() {
+        // Sane routing: trim on its measured anchor, sub-cycle delay.
+        let sane = super::route_actuation_regularization_db(4.2, 4.2, 1.0, 2.0, 72.0);
+        assert!((sane - 0.0).abs() < 1e-9, "sane routing overpriced: {sane}");
+        // Tolerance keeps crossover interaction free.
+        let near = super::route_actuation_regularization_db(5.0, 4.2, 1.0, 2.0, 72.0);
+        assert!(
+            (near - 0.0).abs() < 1e-9,
+            "in-tolerance trim priced: {near}"
+        );
+        // Chase deviation past tolerance costs more than RMS crumbs.
+        let railed = super::route_actuation_regularization_db(6.0, 4.2, 1.0, 2.0, 72.0);
+        assert!(railed > 15.0, "chase deviation underpriced: {railed}");
+        // Opposite-rail cut (measured kef R: -12 dB) is punished hard.
+        let cut_rail = super::route_actuation_regularization_db(-12.0, 2.0, 1.0, 2.0, 72.0);
+        assert!(cut_rail > 100.0);
+        // Non-finite anchor prices nothing instead of masking.
+        let unanchored = super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0);
+        assert!((unanchored - 0.0).abs() < 1e-9);
+        // Degenerate delay (measured: 17.6 ms at ~72 Hz crossover) exceeds
+        // one cycle (13.9 ms) and pays quadratic excess.
+        let wrapped = super::route_actuation_regularization_db(1.0, 1.0, 17.6, 0.0, 72.0);
+        let cycle_ms: f64 = 1000.0 / 72.0;
+        let expected = (17.6 - cycle_ms).powi(2);
+        assert!((wrapped - expected).abs() < 1e-9);
+        assert!(wrapped > 10.0);
+        // Sub-cycle delays stay free.
+        let aligned = super::route_actuation_regularization_db(1.0, 1.0, 6.0, 2.0, 72.0);
+        assert!((aligned - 0.0).abs() < 1e-9);
     }
 
     #[test]

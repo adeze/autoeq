@@ -2850,6 +2850,22 @@ fn configured_crossover_phase_advisories(
     )
 }
 
+/// Lower optimization bound for bass-managed main pre-EQ.
+///
+/// Mains are high-passed at the (later selected) crossover while acceptance
+/// evaluates above it, so EQ below the crossover burns headroom filling
+/// response the high-pass removes without improving the evaluated band.
+/// Clamp to the crossover estimate `est_xo`: exact for fixed crossovers, the
+/// geometric mean for search ranges. Returns the bound and whether it
+/// overlaps the configured band.
+fn main_preeq_lower_bound(configured_min: f64, est_xo: f64, max_freq: f64) -> (f64, bool) {
+    if est_xo < max_freq {
+        (configured_min.max(est_xo), true)
+    } else {
+        (configured_min, false)
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "workflow stage carries the prepared routing context"
@@ -2944,19 +2960,24 @@ fn optimize_home_cinema_with_sub(
                 .map(|(channel_index, role)| {
                     let source = resolve_single_source(role, config, sys)?;
                     let mut per_config = config.clone();
-                    if min_xo < per_config.optimizer.max_freq {
-                        per_config.optimizer.min_freq = per_config.optimizer.min_freq.max(min_xo);
+                    let (main_min, overlaps) = main_preeq_lower_bound(
+                        per_config.optimizer.min_freq,
+                        est_xo,
+                        per_config.optimizer.max_freq,
+                    );
+                    if overlaps {
+                        per_config.optimizer.min_freq = main_min;
                     } else {
                         log::warn!(target: BASS_MANAGEMENT_LOG_TARGET,
                             "  Main Pre-EQ crossover lower bound {:.1} Hz does not overlap configured optimization band [{:.1}, {:.1}] Hz; retaining the configured band",
-                            min_xo,
+                            est_xo,
                             per_config.optimizer.min_freq,
                             per_config.optimizer.max_freq
                         );
                     }
                     info!(target: BASS_MANAGEMENT_LOG_TARGET,
                         "  Pre-EQ via generic path for '{}' (min_freq={:.1} Hz)",
-                        role, min_xo
+                        role, per_config.optimizer.min_freq
                     );
                     let (chain, ch_result, _pre, _post, _fir, multiseat_rejection) =
                         run_channel_via_generic_path_with_frequency_samples(
@@ -8757,6 +8778,32 @@ mod post_dsp_level_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn main_preeq_lower_bound_uses_crossover_estimate() {
+        // Fixed crossover: the estimate equals the configured frequency.
+        assert_eq!(
+            super::main_preeq_lower_bound(20.0, 80.0, 16000.0),
+            (80.0, true)
+        );
+        // Search range: clamp to the geometric-mean estimate, not the range
+        // minimum, so mains never chase response the high-pass removes.
+        let est = (40.0f64 * 130.0).sqrt();
+        assert_eq!(
+            super::main_preeq_lower_bound(20.0, est, 16000.0),
+            (est, true)
+        );
+        // A stricter configured band always wins.
+        assert_eq!(
+            super::main_preeq_lower_bound(100.0, est, 16000.0),
+            (100.0, true)
+        );
+        // No overlap: retain the configured band and report it.
+        assert_eq!(
+            super::main_preeq_lower_bound(20.0, est, 60.0),
+            (20.0, false)
+        );
+    }
+
     #[test]
     fn protected_main_target_preserves_alignment_route_gains_and_slope() {
         use ndarray::Array1;

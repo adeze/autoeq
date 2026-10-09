@@ -1121,6 +1121,7 @@ fn optimize_channel_eq_adaptive(
         config,
         std::slice::from_ref(curve),
     );
+    let (filters, loss) = apply_total_boost_postpass(filters, loss, &prep);
     log::info!(
         "  Adaptive EQ optimization: {} filters, final loss={:.6}",
         filters.len(),
@@ -1740,6 +1741,192 @@ fn recompiled_objective_loss(
     autoeq_optim::optim::compute_base_fitness(&x, objective_data)
 }
 
+/// Total positive-gain budget (dB) for one channel's realized PEQ stack.
+///
+/// Per-filter `max_db` caps individual bands, but stacked boosts can still
+/// sum far beyond it (notably when filling a deep null), producing
+/// corrections the headroom backstop must refuse. Calibrated between the
+/// largest accepted measured stack (8.88 dB) and observed pathologies
+/// (18+ dB), comfortably below the 12.0 dB acceptance backstop policy.
+const TOTAL_BOOST_BUDGET_DB: f64 = 9.0;
+
+/// Gains below this magnitude are inaudible dead weight; scaled-down filters
+/// that fall under it are dropped instead of shipping as no-ops.
+const SCALED_MICRO_GAIN_DB: f64 = 0.05;
+
+/// Report for an applied total-boost scaling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TotalBoostScaling {
+    original_sum_db: f64,
+    scaled_sum_db: f64,
+    alpha: f64,
+    filters_scaled: usize,
+}
+
+/// Scale down positive PEQ gains when their sum exceeds `budget_db`.
+///
+/// Cuts are never touched; only positive `db_gain` values scale, so the
+/// correction keeps its direction while shedding unaffordable boost.
+/// Coefficients are recomputed via `update_params`, and scaled filters that
+/// fall below [`SCALED_MICRO_GAIN_DB`] are dropped. Returns `None` when the
+/// stack already fits the budget (the common case: no change at all).
+/// Non-finite gain sums are left untouched for downstream fail-closed
+/// validation instead of being silently zeroed.
+fn scale_filters_to_boost_budget(
+    filters: &mut Vec<Biquad>,
+    budget_db: f64,
+) -> Option<TotalBoostScaling> {
+    let original_sum_db: f64 = filters.iter().map(|filter| filter.db_gain.max(0.0)).sum();
+    if !original_sum_db.is_finite() || original_sum_db <= budget_db {
+        return None;
+    }
+    let alpha = budget_db / original_sum_db;
+    let mut filters_scaled = 0usize;
+    for filter in filters.iter_mut() {
+        if filter.db_gain > 0.0 {
+            filter.update_params(
+                filter.filter_type,
+                filter.freq,
+                filter.srate,
+                filter.q,
+                filter.db_gain * alpha,
+            );
+            filters_scaled += 1;
+        }
+    }
+    filters.retain(|filter| !(filter.db_gain > 0.0 && filter.db_gain < SCALED_MICRO_GAIN_DB));
+    Some(TotalBoostScaling {
+        original_sum_db,
+        scaled_sum_db: original_sum_db * alpha,
+        alpha,
+        filters_scaled,
+    })
+}
+
+/// Enforce the total-boost budget after the veto post-pass (single-channel
+/// paths), recompiling the loss so it stays honest after scaling.
+fn apply_total_boost_postpass(
+    filters: Vec<Biquad>,
+    loss: f64,
+    prep: &super::types::PreparedSingleChannelEq,
+) -> (Vec<Biquad>, f64) {
+    let mut filters = filters;
+    if let Some(scaling) = scale_filters_to_boost_budget(&mut filters, TOTAL_BOOST_BUDGET_DB) {
+        log::info!(
+            "  Total boost budget: scaled {} positive PEQ gains by {:.3} ({:.2} dB -> {:.2} dB)",
+            scaling.filters_scaled,
+            scaling.alpha,
+            scaling.original_sum_db,
+            scaling.scaled_sum_db
+        );
+        let loss = recompiled_loss(&filters, prep);
+        (filters, loss)
+    } else {
+        (filters, loss)
+    }
+}
+
+/// Enforce the total-boost budget after the veto post-pass for objectives
+/// without a single-channel preparation (multi-measurement paths).
+fn apply_total_boost_postpass_for_objective(
+    filters: Vec<Biquad>,
+    loss: f64,
+    objective_data: &autoeq_optim::optim::ObjectiveData,
+) -> (Vec<Biquad>, f64) {
+    let mut filters = filters;
+    if let Some(scaling) = scale_filters_to_boost_budget(&mut filters, TOTAL_BOOST_BUDGET_DB) {
+        log::info!(
+            "  Total boost budget: scaled {} positive PEQ gains by {:.3} ({:.2} dB -> {:.2} dB)",
+            scaling.filters_scaled,
+            scaling.alpha,
+            scaling.original_sum_db,
+            scaling.scaled_sum_db
+        );
+        let loss = recompiled_objective_loss(&filters, objective_data);
+        (filters, loss)
+    } else {
+        (filters, loss)
+    }
+}
+
+#[cfg(test)]
+mod total_boost_budget_tests {
+    use super::*;
+
+    fn peak(freq: f64, gain_db: f64) -> Biquad {
+        Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            freq,
+            48_000.0,
+            2.0,
+            gain_db,
+        )
+    }
+
+    fn positive_sum(filters: &[Biquad]) -> f64 {
+        filters.iter().map(|filter| filter.db_gain.max(0.0)).sum()
+    }
+
+    #[test]
+    fn stack_within_budget_passes_through_untouched() {
+        let mut filters = vec![peak(100.0, 4.0), peak(1000.0, 3.0), peak(200.0, -6.0)];
+        let before: Vec<f64> = filters.iter().map(|filter| filter.db_gain).collect();
+        assert!(scale_filters_to_boost_budget(&mut filters, 9.0).is_none());
+        let after: Vec<f64> = filters.iter().map(|filter| filter.db_gain).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn over_budget_stack_scales_positive_gains_only() {
+        let mut filters = vec![
+            peak(85.0, 6.0),
+            peak(95.0, 6.0),
+            peak(110.0, 6.0),
+            peak(1000.0, -4.0),
+        ];
+        let scaling =
+            scale_filters_to_boost_budget(&mut filters, 9.0).expect("18 dB stack must scale");
+        assert_eq!(scaling.filters_scaled, 3);
+        assert!((scaling.alpha - 0.5).abs() < 1e-12);
+        assert!((positive_sum(&filters) - 9.0).abs() < 1e-9);
+        assert_eq!(filters.len(), 4, "audible filters must survive");
+        assert!((filters[0].db_gain - 3.0).abs() < 1e-12);
+        assert_eq!(filters[3].db_gain, -4.0, "cuts must never scale");
+        // Coefficients must follow the scaled gain, not the original.
+        let response_db = 20.0 * filters[0].complex_response(85.0).norm().max(1e-12).log10();
+        assert!(
+            (response_db - 3.0).abs() < 0.15,
+            "peak response {response_db:.3} dB must track scaled gain 3.0 dB"
+        );
+    }
+
+    #[test]
+    fn scaled_micro_filters_are_dropped() {
+        let mut filters = vec![peak(85.0, 6.0), peak(95.0, 6.0), peak(200.0, 0.08)];
+        let scaling =
+            scale_filters_to_boost_budget(&mut filters, 6.0).expect("12.08 dB stack must scale");
+        assert_eq!(scaling.filters_scaled, 3);
+        assert_eq!(filters.len(), 2, "0.04 dB remnant must go");
+        assert!(positive_sum(&filters) <= 6.0 + 1e-9);
+    }
+
+    #[test]
+    fn nonfinite_gain_sum_is_left_untouched() {
+        // Bypass the constructor's gain coercion to simulate corrupt state.
+        let mut corrupt = peak(100.0, 1.0);
+        corrupt.db_gain = f64::INFINITY;
+        let mut filters = vec![corrupt];
+        assert!(scale_filters_to_boost_budget(&mut filters, 9.0).is_none());
+        assert!(filters[0].db_gain.is_infinite());
+    }
+
+    #[test]
+    fn empty_stack_fits_any_budget() {
+        let mut filters = Vec::new();
+        assert!(scale_filters_to_boost_budget(&mut filters, 9.0).is_none());
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn optimize_channel_eq_inner(
     curve: &Curve,
@@ -1958,6 +2145,7 @@ fn optimize_channel_eq_inner_with_control(
     // unexamined. Report-only by default.
     let (filters, loss, audibility_veto, veto_adjudication) =
         apply_veto_postpass(filters, loss, &prep, config, std::slice::from_ref(curve));
+    let (filters, loss) = apply_total_boost_postpass(filters, loss, &prep);
 
     log::info!(
         "EQ optimization: {} filters, final loss={:.6}",
@@ -2422,6 +2610,8 @@ fn optimize_channel_eq_multi_inner_with_control(
 
     let (filters, final_loss, audibility_veto, veto_adjudication) =
         apply_veto_postpass_for_objective(filters, final_loss, &final_objective, config, curves);
+    let (filters, final_loss) =
+        apply_total_boost_postpass_for_objective(filters, final_loss, &final_objective);
     Ok(EqOptimizationResult {
         filters,
         loss: final_loss,
@@ -2463,6 +2653,7 @@ fn optimize_channel_eq_multi_adaptive_prepared(
         config,
         curves,
     );
+    let (filters, loss) = apply_total_boost_postpass_for_objective(filters, loss, &objective_data);
     let mut optimizer_evidence = selection.optimizer_evidence;
     for evidence in &mut optimizer_evidence {
         evidence.multi_input_normalization = Some(normalization.clone());
