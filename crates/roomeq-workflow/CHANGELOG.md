@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Carry each branch's deployed FIR latency prior into acceptance-replay
+  scorecards so induced group delay unwraps against the real bulk delay
+  instead of a zero prior on sparse grids.
+- Strip stale staged final-channel alignment in post-DSP recalibration
+  before re-deriving input trims, fixing a ~5.5 dB useful-output
+  transplant loss on routed graphs.
+- Release FIR coefficients and temporal masking on Hybrid-stage reverts,
+  and rejoin reverted branches to their crossover partner's surviving
+  bulk with a standalone latency alignment that tracks the live gap
+  across safety gates.
+
 - Optimize stereo 2.1/2.2 bass routing independently from home-cinema bass
   management: evaluate dual-mono, direct-pair, and crossed-pair matrices, reject
   candidates that fail serialized-graph splice or electrical-headroom replay,

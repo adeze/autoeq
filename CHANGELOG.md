@@ -1,3 +1,35 @@
+# 0.5.77
+
+- Fix mixed-mode group-delay rejections on sparse FIR grids: the
+  acceptance replay evaluated induced group delay with a zero bulk-delay
+  prior, so unwrapping read 10-25 ms of spurious GD at every strength
+  against the 10 ms Hybrid limit. The replay now carries each branch's
+  deployed FIR latency prior (mirroring the runtime temporal evidence),
+  restoring mixed-mode acceptance on 2.2 sigberg/unknown rooms.
+- Fix a 5.48 dB useful-output transplant loss on routed graphs: staged
+  `final_channel_level_alignment` was folded into `input_trim_db` by the
+  post-DSP recalibration and then overwritten by the final alignment,
+  leaving a net cut. Recalibration now strips the stale staged
+  alignment before re-deriving trims.
+- Fix Hybrid-stage reverts leaving orphaned FIR state: a reverted
+  branch kept its FIR coefficients and temporal masking with no
+  convolution, failing downstream evidence gates. Reverts now release
+  both, and the orphaned branch rejoins its crossover partner's
+  surviving bulk with a standalone latency alignment that tracks the
+  live gap across gates (unmarked installs never count as bulk on
+  either side, so partner strips cannot strand a stale delay).
+- Refresh `Cargo.lock` for `math-dsp`'s `serde_json` dependency (stale
+  lock entry; `--locked` builds fail without it).
+- Regenerate the measured-suite expectations
+  (`data_tests/roomeq/measured/expected_outcomes.json`) from the fixed
+  pipeline: 14 combos flip from rejected/error to accepted/unchanged
+  with positive (or clean-zero) improvement, all audits pass, and the 5
+  remaining exit-1s are clean `Rejected` verdicts (exit 1 on rejected
+  is the documented playback-approval contract; the report can only
+  see them as `error`, so they are now expected as such, matching the
+  pre-existing 5.1.4 precedent). `roomeq_suite_report.py --expect`
+  passes on the fresh sweep.
+
 # 0.5.76
 
 - Fix report graph decimation on log-frequency axes: the WASM renderer

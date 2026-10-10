@@ -1551,6 +1551,14 @@ pub(crate) fn recalibrate_post_dsp_levels(
                 .parameters
                 .get("label")
                 .and_then(serde_json::Value::as_str);
+            // The final channel alignment is recomputed after every level
+            // recalibration from stage-free curves. A stale copy left in
+            // the chains would be re-absorbed by the input alignment as a
+            // uniform cut instead of removing inter-channel spread. It is
+            // staged pre-route for routed inputs and unstaged otherwise.
+            if label == Some("final_channel_level_alignment") {
+                return false;
+            }
             let expected_stage = match label {
                 Some("post_dsp_input_level_alignment") => Some("pre_route"),
                 Some("post_dsp_output_headroom_safety") => Some("post_route"),
@@ -8128,6 +8136,79 @@ mod post_dsp_level_tests {
                 }),
             "the independent original candidate must remain unchanged"
         );
+    }
+
+    #[test]
+    fn recalibration_strips_stale_final_channel_alignment() {
+        let (mut result, config) = recalibration_fixture(0.0);
+        seed_post_dsp_calibration(&mut result, &config);
+        // Mimic a trial cloned from a correction-era candidate: stale final
+        // alignment gains plus their folded input-trim contribution.
+        for (role, gain_db) in [("L", -2.0), ("R", -5.0)] {
+            let mut stale = mark_plugin_stage(
+                roomeq_engine::output::create_gain_plugin(gain_db),
+                "pre_route",
+            );
+            stale.parameters["label"] = serde_json::json!("final_channel_level_alignment");
+            result
+                .channels
+                .get_mut(role)
+                .unwrap()
+                .plugins
+                .push(stale);
+            let graph = result
+                .metadata
+                .bass_management
+                .as_mut()
+                .unwrap()
+                .routing_graph
+                .as_mut()
+                .unwrap();
+            *graph.input_trim_db.entry(role.to_string()).or_insert(0.0) += gain_db;
+        }
+
+        assert!(
+            super::recalibrate_post_dsp_levels(
+                &mut result,
+                &config,
+                48_000.0,
+                std::path::Path::new(".")
+            )
+            .unwrap()
+        );
+
+        // Recomputing the input alignment on curves that still carry the
+        // stale final gains folds them into a uniform cut; both stages
+        // must restart from stage-free chains and trims.
+        for chain in result.channels.values() {
+            assert!(!chain.plugins.iter().any(|plugin| {
+                plugin
+                    .parameters
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("final_channel_level_alignment")
+            }));
+        }
+        let graph = result
+            .metadata
+            .bass_management
+            .as_ref()
+            .unwrap()
+            .routing_graph
+            .as_ref()
+            .unwrap();
+        assert!(
+            (graph.input_trim_db["L"] + 2.0).abs() < 1.0e-9,
+            "input alignment must restart from stage-free curves, got {:?}",
+            graph.input_trim_db
+        );
+        assert!(result.channels["L"].plugins.iter().any(|plugin| {
+            plugin
+                .parameters
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                == Some("speaker_calibration")
+        }));
     }
 
     #[test]

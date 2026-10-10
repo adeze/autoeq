@@ -45,6 +45,7 @@ pub(super) fn apply_final_correction_safety_gate(
 ) {
     use roomeq_engine::quality::CorrectionDecision;
 
+    let captured_latency = capture_branch_latency(result);
     let optimizer_confidence = refresh_optimizer_evidence(result);
     let optimizer_rejected =
         optimizer_confidence == Some(roomeq_engine::OptimizerConfidence::Unusable);
@@ -513,9 +514,17 @@ pub(super) fn apply_final_correction_safety_gate(
                 if stages.contains(&CorrectionStage::Peq) {
                     channel.biquads.clear();
                 }
-                if stages.contains(&CorrectionStage::Fir) {
+                // The hybrid crossover stage carries the channel FIR, so it
+                // must release the coefficients like a plain FIR revert:
+                // orphaned coefficients with no convolution read as FIR
+                // evidence that can never resolve, failing Hybrid
+                // temporal-evidence policy downstream.
+                if stages.contains(&CorrectionStage::Fir)
+                    || stages.contains(&CorrectionStage::Hybrid)
+                {
                     channel.fir_coeffs = None;
                 }
+                release_masking_without_fir_bulk(&mut chain);
                 sync_chain_reported_curve(&mut chain, &channel.final_curve);
                 result.channels.insert(name.clone(), chain);
                 let stage_names: Vec<_> = stages
@@ -560,6 +569,7 @@ pub(super) fn apply_final_correction_safety_gate(
                     channel.post_score = channel.pre_score;
                     channel.biquads.clear();
                     channel.fir_coeffs = None;
+                    release_masking_without_fir_bulk(&mut chain);
                     chain.final_curve = Some((&curve).into());
                     chain.eq_response = None;
                     result.channels.insert(name.clone(), chain);
@@ -776,6 +786,7 @@ pub(super) fn apply_final_correction_safety_gate(
             report.reverted_stages.dedup();
         }
     }
+    reinstall_orphaned_latency_alignment(result, &captured_latency);
     reconcile_group_delay_summary(result);
     if let Some(report) = result.metadata.correction_acceptance.as_mut() {
         report.refresh_outcome();
@@ -1515,6 +1526,7 @@ pub(super) fn revert_all_correction_stages(
 ) -> Vec<String> {
     let supporting_source_outputs = supporting_source_output_names(result);
     let names: Vec<_> = result.channel_results.keys().cloned().collect();
+    let captured_latency = capture_branch_latency(result);
     let mut reverted = Vec::new();
     for name in names {
         if supporting_source_outputs.contains(&name) {
@@ -1581,6 +1593,7 @@ pub(super) fn revert_all_correction_stages(
                 .map(|stage| format!("{name}:{}", stage.as_str())),
         );
     }
+    reinstall_orphaned_latency_alignment(result, &captured_latency);
     reverted
 }
 
@@ -1595,7 +1608,7 @@ fn refresh_combined_scores(result: &mut RoomOptimizationResult) {
     result.metadata.post_score = result.combined_post_score;
 }
 
-fn runtime_temporal_quality_evidence(
+pub(super) fn runtime_temporal_quality_evidence(
     result: &RoomOptimizationResult,
     names: &[String],
     pre: &[roomeq_model::Curve],
@@ -2382,6 +2395,344 @@ pub(super) fn is_baseline_correction(plugin: &roomeq_model::PluginConfigWrapper)
             .get("label")
             .and_then(serde_json::Value::as_str)
             == Some(crate::delay_compile::COMPILE_PADDING_LABEL)
+}
+
+/// Release temporal masking when no FIR bulk survives on the branch.
+/// Masking is the bulk-delay prior replay unwraps post phase with: it stays
+/// valid while a convolution or a converted FIR bulk-delay plugin remains
+/// (a plain FIR revert preserves bulk that way), but a branch stripped of
+/// every FIR bulk carrier (a hybrid revert, which converts nothing) must
+/// not hand replay a delay prior for a delay it no longer has.
+fn release_masking_without_fir_bulk(chain: &mut ChannelDspChain) {
+    if !chain_has_fir_bulk(chain) {
+        chain.fir_temporal_masking = None;
+    }
+}
+
+/// A branch keeps FIR bulk while a convolution or an FIR bulk-delay plugin
+/// survives on it. Structural delays (time alignment, routes) are
+/// deployment-constant and excluded.
+fn chain_has_fir_bulk(chain: &ChannelDspChain) -> bool {
+    chain.plugins.iter().any(|plugin| {
+        plugin.plugin_type == "convolution" || is_fir_bulk_delay_plugin(plugin)
+    })
+}
+
+fn is_fir_bulk_delay_plugin(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    plugin.plugin_type == "delay"
+        && matches!(
+            plugin.parameters.get("label").and_then(|value| value.as_str()),
+            Some("fir_design_delay" | "hybrid_fir_latency_alignment")
+        )
+}
+
+fn is_latency_alignment_plugin(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    plugin.plugin_type == "delay"
+        && plugin
+            .parameters
+            .get("label")
+            .and_then(|value| value.as_str())
+            == Some("hybrid_fir_latency_alignment")
+}
+
+/// FIR bulk delay realized on one branch: serial convolutions and
+/// bulk-delay plugins add, while the two bands between a band split and
+/// its merge run in parallel (the convolution shapes one band, the
+/// latency alignment lifts the other), so the crossover section
+/// contributes the slower band, not the sum. Drivers are parallel
+/// outputs; the branch bulk is the slowest path.
+fn branch_fir_bulk_ms(chain: &ChannelDspChain) -> f64 {
+    fn conv_bulk_ms(plugin: &roomeq_model::PluginConfigWrapper) -> f64 {
+        if plugin.plugin_type == "convolution" {
+            plugin
+                .parameters
+                .get("correction_design_delay_ms")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+    fn delay_bulk_ms(plugin: &roomeq_model::PluginConfigWrapper) -> f64 {
+        if is_fir_bulk_delay_plugin(plugin) {
+            plugin
+                .parameters
+                .get("delay_ms")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+    let split = chain
+        .plugins
+        .iter()
+        .position(|plugin| plugin.plugin_type == "band_split");
+    let merge = split.and_then(|start| {
+        chain.plugins.iter().skip(start + 1).position(|plugin| {
+            plugin.plugin_type == "band_merge"
+        }).map(|offset| start + 1 + offset)
+    });
+    let chain_bulk_ms = match (split, merge) {
+        (Some(start), Some(end)) => {
+            let before: f64 = chain.plugins[..start]
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum();
+            let band_conv: f64 = chain.plugins[start + 1..end].iter().map(conv_bulk_ms).sum();
+            let band_delay: f64 = chain.plugins[start + 1..end]
+                .iter()
+                .map(delay_bulk_ms)
+                .sum();
+            let after: f64 = chain.plugins[end + 1..]
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum();
+            before + band_conv.max(band_delay) + after
+        }
+        _ => chain
+            .plugins
+            .iter()
+            .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+            .sum(),
+    };
+    let driver_bulk_ms = chain
+        .drivers
+        .iter()
+        .flatten()
+        .map(|driver| {
+            driver
+                .plugins
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum::<f64>()
+        })
+        .fold(0.0, f64::max);
+    chain_bulk_ms.max(driver_bulk_ms)
+}
+
+/// Pre-revert FIR timing state per channel, for post-revert re-alignment.
+struct CapturedBranchLatency {
+    alignment: Vec<roomeq_model::PluginConfigWrapper>,
+    masking: Option<roomeq_model::TemporalIrMaskingMetrics>,
+}
+
+fn capture_branch_latency(
+    result: &RoomOptimizationResult,
+) -> std::collections::HashMap<String, CapturedBranchLatency> {
+    result
+        .channels
+        .iter()
+        .map(|(name, chain)| {
+            (
+                name.clone(),
+                CapturedBranchLatency {
+                    alignment: chain
+                        .plugins
+                        .iter()
+                        .filter(|plugin| is_latency_alignment_plugin(plugin))
+                        .cloned()
+                        .collect(),
+                    masking: chain.fir_temporal_masking.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Bulk contributed by re-alignment installs: unmarked
+/// `hybrid_fir_latency_alignment` delays (the hybrid stage marker was
+/// stripped at install). Derived alignment, not correction bulk.
+fn own_realignment_ms(chain: &ChannelDspChain) -> f64 {
+    chain
+        .plugins
+        .iter()
+        .filter(|plugin| {
+            is_latency_alignment_plugin(plugin)
+                && !plugin.parameters.as_object().is_some_and(|object| {
+                    object.contains_key(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                })
+        })
+        .filter_map(|plugin| {
+            plugin
+                .parameters
+                .get("delay_ms")
+                .and_then(serde_json::Value::as_f64)
+        })
+        .filter(|delay| delay.is_finite() && *delay > 0.0)
+        .sum()
+}
+
+/// Correction bulk excluding derived re-alignment: convolutions, design
+/// delays, and original (marked) crossover-block alignment. Reinstalled
+/// delays must track this, never their own echo: counting them targets
+/// ghosts (a partner's install is not its bulk) and oscillates (an
+/// install shrinks its own gap, so the next gate removes it).
+fn real_branch_bulk_ms(chain: &ChannelDspChain) -> f64 {
+    (branch_fir_bulk_ms(chain) - own_realignment_ms(chain)).max(0.0)
+}
+
+/// Bulk a branch rejoins: its crossover partner's surviving bulk (mains
+/// rejoin subs', a sub rejoins its mains'). Without routed subs there is
+/// no main/sub split to heal: the pair aligns to the surviving global
+/// bulk instead.
+fn partner_target_bulk_ms(
+    has_subs: bool,
+    chain: &ChannelDspChain,
+    sub_bulk_ms: f64,
+    main_bulk_ms: f64,
+) -> f64 {
+    if !has_subs || is_graph_routed_bass_output(chain) {
+        main_bulk_ms
+    } else {
+        sub_bulk_ms
+    }
+}
+
+/// Reinstall FIR latency alignment orphaned by stage removal.
+///
+/// Reverting one branch's FIR while its crossover partners keep theirs
+/// splits the crossover sum by the design delay at every downstream
+/// strength: the reverted branch plays ~42 ms off its partners, failing
+/// body regression and group-delay gates no strength can pass. Delays
+/// commute with every linear stage, so the reverted branch rejoins the
+/// surviving partner bulk exactly: mains rejoin their subs' bulk, a
+/// reverted sub rejoins its mains'. Branches that never carried
+/// alignment, kept theirs, or already hold converted bulk need nothing;
+/// a fully reverted graph (no surviving bulk) stays at zero latency.
+/// Installs track the live gap across gates (partners shed bulk after
+/// the install); unmarked delays never count as bulk on either side.
+fn reinstall_orphaned_latency_alignment(
+    result: &mut RoomOptimizationResult,
+    captured: &std::collections::HashMap<String, CapturedBranchLatency>,
+) {
+    let has_subs = result
+        .channels
+        .values()
+        .any(is_graph_routed_bass_output);
+    let sub_bulk_ms = result
+        .channels
+        .values()
+        .filter(|chain| is_graph_routed_bass_output(chain))
+        .map(real_branch_bulk_ms)
+        .fold(0.0, f64::max);
+    let main_bulk_ms = result
+        .channels
+        .values()
+        .filter(|chain| !is_graph_routed_bass_output(chain))
+        .map(real_branch_bulk_ms)
+        .fold(0.0, f64::max);
+    // Pass 1: reconcile installs from earlier gates against the live bulk.
+    // Partner bulk evolves after the install (later strips, rebuilds, trial
+    // states), and this gate's `captured` only covers fresh reverts, so a
+    // write-once install goes stale. Track the live gap instead.
+    let targets: std::collections::HashMap<String, f64> = result
+        .channels
+        .iter()
+        .map(|(name, chain)| {
+            let target = partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
+            (name.clone(), target)
+        })
+        .collect();
+    for (name, chain) in result.channels.iter_mut() {
+        let target_bulk_ms = targets.get(name).copied().unwrap_or(0.0);
+        if !target_bulk_ms.is_finite() {
+            continue;
+        }
+        let gap_ms = target_bulk_ms - real_branch_bulk_ms(chain);
+        let own_index = chain.plugins.iter().position(|plugin| {
+            is_latency_alignment_plugin(plugin)
+                && !plugin.parameters.as_object().is_some_and(|object| {
+                    object.contains_key(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                })
+        });
+        let Some(index) = own_index else {
+            continue;
+        };
+        if gap_ms > 0.1 {
+            chain.plugins[index].parameters["delay_ms"] = serde_json::json!(gap_ms);
+            if let Some(masking) = chain.fir_temporal_masking.as_mut()
+                && masking.masking_profile == "realigned-bulk-delay"
+            {
+                masking.main_time_ms = target_bulk_ms;
+            }
+        } else {
+            chain.plugins.remove(index);
+            if chain
+                .fir_temporal_masking
+                .as_ref()
+                .is_some_and(|masking| masking.masking_profile == "realigned-bulk-delay")
+            {
+                chain.fir_temporal_masking = None;
+            }
+            release_masking_without_fir_bulk(chain);
+        }
+    }
+    for (name, captured) in captured {
+        if captured.alignment.is_empty() {
+            continue;
+        }
+        let Some(chain) = result.channels.get_mut(name) else {
+            continue;
+        };
+        if chain
+            .plugins
+            .iter()
+            .any(is_latency_alignment_plugin)
+        {
+            continue;
+        }
+        let target_bulk_ms =
+            partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
+        if !target_bulk_ms.is_finite() {
+            continue;
+        }
+        // Pass 2: install for channels reverted by this gate. The gap is
+        // against real bulk (Pass 1 already reconciled older installs,
+        // and unmarked delays never count toward either side).
+        let gap_ms = target_bulk_ms - real_branch_bulk_ms(chain);
+        // Millisecond-scale gaps are real splits; microsecond dust from
+        // rounded plugin values must not churn the graph.
+        if gap_ms <= 0.1 {
+            continue;
+        }
+        let mut plugin = captured.alignment[0].clone();
+        plugin.parameters["delay_ms"] = serde_json::json!(gap_ms);
+        // Standalone bulk, not a crossover-block member: drop the hybrid
+        // stage marker so block-atomicity validation ignores it. The
+        // `hybrid_fir_latency_alignment` label still classifies it as FIR
+        // correction, so baseline/fallback replays strip it with the FIR.
+        if let Some(object) = plugin.parameters.as_object_mut() {
+            object.remove(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER);
+        }
+        chain.plugins.push(plugin);
+        if chain.fir_temporal_masking.is_none() {
+            // The reinstalled delay is pure bulk: no precursor by
+            // construction, with the surviving bulk as its timing.
+            chain.fir_temporal_masking = Some(captured.masking.clone().map_or(
+                roomeq_model::TemporalIrMaskingMetrics {
+                    main_index: 0,
+                    main_time_ms: target_bulk_ms,
+                    pre_ringing_peak_db: -300.0,
+                    post_ringing_peak_db: -300.0,
+                    pre_ringing_audible_db: -300.0,
+                    post_ringing_audible_db: -300.0,
+                    pre_energy_ratio_db: -300.0,
+                    penalty: 0.0,
+                    taps: 0,
+                    sample_rate_hz: 48_000.0,
+                    masking_profile: "realigned-bulk-delay".to_string(),
+                    pre_mask_ms: 2.0,
+                    post_mask_ms: 20.0,
+                    audibility_threshold_db: -20.0,
+                },
+                |mut masking| {
+                    masking.main_time_ms = target_bulk_ms;
+                    masking
+                },
+            ));
+        }
+    }
 }
 
 fn remove_correction_stage(chain: &mut ChannelDspChain, stage: CorrectionStage) {
@@ -3597,6 +3948,636 @@ mod tests {
 
         assert_eq!(chain.plugins.len(), 1);
         assert_eq!(chain.plugins[0].parameters["label"], "post_eq");
+    }
+
+    #[test]
+    fn hybrid_revert_releases_fir_coefficients_and_temporal_masking() {
+        let mut result = single_channel_room_result("left");
+        let channel = result.channel_results.get_mut("left").unwrap();
+        channel.pre_score = 1.0;
+        channel.post_score = 2.0;
+        for (index, spl) in channel.final_curve.spl.iter_mut().enumerate() {
+            if index % 2 == 0 {
+                *spl += 12.0;
+            }
+        }
+        channel.fir_coeffs = Some(vec![0.5; 64]);
+        // A readable band-FIR sidecar keeps the gate on its selective
+        // revert path (a missing IR would fall back to all-stage removal).
+        let dir = tempfile::tempdir().unwrap();
+        let mut taps = vec![0.0; 64];
+        taps[0] = 1.0;
+        math_audio_iir_fir::save_fir_to_wav(&taps, 48_000, &dir.path().join("left_band_fir.wav"))
+            .unwrap();
+        let mixed_config = roomeq_model::MixedModeConfig {
+            crossover_freq: 300.0,
+            crossover_type: "LR24".to_string(),
+            fir_band: "low".to_string(),
+        };
+        let filter = math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            1_000.0,
+            48_000.0,
+            0.7,
+            -2.0,
+        );
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.plugins = roomeq_engine::output::build_mixed_mode_crossover_chain(
+            "left",
+            &mixed_config,
+            &[filter],
+            "left_band_fir.wav",
+            true,
+            42.0,
+            None,
+        )
+        .plugins;
+        chain.fir_temporal_masking = Some(roomeq_model::TemporalIrMaskingMetrics {
+            main_index: 2048,
+            main_time_ms: 42.666666666666664,
+            pre_ringing_peak_db: -30.0,
+            post_ringing_peak_db: -30.0,
+            pre_ringing_audible_db: -32.0,
+            post_ringing_audible_db: -40.0,
+            pre_energy_ratio_db: -31.0,
+            penalty: 0.0,
+            taps: 4096,
+            sample_rate_hz: 48_000.0,
+            masking_profile: "mixed".to_string(),
+            pre_mask_ms: 2.0,
+            post_mask_ms: 20.0,
+            audibility_threshold_db: -20.0,
+        });
+
+        apply_final_correction_safety_gate(
+            &mut result,
+            48_000.0,
+            3,
+            (20.0, 20_000.0),
+            dir.path(),
+            roomeq_model::ProcessingMode::Hybrid,
+            None,
+        );
+
+        // The hybrid stage carries the FIR: a revert must not orphan the
+        // coefficients (unresolvable FIR evidence downstream) or the
+        // masking (a bulk-delay prior for a branch with no delay left).
+        assert!(result.channel_results["left"].fir_coeffs.is_none());
+        assert!(
+            result.channels["left"].fir_temporal_masking.is_none(),
+            "hybrid revert must release temporal masking"
+        );
+        assert!(
+            !result.channels["left"]
+                .plugins
+                .iter()
+                .any(|plugin| plugin.plugin_type == "convolution"),
+            "hybrid revert must remove the band FIR"
+        );
+    }
+
+    #[test]
+    fn realignment_rejoins_reverted_branch_to_surviving_bulk() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            // Marked original: a crossover-block member with real bulk.
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        // Mixed-mode pairing: partial-band FIR (no bulk of its own) plus
+        // a 42.67 ms latency-alignment plugin.
+        let mut result = single_channel_room_result("L");
+        for name in ["L", "R"] {
+            let chain = if name == "L" {
+                result.channels.get_mut("L").unwrap()
+            } else {
+                let template = result.channels["L"].clone();
+                result.channels.insert("R".to_string(), template);
+                result.channels.get_mut("R").unwrap()
+            };
+            chain.plugins = vec![conv(0.0), alignment(42.67)];
+        }
+        let captured = super::capture_branch_latency(&result);
+
+        // A branch whose revert preserves bulk within rounding rejoins
+        // silently: no second alignment copy on top of converted bulk.
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins = vec![conv(42.666666666666664)];
+        super::remove_correction_stage(chain, super::CorrectionStage::Fir);
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(
+            !result.channels["R"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "converted bulk must not gain a second alignment copy"
+        );
+
+        // A hybrid revert drops bulk delay entirely: the branch rejoins
+        // the surviving 42.67 ms exactly once, with matching timing.
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["R"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| {
+                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
+            })
+            .collect();
+        assert_eq!(installed.len(), 1);
+        assert!((installed[0] - 42.67).abs() < 1e-9);
+        assert_eq!(
+            result.channels["R"]
+                .fir_temporal_masking
+                .as_ref()
+                .unwrap()
+                .main_time_ms,
+            42.67
+        );
+        // Standalone bulk: no hybrid block marker (block validation must
+        // ignore it), still FIR correction by label (stripped with FIR).
+        let reinstalled = result.channels["R"]
+            .plugins
+            .iter()
+            .find(|plugin| super::is_latency_alignment_plugin(plugin))
+            .unwrap();
+        assert!(
+            reinstalled
+                .parameters
+                .get(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                .is_none()
+        );
+        assert_eq!(
+            super::correction_stage(reinstalled),
+            Some(super::CorrectionStage::Fir)
+        );
+
+        // A fully reverted graph (no surviving bulk) stays at zero latency.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(result.channels["R"].plugins.is_empty());
+
+        // Captured masking is restored (not synthesized) with its timing
+        // retargeted to the surviving bulk.
+        fn masking(main_time_ms: f64) -> roomeq_model::TemporalIrMaskingMetrics {
+            roomeq_model::TemporalIrMaskingMetrics {
+                main_index: 2048,
+                main_time_ms,
+                pre_ringing_peak_db: -30.0,
+                post_ringing_peak_db: -30.0,
+                pre_ringing_audible_db: -32.0,
+                post_ringing_audible_db: -40.0,
+                pre_energy_ratio_db: -31.0,
+                penalty: 0.0,
+                taps: 4096,
+                sample_rate_hz: 48_000.0,
+                masking_profile: "mixed".to_string(),
+                pre_mask_ms: 2.0,
+                post_mask_ms: 20.0,
+                audibility_threshold_db: -20.0,
+            }
+        }
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        chain.fir_temporal_masking = Some(masking(40.0));
+        let captured = super::capture_branch_latency(&result);
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let restored = result.channels["R"].fir_temporal_masking.as_ref().unwrap();
+        assert_eq!(restored.main_time_ms, 42.67);
+        assert_eq!(restored.masking_profile, "mixed");
+    }
+
+    #[test]
+    fn realignment_targets_crossover_partner_bulk() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            // Marked original: a crossover-block member with real bulk.
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins =
+            vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // A reverted main rejoins its sub's bulk, not the global max.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["L"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| {
+                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
+            })
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+
+        // A bulk-less sub is already aligned with the reverted main:
+        // nothing to reinstall (and no global-max invention).
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(result.channels["L"].plugins.is_empty());
+
+        // A reverted sub rejoins its mains' bulk in the other direction.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["Sub1"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| {
+                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
+            })
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+    }
+
+    #[test]
+    fn realignment_reconciles_stale_install_when_partner_bulk_drops() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins =
+            vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // Gate 1: the main reverts while the sub keeps its FIR.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["L"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+
+        // Gate 2: the sub loses its FIR after the install. The stale
+        // install must go (with its synthesized masking), and the sub
+        // must not install against the main's own install (ghost).
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(
+            !result.channels["L"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "stale install must track the live gap down to zero"
+        );
+        assert!(
+            result.channels["L"].fir_temporal_masking.is_none(),
+            "synthesized masking must go with its stale delay"
+        );
+        assert!(
+            !result.channels["Sub1"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "a partner install is not real bulk: no ghost target"
+        );
+    }
+
+    #[test]
+    fn realignment_updates_install_when_gap_changes() {
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        // No-sub pair: two mains align to the surviving global bulk.
+        let mut result = single_channel_room_result("L");
+        let template = result.channels["L"].clone();
+        result.channels.insert("R".to_string(), template);
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(42.67)];
+        result.channels.get_mut("R").unwrap().plugins = vec![conv(42.67)];
+        let captured = super::capture_branch_latency(&result);
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        // A captured alignment template is required for the install.
+        let mut captured = captured;
+        captured.get_mut("R").unwrap().alignment = vec![roomeq_model::PluginConfigWrapper {
+            plugin_type: "delay".to_string(),
+            parameters: serde_json::json!({
+                "delay_ms": 42.67,
+                "label": "hybrid_fir_latency_alignment",
+                "room_eq_correction_stage": "hybrid_crossover",
+            }),
+        }];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+
+        // The survivor's bulk halves: the install tracks it in place.
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(21.33)];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["R"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed.len(), 1);
+        assert!((installed[0] - 21.33).abs() < 1e-9);
+        assert!(
+            (result.channels["R"]
+                .fir_temporal_masking
+                .as_ref()
+                .unwrap()
+                .main_time_ms
+                - 21.33)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn realignment_leaves_no_mutual_ghost_lock() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins =
+            vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // Both branches revert; the main carries an install from an
+        // earlier gate. Neither side has real bulk, so both must end
+        // with no alignment (no mutual ghost-lock).
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![roomeq_model::PluginConfigWrapper {
+            plugin_type: "delay".to_string(),
+            parameters: serde_json::json!({
+                "delay_ms": 42.67,
+                "label": "hybrid_fir_latency_alignment",
+            }),
+        }];
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        for name in ["L", "Sub1"] {
+            assert!(
+                !result.channels[name]
+                    .plugins
+                    .iter()
+                    .any(super::is_latency_alignment_plugin),
+                "{name} must not hold alignment without real partner bulk"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_bulk_maxes_parallel_bands_and_sums_serial_stages() {
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn bulk_delay(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                }),
+            }
+        }
+        fn plain(plugin_type: &str) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: plugin_type.to_string(),
+                parameters: serde_json::json!({}),
+            }
+        }
+        let mut result = single_channel_room_result("left");
+        let chain = result.channels.get_mut("left").unwrap();
+        // Crossover bands run in parallel: the slower band wins, not the sum.
+        chain.plugins = vec![
+            plain("band_split"),
+            conv(42.666666666666664),
+            bulk_delay(42.67),
+            plain("band_merge"),
+        ];
+        assert!((super::branch_fir_bulk_ms(chain) - 42.67).abs() < 1e-9);
+        // Serial convolutions without a split add.
+        chain.plugins = vec![conv(10.0), conv(20.0)];
+        assert!((super::branch_fir_bulk_ms(chain) - 30.0).abs() < 1e-9);
+        // Drivers are parallel outputs: the slowest path wins.
+        chain.plugins = vec![conv(10.0)];
+        chain.drivers = Some(vec![roomeq_model::DriverDspChain {
+            measured_acoustics: None,
+            name: "Sub1".into(),
+            index: 0,
+            initial_curve: None,
+            measured_band_hz: None,
+            plugins: vec![conv(50.0)],
+        }]);
+        assert!((super::branch_fir_bulk_ms(chain) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn masking_survives_only_with_fir_bulk() {
+        fn masking() -> roomeq_model::TemporalIrMaskingMetrics {
+            roomeq_model::TemporalIrMaskingMetrics {
+                main_index: 2048,
+                main_time_ms: 42.666666666666664,
+                pre_ringing_peak_db: -30.0,
+                post_ringing_peak_db: -30.0,
+                pre_ringing_audible_db: -32.0,
+                post_ringing_audible_db: -40.0,
+                pre_energy_ratio_db: -31.0,
+                penalty: 0.0,
+                taps: 4096,
+                sample_rate_hz: 48_000.0,
+                masking_profile: "mixed".to_string(),
+                pre_mask_ms: 2.0,
+                post_mask_ms: 20.0,
+                audibility_threshold_db: -20.0,
+            }
+        }
+        fn plugin(plugin_type: &str, label: Option<&str>) -> roomeq_model::PluginConfigWrapper {
+            let mut parameters = serde_json::json!({});
+            if let Some(label) = label {
+                parameters["label"] = serde_json::json!(label);
+            }
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: plugin_type.to_string(),
+                parameters,
+            }
+        }
+        // A surviving convolution keeps its masking prior.
+        let mut result = single_channel_room_result("left");
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.plugins = vec![plugin("convolution", None)];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_some());
+        // So does a converted FIR bulk-delay plugin.
+        chain.plugins = vec![plugin("delay", Some("fir_design_delay"))];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_some());
+        // A bare EQ chain (hybrid revert drops bulk delay entirely)
+        // releases it.
+        chain.plugins = vec![plugin("eq", None)];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_none());
+        // An unrelated structural delay is not FIR bulk.
+        chain.plugins = vec![plugin("delay", Some("time_alignment"))];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_none());
     }
 
     #[test]

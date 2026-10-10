@@ -314,6 +314,35 @@ fn correction(plugin: &PluginConfigWrapper) -> bool {
     super::room_optimization_result::is_baseline_correction(plugin)
 }
 
+/// Per-input temporal evidence for one replayed scorecard, mirroring runtime
+/// acceptance. The induced-GD metric must unwrap post phase with the bulk
+/// FIR design delay actually present on this branch; a zero prior breaks
+/// unwrapping on sparse grids and reads ~10 ms of spurious dispersion on a
+/// 42.67 ms-delay graph at every correction strength. Inputs without
+/// optimizer evidence (e.g. unoptimized LFE) keep the zero prior.
+fn replay_scorecard_temporal(
+    result: &RoomOptimizationResult,
+    input: &str,
+    pre: &roomeq_model::Curve,
+    post: &roomeq_model::Curve,
+    sample_rate: f64,
+    processing_mode: roomeq_model::ProcessingMode,
+) -> roomeq_model::TemporalQualityEvidence {
+    if !result.channel_results.contains_key(input) {
+        return roomeq_model::TemporalQualityEvidence::default();
+    }
+    let name = input.to_string();
+    let temporal = super::room_optimization_result::runtime_temporal_quality_evidence(
+        result,
+        std::slice::from_ref(&name),
+        std::slice::from_ref(pre),
+        std::slice::from_ref(post),
+        sample_rate,
+        processing_mode,
+    );
+    temporal
+}
+
 /// Materialize the same structural baseline used by physical-seat replay.
 /// Visit every output and driver, including outputs with no optimizer result.
 pub(super) fn restore_structural_baseline(result: &mut RoomOptimizationResult) {
@@ -1518,7 +1547,14 @@ fn physical_main_quality(
             schroeder_hz,
             normalize_level: true,
         },
-        Default::default(),
+        replay_scorecard_temporal(
+            result,
+            input,
+            &pre.curve,
+            &post.curve,
+            context.fs,
+            context.config.optimizer.processing_mode.clone(),
+        ),
         permitted_gain_db,
     )
     .map_err(invalid)?;
@@ -2006,7 +2042,14 @@ fn validate_final_seats_body(
                             schroeder_hz,
                             normalize_level: true,
                         },
-                        Default::default(),
+                        replay_scorecard_temporal(
+                            result,
+                            input,
+                            &pre,
+                            &post,
+                            fs,
+                            config.optimizer.processing_mode.clone(),
+                        ),
                         config
                             .optimizer
                             .permitted_output_gain_db
@@ -2481,6 +2524,58 @@ mod tests {
         assert_eq!(gains, vec![-5.0]);
         // Trial itself untouched.
         assert_eq!(trial.channels["L"].plugins.len(), 2);
+    }
+
+    #[test]
+    fn replay_scorecard_temporal_carries_branch_fir_latency_prior() {
+        let mut result = crate::test_fixtures::single_channel_room_result("L");
+        result
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .fir_temporal_masking = Some(roomeq_model::TemporalIrMaskingMetrics {
+            main_index: 2048,
+            main_time_ms: 42.666666666666664,
+            pre_ringing_peak_db: -30.0,
+            post_ringing_peak_db: -30.0,
+            pre_ringing_audible_db: -32.0,
+            post_ringing_audible_db: -40.0,
+            pre_energy_ratio_db: -31.0,
+            penalty: 0.0,
+            taps: 4096,
+            sample_rate_hz: 48_000.0,
+            masking_profile: "mixed".to_string(),
+            pre_mask_ms: 2.0,
+            post_mask_ms: 20.0,
+            audibility_threshold_db: -20.0,
+        });
+        result.channel_results.get_mut("L").unwrap().fir_coeffs = Some(vec![0.0; 4096]);
+        let curve = crate::test_fixtures::flat_curve();
+        let temporal = super::replay_scorecard_temporal(
+            &result,
+            "L",
+            &curve,
+            &curve,
+            48_000.0,
+            roomeq_model::ProcessingMode::Hybrid,
+        );
+        // The induced-GD unwrap prior must see the realized 4096-tap delay,
+        // not a zero prior that reads ~10 ms of spurious dispersion.
+        assert_eq!(temporal.latency_ms, Some(42.666666666666664));
+        assert!(temporal.temporal_evidence_available);
+        // Inputs without optimizer evidence keep the zero prior.
+        let missing = super::replay_scorecard_temporal(
+            &result,
+            "Sub1",
+            &curve,
+            &curve,
+            48_000.0,
+            roomeq_model::ProcessingMode::Hybrid,
+        );
+        assert_eq!(
+            missing,
+            roomeq_model::TemporalQualityEvidence::default()
+        );
     }
 
     #[test]

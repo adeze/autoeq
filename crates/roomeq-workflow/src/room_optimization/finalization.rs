@@ -3720,6 +3720,11 @@ mod tests {
         );
         assert!(record.normalize_level);
 
+        // The temporal evidence is a scoring input (the bulk-delay unwrap
+        // prior); exact reproduction requires the captured input, not a
+        // default.
+        let temporal: roomeq_model::TemporalQualityEvidence =
+            serde_json::from_value(record.scorecard["temporal"].clone()).unwrap();
         let recomputed = roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
             std::slice::from_ref(&record.baseline_curve),
             std::slice::from_ref(&record.delivered_curve),
@@ -3732,7 +3737,7 @@ mod tests {
                 schroeder_hz: record.schroeder_hz,
                 normalize_level: record.normalize_level,
             },
-            Default::default(),
+            temporal,
             record.permitted_gain_db,
         )
         .unwrap();

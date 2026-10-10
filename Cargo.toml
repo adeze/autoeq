@@ -56,7 +56,7 @@ members = [
 exclude = ["crates/autoeq-gpui-examples"]
 
 [workspace.package]
-version = "0.5.76"
+version = "0.5.77"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -85,7 +85,7 @@ roomeq-qa = { path = "crates/roomeq-qa", version = "0.5" }
 roomeq-cli = { path = "crates/roomeq-cli", version = "0.5.9" }
 roomeq-analysis = { path = "crates/roomeq-analysis", version = "0.5" }
 roomeq-synthetic = { path = "crates/roomeq-synthetic", version = "0.5" }
-roomeq-workflow = { path = "crates/roomeq-workflow", version = "0.5.34" }
+roomeq-workflow = { path = "crates/roomeq-workflow", version = "0.5.35" }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.23"
