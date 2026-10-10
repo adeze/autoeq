@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{Curve, MeasurementOrigin, MeasurementRecord};
 use ndarray::Array1;
@@ -117,6 +117,11 @@ pub fn read_curve_from_csv(path: &PathBuf) -> Result<Curve, Box<dyn Error>> {
         }
     };
     sort_curve_by_frequency(&mut curve)?;
+    // Capture coherence sidecar: join only when no explicit coherence
+    // column was parsed, so GD-Opt extended CSVs keep their own values.
+    if curve.coherence.is_none() {
+        curve.coherence = load_coherence_sidecar(path, &curve.freq)?;
+    }
     // GD-1d: populate min-phase / excess-phase cache at the disk-load boundary.
     // No-op when phase is absent or arrays disagree in length.
     curve.decompose_into_cache();
@@ -150,6 +155,125 @@ fn sort_curve_by_frequency(curve: &mut crate::Curve) -> Result<(), Box<dyn Error
         curve.noise_floor_db = (values.len() == order.len()).then(|| reorder(&values));
     }
     Ok(())
+}
+
+/// Sibling coherence sidecar for a SOTF Capture response file, if the name
+/// follows the capture convention.
+///
+/// Capture emits `take-XXX-phase.csv` (`frequency_hz,spl_db,phase_deg`) and
+/// `take-XXX-response.csv` (`frequency_hz,spl_db`) next to
+/// `take-XXX-coherence.csv` (`frequency_hz,coherence`, Welch γ² on its own
+/// ~1 Hz grid). Only these suffixed stems trigger the lookup; every other
+/// filename yields `None` so target curves and third-party CSVs never
+/// change behavior.
+fn coherence_sidecar_path(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".csv")?;
+    let base = stem
+        .strip_suffix("-phase")
+        .or_else(|| stem.strip_suffix("-response"))?;
+    let mut sidecar = path.to_path_buf();
+    sidecar.set_file_name(format!("{base}-coherence.csv"));
+    Some(sidecar)
+}
+
+/// Join an optional coherence sidecar onto response bins.
+///
+/// Returns `None` when no sidecar applies (non-capture filename or file
+/// absent), keeping pre-sidecar captures working with `coherence: None`.
+/// A present sidecar is interpolated linearly onto `freq` — never zipped
+/// by index, the sidecar lives on its own Welch grid — and response bins
+/// outside sidecar coverage get γ² = 0. Length match holds by
+/// construction (`map` over `freq`).
+///
+/// # Errors
+/// Rejects present-but-malformed sidecars; a corrupt sidecar fails the
+/// load rather than silently degrading GD-Opt weighting.
+fn load_coherence_sidecar(
+    path: &Path,
+    freq: &Array1<f64>,
+) -> Result<Option<Array1<f64>>, Box<dyn Error>> {
+    let Some(sidecar) = coherence_sidecar_path(path) else {
+        return Ok(None);
+    };
+    if !sidecar.is_file() {
+        return Ok(None);
+    }
+    let (grid, gamma) = parse_coherence_sidecar(&sidecar)?;
+    let joined: Vec<f64> = freq
+        .iter()
+        .map(|&frequency| interpolate_coherence(&grid, &gamma, frequency))
+        .collect();
+    Ok(Some(Array1::from(joined)))
+}
+
+/// Parse a `frequency_hz,coherence` sidecar into ascending grid/gamma vectors.
+///
+/// # Errors
+/// Rejects header mismatches, non-finite or ragged rows, γ² outside
+/// [0, 1], non-ascending frequencies, and fewer than two rows.
+fn parse_coherence_sidecar(path: &Path) -> Result<(Vec<f64>, Vec<f64>), Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut lines = BufReader::new(file).lines();
+    let header = lines.next().transpose()?.unwrap_or_default();
+    if header.trim() != "frequency_hz,coherence" {
+        return Err("coherence sidecar must start with frequency_hz,coherence".into());
+    }
+    let mut grid = Vec::new();
+    let mut gamma = Vec::new();
+    for line in lines {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut cells = line.split(',');
+        let frequency: f64 = cells
+            .next()
+            .ok_or("coherence sidecar row needs two columns")?
+            .trim()
+            .parse()?;
+        let value: f64 = cells
+            .next()
+            .ok_or("coherence sidecar row needs two columns")?
+            .trim()
+            .parse()?;
+        if cells.next().is_some() {
+            return Err("coherence sidecar row needs two columns".into());
+        }
+        if !frequency.is_finite() || !value.is_finite() {
+            return Err("coherence sidecar values must be finite".into());
+        }
+        if !(0.0..=1.0).contains(&value) {
+            return Err("coherence sidecar gamma must be within [0, 1]".into());
+        }
+        if grid.last().is_some_and(|&last| frequency <= last) {
+            return Err("coherence sidecar frequencies must ascend".into());
+        }
+        grid.push(frequency);
+        gamma.push(value);
+    }
+    if grid.len() < 2 {
+        return Err("coherence sidecar needs at least two rows".into());
+    }
+    Ok((grid, gamma))
+}
+
+/// Linear γ² interpolation; out-of-coverage frequencies score 0.
+fn interpolate_coherence(grid: &[f64], gamma: &[f64], frequency: f64) -> f64 {
+    let last = grid.len() - 1;
+    if !frequency.is_finite() || frequency < grid[0] || frequency > grid[last] {
+        return 0.0;
+    }
+    if frequency == grid[last] {
+        return gamma[last];
+    }
+    // Invariant: frequency < grid[last], so the partition point is a valid
+    // upper index with a lower neighbor.
+    let upper = grid.partition_point(|&edge| edge <= frequency);
+    let lower = upper - 1;
+    let span = grid[upper] - grid[lower];
+    let weight = (frequency - grid[lower]) / span;
+    gamma[lower] + weight * (gamma[upper] - gamma[lower])
 }
 
 /// Read a CSV into a tracked measurement record. The curve-only
@@ -363,13 +487,120 @@ pub fn load_driver_measurement(
 mod gd_v2_tests {
     use super::*;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, tempdir};
 
     fn write_tmp(csv: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(csv.as_bytes()).unwrap();
         f.flush().unwrap();
         f
+    }
+
+    fn write_named(dir: &std::path::Path, name: &str, csv: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, csv).unwrap();
+        path
+    }
+
+    #[test]
+    fn coherence_sidecar_joins_onto_response_bins() {
+        let dir = tempdir().unwrap();
+        // Response grid deliberately offset from the ~1 Hz sidecar grid.
+        let response = write_named(
+            dir.path(),
+            "take-004-phase.csv",
+            "frequency_hz,spl_db,phase_deg\n10,0.0,0\n15,1.0,5\n30,2.0,10\n",
+        );
+        write_named(
+            dir.path(),
+            "take-004-coherence.csv",
+            "frequency_hz,coherence\n10,1.0\n20,0.5\n30,0.0\n",
+        );
+        let curve = read_curve_from_csv(&response).unwrap();
+        let coherence = curve.coherence.expect("sidecar joined");
+        assert_eq!(coherence.len(), 3);
+        assert!((coherence[0] - 1.0).abs() < 1e-12);
+        assert!((coherence[1] - 0.75).abs() < 1e-12);
+        assert!((coherence[2] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn coherence_sidecar_scores_out_of_coverage_bins_zero() {
+        let dir = tempdir().unwrap();
+        let response = write_named(
+            dir.path(),
+            "take-004-response.csv",
+            "frequency_hz,spl_db\n5,-1.0\n25,3.0\n",
+        );
+        write_named(
+            dir.path(),
+            "take-004-coherence.csv",
+            "frequency_hz,coherence\n10,1.0\n20,0.5\n",
+        );
+        let curve = read_curve_from_csv(&response).unwrap();
+        let coherence = curve.coherence.expect("sidecar joined");
+        assert_eq!(coherence.len(), 2);
+        assert!((coherence[0] - 0.0).abs() < 1e-12);
+        assert!((coherence[1] - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn missing_coherence_sidecar_keeps_none() {
+        let dir = tempdir().unwrap();
+        let response = write_named(
+            dir.path(),
+            "take-004-phase.csv",
+            "frequency_hz,spl_db,phase_deg\n10,0.0,0\n20,1.0,5\n",
+        );
+        let curve = read_curve_from_csv(&response).unwrap();
+        assert!(curve.coherence.is_none());
+    }
+
+    #[test]
+    fn corrupt_coherence_sidecar_fails_closed() {
+        let dir = tempdir().unwrap();
+        let response = write_named(
+            dir.path(),
+            "take-004-phase.csv",
+            "frequency_hz,spl_db,phase_deg\n10,0.0,0\n20,1.0,5\n",
+        );
+        write_named(
+            dir.path(),
+            "take-004-coherence.csv",
+            "frequency_hz,coherence\n10,1.5\n20,0.5\n",
+        );
+        assert!(read_curve_from_csv(&response).is_err());
+    }
+
+    #[test]
+    fn explicit_coherence_column_is_not_overridden_by_sidecar() {
+        let dir = tempdir().unwrap();
+        let response = write_named(
+            dir.path(),
+            "take-004-phase.csv",
+            "frequency_hz,spl_db,phase_deg,coherence\n10,0.0,0,0.9\n20,1.0,5,0.8\n",
+        );
+        write_named(
+            dir.path(),
+            "take-004-coherence.csv",
+            "frequency_hz,coherence\n10,0.1\n20,0.2\n",
+        );
+        let curve = read_curve_from_csv(&response).unwrap();
+        let coherence = curve.coherence.expect("column coherence kept");
+        assert!((coherence[0] - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn non_capture_filenames_ignore_sidecars() {
+        let dir = tempdir().unwrap();
+        let response = write_named(dir.path(), "target.csv", "frequency,spl\n10,0.0\n20,1.0\n");
+        write_named(
+            dir.path(),
+            "target-coherence.csv",
+            "frequency_hz,coherence\n10,0.1\n20,0.2\n",
+        );
+        let curve = read_curve_from_csv(&response).unwrap();
+        assert!(curve.coherence.is_none());
     }
 
     #[test]

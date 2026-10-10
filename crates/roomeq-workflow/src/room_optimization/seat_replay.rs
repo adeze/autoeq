@@ -332,15 +332,14 @@ fn replay_scorecard_temporal(
         return roomeq_model::TemporalQualityEvidence::default();
     }
     let name = input.to_string();
-    let temporal = super::room_optimization_result::runtime_temporal_quality_evidence(
+    super::room_optimization_result::runtime_temporal_quality_evidence(
         result,
         std::slice::from_ref(&name),
         std::slice::from_ref(pre),
         std::slice::from_ref(post),
         sample_rate,
         processing_mode,
-    );
-    temporal
+    )
 }
 
 /// Materialize the same structural baseline used by physical-seat replay.

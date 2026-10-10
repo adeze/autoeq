@@ -38,6 +38,12 @@ pub enum CaptureArtifactRole {
     ComplexResponse,
     /// Exact microphone calibration snapshot applied during analysis.
     Calibration,
+    /// Native-rate room impulse response (`take-XXX-ir.csv`).
+    ImpulseResponse,
+    /// CTC ears/loopback audio or merged CTC bundle.
+    CtcMeasurement,
+    /// Welch magnitude-squared coherence sidecar (`take-XXX-coherence.csv`).
+    Coherence,
     /// Stimulus, analysis, or session metadata retained for review.
     SupportingEvidence,
 }
@@ -574,6 +580,40 @@ mod tests {
             }
             assert!(handoff.validate().is_err(), "mutation {mutation}");
         }
+    }
+
+    #[test]
+    fn ir_ctc_and_coherence_roles_round_trip_with_proposed_names() {
+        let roles = [
+            (CaptureArtifactRole::ImpulseResponse, "impulse_response"),
+            (CaptureArtifactRole::CtcMeasurement, "ctc_measurement"),
+            (CaptureArtifactRole::Coherence, "coherence"),
+        ];
+        for (role, name) in roles {
+            let encoded = serde_json::to_string(&role).unwrap();
+            assert_eq!(encoded, format!("\"{name}\""));
+            let decoded: CaptureArtifactRole = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, role);
+        }
+        // Legacy inventories without the new roles still parse unchanged.
+        let mut handoff = fixture();
+        let encoded = serde_json::to_string(&handoff).unwrap();
+        let decoded: CaptureHandoff = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.artifacts.len(), handoff.artifacts.len());
+        // Extra typed inventory entries pass validation unreferenced.
+        handoff.artifacts.push(CaptureArtifactIdentity {
+            file: "take-004-ir.csv".into(),
+            role: CaptureArtifactRole::ImpulseResponse,
+            bytes: 1,
+            sha256: "c".repeat(64),
+        });
+        handoff.artifacts.push(CaptureArtifactIdentity {
+            file: "take-004-coherence.csv".into(),
+            role: CaptureArtifactRole::Coherence,
+            bytes: 1,
+            sha256: "d".repeat(64),
+        });
+        handoff.validate().unwrap();
     }
 }
 

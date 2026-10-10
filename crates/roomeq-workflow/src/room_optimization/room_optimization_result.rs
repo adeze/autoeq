@@ -4349,18 +4349,6 @@ mod tests {
                 }),
             }
         }
-        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
-            roomeq_model::PluginConfigWrapper {
-                plugin_type: "crossover".to_string(),
-                parameters: serde_json::json!({
-                    "type": "LR24",
-                    "frequency": 120.0,
-                    "output": "low",
-                    "room_eq_stage": "route_owned",
-                    "label": "room_eq_route_owned",
-                }),
-            }
-        }
         // No-sub pair: two mains align to the surviving global bulk.
         let mut result = single_channel_room_result("L");
         let template = result.channels["L"].clone();
