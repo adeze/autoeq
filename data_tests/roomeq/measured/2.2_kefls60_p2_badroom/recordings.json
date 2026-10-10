@@ -3,23 +3,27 @@
   "measured_impulse_responses": {
     "L": {
       "path": "measured_ir/L_KEF_LS60_P2__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
     },
     "R": {
       "path": "measured_ir/R_KEF_LS60_P2__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
     },
     "sub_left": {
       "path": "measured_ir/Sub_Left_P2__ir.csv",
       "sample_rate_hz": 48000,
       "output_channel": "Sub1",
-      "driver": "Sub1"
+      "driver": "Sub1",
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
     },
     "sub_right": {
       "path": "measured_ir/Sub_Right_P2__ir.csv",
       "sample_rate_hz": 48000,
       "output_channel": "Sub1",
-      "driver": "Sub2"
+      "driver": "Sub2",
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
     }
   },
   "system": {
@@ -58,11 +62,23 @@
     },
     "sub_left": {
       "path": "left_sub.csv",
-      "name": "Left Sub"
+      "name": "Main listening position",
+      "speaker_name": "Left Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "2.2_kefls60_p2_badroom",
+        "has_measured_spl": true
+      }
     },
     "sub_right": {
       "path": "right_sub.csv",
-      "name": "Right Sub"
+      "name": "Main listening position",
+      "speaker_name": "Right Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "2.2_kefls60_p2_badroom",
+        "has_measured_spl": true
+      }
     }
   },
   "crossovers": {

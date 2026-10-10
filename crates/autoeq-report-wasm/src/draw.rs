@@ -227,10 +227,17 @@ pub fn fmt_num(v: f64) -> String {
 
 /// Min-max decimation to at most `max_pts` points (pixel-column bucketing on x).
 ///
-/// `None` samples are gaps: each contiguous run is decimated independently and
-/// runs are joined with a `NaN`-y sentinel so the stroke breaks at the gap
-/// (callers treat non-finite y as pen-up).
-pub fn decimate(xs: &[f64], ys: &[Option<f64>], max_pts: usize) -> Vec<(f64, f64)> {
+/// `log_x` must match the axis the trace is drawn on: log axes bucket on
+/// `ln(x)` so vertices spread evenly across pixels instead of piling up at
+/// high frequencies. `None` samples are gaps: each contiguous run is
+/// decimated independently and runs are joined with a `NaN`-y sentinel so
+/// the stroke breaks at the gap (callers treat non-finite y as pen-up).
+pub fn decimate(
+    xs: &[f64],
+    ys: &[Option<f64>],
+    max_pts: usize,
+    log_x: bool,
+) -> Vec<(f64, f64)> {
     let n = xs.len().min(ys.len());
     let mut out = Vec::new();
     let mut start = 0usize;
@@ -248,14 +255,20 @@ pub fn decimate(xs: &[f64], ys: &[Option<f64>], max_pts: usize) -> Vec<(f64, f64
         if !out.is_empty() {
             out.push((xs[start], f64::NAN));
         }
-        decimate_run(&xs[start..end], &ys[start..end], max_pts, &mut out);
+        decimate_run(&xs[start..end], &ys[start..end], max_pts, log_x, &mut out);
         start = end;
     }
     out
 }
 
 /// Decimate one gap-free run (`ys` all `Some`) into `out`.
-fn decimate_run(xs: &[f64], ys: &[Option<f64>], max_pts: usize, out: &mut Vec<(f64, f64)>) {
+fn decimate_run(
+    xs: &[f64],
+    ys: &[Option<f64>],
+    max_pts: usize,
+    log_x: bool,
+    out: &mut Vec<(f64, f64)>,
+) {
     let n = xs.len().min(ys.len());
     if n == 0 {
         return;
@@ -268,10 +281,17 @@ fn decimate_run(xs: &[f64], ys: &[Option<f64>], max_pts: usize, out: &mut Vec<(f
         );
         return;
     }
+    // Bucket coordinate: raw x for linear axes, ln(x) for log axes so each
+    // bucket covers an equal pixel span on the drawn axis.
+    let coord = |x: f64| if log_x { x.ln() } else { x };
+    let valid = |x: f64| x.is_finite() && (!log_x || x > 0.0);
+    let first = xs.iter().find(|&&x| valid(x));
+    let last = xs.iter().rfind(|&&x| valid(x));
+    let (Some(&x0), Some(&x1)) = (first, last) else {
+        return;
+    };
     let buckets = max_pts.max(2) / 2;
-    let x0 = xs[0];
-    let x1 = xs[n - 1];
-    let span = (x1 - x0).abs().max(f64::MIN_POSITIVE);
+    let span = (coord(x1) - coord(x0)).abs().max(f64::MIN_POSITIVE);
     let mut b = 0usize;
     let mut bmin = f64::INFINITY;
     let mut bmax = f64::NEG_INFINITY;
@@ -281,10 +301,10 @@ fn decimate_run(xs: &[f64], ys: &[Option<f64>], max_pts: usize, out: &mut Vec<(f
     for i in 0..n {
         let x = xs[i];
         let Some(y) = ys[i] else { continue };
-        if !x.is_finite() || !y.is_finite() {
+        if !valid(x) || !y.is_finite() {
             continue;
         }
-        let bi = (((x - x0).abs() / span) * buckets as f64).floor() as usize;
+        let bi = (((coord(x) - coord(x0)).abs() / span) * buckets as f64).floor() as usize;
         let bi = bi.min(buckets - 1);
         if !started || bi != b {
             if started {
@@ -706,7 +726,7 @@ pub fn draw_figure(ctx: &mut impl Ctx, fig: &Figure, w: f64, h: f64) -> DrawMeta
             continue;
         }
         let color = s.color.clone().unwrap_or_else(|| default_color(i));
-        let pts = decimate(&s.x, &s.y, max_pts);
+        let pts = decimate(&s.x, &s.y, max_pts, log_x);
         ctx.set_stroke(&color);
         ctx.set_line_width(s.width as f64);
         ctx.set_dash(s.dash.pattern());
@@ -1748,7 +1768,7 @@ mod tests {
     fn decimate_caps_long_series() {
         let xs: Vec<f64> = (0..100_000).map(|i| i as f64).collect();
         let ys: Vec<Option<f64>> = (0..100_000).map(|i| Some((i as f64).sin())).collect();
-        let pts = decimate(&xs, &ys, 1000);
+        let pts = decimate(&xs, &ys, 1000, false);
         assert!(pts.len() <= 1000, "got {}", pts.len());
         assert!(!pts.is_empty());
     }
@@ -1757,12 +1777,81 @@ mod tests {
     fn decimate_preserves_gaps() {
         let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let ys = vec![Some(0.0), Some(1.0), None, Some(3.0), Some(4.0)];
-        let pts = decimate(&xs, &ys, 100);
+        let pts = decimate(&xs, &ys, 100, false);
         // Two runs joined by one NaN sentinel: no segment bridges the gap.
         assert_eq!(pts.len(), 5, "got {pts:?}");
         assert!(pts[2].1.is_nan(), "got {pts:?}");
         assert_eq!((pts[0].0, pts[0].1), (0.0, 0.0));
         assert_eq!((pts[4].0, pts[4].1), (4.0, 4.0));
+    }
+
+    fn log_xs(n: usize, lo: f64, hi: f64) -> Vec<f64> {
+        let (l0, l1) = (lo.ln(), hi.ln());
+        (0..n)
+            .map(|i| (l0 + (l1 - l0) * i as f64 / (n - 1) as f64).exp())
+            .collect()
+    }
+
+    #[test]
+    fn decimate_log_spreads_vertices_across_decades() {
+        // Report Before-EQ shape: ~3000 log-spaced points over 20 Hz..20 kHz
+        // decimated to a ~1100 px canvas budget.
+        let xs = log_xs(3081, 20.0, 16019.0);
+        let ys: Vec<Option<f64>> =
+            xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
+        let pts = decimate(&xs, &ys, 2300, true);
+        assert!(pts.len() <= 2300, "got {}", pts.len());
+        let in_band = |lo: f64, hi: f64| {
+            pts.iter()
+                .filter(|&&(x, y)| y.is_finite() && x >= lo && x < hi)
+                .count()
+        };
+        // 1150 buckets over ~3 decades: every decade keeps real resolution.
+        // Linear bucketing would leave 20..200 Hz with ~1% of the vertices.
+        for (lo, hi) in [(20.0, 200.0), (200.0, 2000.0), (2000.0, 20000.0)] {
+            let count = in_band(lo, hi);
+            assert!(
+                count >= pts.len() / 6,
+                "decade {lo}..{hi} starved: {count} of {}",
+                pts.len()
+            );
+        }
+    }
+
+    #[test]
+    fn decimate_linear_buckets_uniformly_in_hertz() {
+        // Same data on a linear axis: equal-Hz buckets, so the bottom
+        // decade legitimately holds fewer vertices than the top one.
+        let xs = log_xs(3081, 20.0, 16019.0);
+        let ys: Vec<Option<f64>> =
+            xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
+        let pts = decimate(&xs, &ys, 2300, false);
+        let in_band = |lo: f64, hi: f64| {
+            pts.iter()
+                .filter(|&&(x, y)| y.is_finite() && x >= lo && x < hi)
+                .count()
+        };
+        assert!(in_band(20.0, 200.0) < in_band(2000.0, 20000.0));
+    }
+
+    #[test]
+    fn decimate_log_skips_nonpositive_x() {
+        let xs = vec![-5.0, 0.0, 20.0, 40.0, 80.0, 160.0];
+        let ys = vec![
+            Some(0.0),
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+            Some(4.0),
+            Some(5.0),
+        ];
+        let pts = decimate(&xs, &ys, 4, true);
+        assert!(!pts.is_empty());
+        for &(x, y) in &pts {
+            if y.is_finite() {
+                assert!(x > 0.0, "got {pts:?}");
+            }
+        }
     }
 
     #[test]

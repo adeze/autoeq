@@ -7,10 +7,10 @@ export const render_section: (a: number, b: number, c: number, d: number, e: num
 export const schema_version: () => [number, number];
 export const selection_domain_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
 export const toggle_series: (a: number, b: number, c: number) => number;
-export const __wbindgen_exn_store: (a: number) => void;
-export const __externref_table_alloc: () => number;
+export const __wbindgen_exn_store_command_export: (a: number) => void;
+export const __externref_table_alloc_command_export: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
-export const __wbindgen_free: (a: number, b: number, c: number) => void;
-export const __wbindgen_malloc: (a: number, b: number) => number;
-export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_free_command_export: (a: number, b: number, c: number) => void;
+export const __wbindgen_malloc_command_export: (a: number, b: number) => number;
+export const __wbindgen_realloc_command_export: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_start: () => void;

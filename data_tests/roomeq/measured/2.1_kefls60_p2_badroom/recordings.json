@@ -31,22 +31,30 @@
     },
     "subs": {
       "path": "sub.csv",
-      "name": "Sub"
+      "name": "Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "2.1_kefls60_p2_badroom",
+        "has_measured_spl": true
+      }
     }
   },
   "measured_impulse_responses": {
     "L": {
       "path": "measured_ir/L_KEF_LS60_P2__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.1_kefls60_p2_badroom"
     },
     "R": {
       "path": "measured_ir/R_KEF_LS60_P2__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.1_kefls60_p2_badroom"
     },
     "subs": {
       "path": "measured_ir/Sub_P2__ir.csv",
       "sample_rate_hz": 48000,
-      "output_channel": "Sub1"
+      "output_channel": "Sub1",
+      "timing_reference_id": "2.1_kefls60_p2_badroom"
     }
   },
   "crossovers": {

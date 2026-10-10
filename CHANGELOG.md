@@ -1,5 +1,13 @@
 # 0.5.76
 
+- Fix report graph decimation on log-frequency axes: the WASM renderer
+  bucketed traces on linear Hz, starving low frequencies of vertices
+  (faceted Before-EQ mains next to full-resolution subs). Buckets now
+  follow `ln(x)` on log axes so vertices spread evenly across pixels.
+  Rebuilt `dist/` bundles (`report2d`, `reportgpui`).
+- Move `autoeq-report-wasm` to path-based `gpui-d3rs 0.10`
+  (`math-delaunay` resolves from the sibling math-audio checkout);
+  the git-source form cannot see workspace-inherited path dependencies.
 - Add fail-fast RoomEQ round-trip QA (`just qa-roomeq-roundtrip`, first in
   `qa-roomeq-pr`): each case starts from a known-perfect response, deforms
   it with a few parametric peaks plus light noise

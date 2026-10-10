@@ -301,9 +301,3 @@ lto = "fat"
 codegen-units = 1
 incremental = false
 
-# Vello's registry dependencies must resolve to the same pinned Zed fork as
-# gpui-toolkit. Patches in a sibling workspace are not inherited here.
-# SOTF owned maintenance forks; upstream 2.1.1, local version 2.1.2.
-
-# Match GPUI compatibility forks: workspace patches are not inherited.
-

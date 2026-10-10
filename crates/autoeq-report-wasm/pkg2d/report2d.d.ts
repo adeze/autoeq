@@ -50,12 +50,12 @@ export interface InitOutput {
     readonly schema_version: () => [number, number];
     readonly selection_domain_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly toggle_series: (a: number, b: number, c: number) => number;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_exn_store_command_export: (a: number) => void;
+    readonly __externref_table_alloc_command_export: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_free_command_export: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_malloc_command_export: (a: number, b: number) => number;
+    readonly __wbindgen_realloc_command_export: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_start: () => void;
 }
 

@@ -45,7 +45,8 @@ roomeq:
 # Rebuild the report-shell WASM bundles into crates/autoeq-report-wasm/dist/.
 # 2D canvas bundle builds on stable; the GPUI viewer needs nightly
 # (gpui-web's wasm_thread/parking_lot-nightly deps). Requires wasm-bindgen
-# 0.2.128 on PATH (or set WANDBIN). Reports embed dist/ at generation time.
+# matching the locked wasm-bindgen crate (0.2.129) on PATH (or set WANDBIN).
+# Reports embed dist/ at generation time.
 # The 2D exports live in the cdylib-only autoeq-report-wasm-shell crate;
 # autoeq-report-wasm itself is a plain rlib (see its Cargo.toml).
 # Resolve Cargo metadata so CARGO_TARGET_DIR and configured target directories work.

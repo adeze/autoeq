@@ -23,11 +23,13 @@
   "measured_impulse_responses": {
     "L": {
       "path": "measured_ir/L_Genelec_8340A_M1_P1__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.0_gen8340a_p1_badroom"
     },
     "R": {
       "path": "measured_ir/R_Genelec_8340A_M1_P1__ir.csv",
-      "sample_rate_hz": 48000
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.0_gen8340a_p1_badroom"
     }
   },
   "optimizer": {

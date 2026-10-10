@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "autoeq-report-wasm"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "gpui-d3rs",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-d3rs"
-version = "0.9.19"
+version = "0.10.19"
 dependencies = [
  "delaunator",
  "fontdue",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-design"
-version = "0.9.7"
+version = "0.10.7"
 dependencies = [
  "serde",
  "sotf-gpui-toolkit-gpui",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-profiler"
-version = "0.9.3"
+version = "0.10.3"
 
 [[package]]
 name = "h2"
@@ -2893,6 +2893,8 @@ dependencies = [
 [[package]]
 name = "math-delaunay"
 version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "421cbec083aba3ac68e8f2713673ce501302e932fa71f6b3738f828243621f7b"
 dependencies = [
  "delaunator",
 ]
