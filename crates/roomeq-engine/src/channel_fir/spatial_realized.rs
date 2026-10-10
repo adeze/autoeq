@@ -39,7 +39,7 @@ pub(super) fn optimize(
                 .map(|curve| curve.into_owned())
         })
         .collect::<Result<Vec<_>>>()?;
-    let (objective, _, effective, normalization) =
+    let (objective, _, mut effective, normalization) =
         crate::eq::prepare_multi_measurement_objective_recorded(
             &curves,
             request.optimizer,
@@ -68,27 +68,34 @@ pub(super) fn optimize(
         })
         .collect();
     basis.push(Array1::zeros(grid.len()));
+    // Missing phase is a measurement limitation, not a design bug: fall
+    // back to magnitude-only inversion instead of failing the channel.
+    // Measured phase is never synthesized; it is only skipped.
+    let excess_requested = request
+        .optimizer
+        .fir
+        .as_ref()
+        .is_some_and(|fir| fir.correct_excess_phase);
+    let excess_phase = kirkeby && excess_requested && curve.phase.is_some();
+    if kirkeby && excess_requested && !excess_phase {
+        log::warn!(
+            "Kirkeby excess-phase correction requested for '{}' but the reference curve has no phase data; falling back to magnitude-only spatial FIR",
+            request.channel_name
+        );
+        if let Some(fir) = effective.fir.as_mut() {
+            fir.correct_excess_phase = false;
+        }
+    }
     let neutral = if kirkeby {
         if curve.freq != grid {
             return Err(fail(
                 "Kirkeby spatial FIR needs its phase-reference curve on the objective grid".into(),
             ));
         }
-        if request.optimizer.fir.as_ref().unwrap().correct_excess_phase && curve.phase.is_none() {
-            return Err(fail(
-                "Kirkeby excess-phase correction requires acoustic phase on the reference curve"
-                    .into(),
-            ));
-        }
         let mut residual = response::apply_complex_response(curve, &iir);
         if curve.phase.is_none() {
             residual.phase = None;
-        } else if request
-            .optimizer
-            .fir
-            .as_ref()
-            .is_some_and(|fir| fir.correct_excess_phase)
-        {
+        } else if excess_phase {
             // A common arrival delay belongs to source alignment, not to the
             // excess-phase inverse. Remove only the fitted linear trend before
             // Kirkeby sees the reference phase; otherwise a short FIR spends
@@ -157,13 +164,7 @@ pub(super) fn optimize(
             })),
             ..Default::default()
         };
-        let coefficients = if kirkeby
-            && request
-                .optimizer
-                .fir
-                .as_ref()
-                .is_some_and(|fir| fir.correct_excess_phase)
-        {
+        let coefficients = if excess_phase {
             // The Kirkeby implementation derives minimum phase from the
             // measurement magnitude.  The IIR stage has already accounted for
             // that magnitude, so use a flat phase reference here and pass the

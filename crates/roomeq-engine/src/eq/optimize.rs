@@ -15,7 +15,7 @@ use super::prepared_single_channel_eq::{
 use super::resources::{self, EqResources};
 use super::run_control::{
     ControlledEqError, ControlledEqOptimizationResult, EqBudgetRefusal, EqRunControl,
-    no_search_remaining, run_optimizer, validation_objective,
+    EqSpacingRefusal, no_search_remaining, run_optimizer, validation_objective,
 };
 use crate::Curve;
 use crate::PeqModel;
@@ -1260,6 +1260,90 @@ mod spacing_feasibility_preflight_tests {
         }
     }
 
+    /// Fails every pass above one filter with a definite spacing refusal.
+    struct SpacingRefusalBackend {
+        counts: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl SpacingRefusalBackend {
+        fn run(
+            &self,
+            x: &mut [f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+        ) -> Result<(String, f64), (String, f64)> {
+            let mut counts = self.counts.lock().expect("test mutex");
+            if counts.last() != Some(&params.num_filters) {
+                counts.push(params.num_filters);
+            }
+            if params.num_filters > 1 {
+                return Err((
+                    String::from("spacing projection: rounded result is infeasible"),
+                    f64::INFINITY,
+                ));
+            }
+            let parameters_per_filter =
+                autoeq_core::param_utils::params_per_filter(params.peq_model);
+            let gain_offset = if parameters_per_filter == 3 { 2 } else { 3 };
+            for filter in 0..params.num_filters {
+                let gain_index = filter * parameters_per_filter + gain_offset;
+                if gain_index < x.len() {
+                    x[gain_index] = 0.0;
+                }
+            }
+            let loss = autoeq_optim::optim::compute_fitness_penalties_ref(x, &objective);
+            if loss.is_finite() {
+                Ok((String::from("identity-test"), loss))
+            } else {
+                Err((
+                    String::from("identity objective is not finite"),
+                    f64::INFINITY,
+                ))
+            }
+        }
+    }
+
+    impl OptimizerBackend for SpacingRefusalBackend {
+        fn optimize_filters(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+        ) -> Result<(String, f64), (String, f64)> {
+            self.run(x, objective, params)
+        }
+
+        fn optimize_filters_with_callback(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+            mut callback: OptimProgressCallback,
+        ) -> Result<(String, f64), (String, f64)> {
+            let result = self.run(x, objective, params);
+            if let Ok((_, loss)) = &result {
+                callback(1, *loss, None);
+            }
+            result
+        }
+
+        fn optimize_filters_with_algo_override(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+            _algorithm: Option<&str>,
+        ) -> Result<(String, f64), (String, f64)> {
+            self.run(x, objective, params)
+        }
+    }
+
     fn run_adaptive_search(
         min_hz: f64,
         max_hz: f64,
@@ -1314,6 +1398,55 @@ mod spacing_feasibility_preflight_tests {
         let (counts, selection) = run_adaptive_search(60.0, 500.0, 4);
         assert_eq!(counts, [1, 2, 3, 4]);
         assert!(selection.loss.is_finite());
+    }
+
+    #[test]
+    fn adaptive_search_backs_off_when_spacing_refuses_more_filters() {
+        let frequencies = Array1::logspace(10.0, 60.0_f64.log10(), 500.0_f64.log10(), 129);
+        let curve = Curve {
+            spl: frequencies
+                .mapv(|frequency| 0.5 * (-((frequency / 66.0).log2() / 0.3).powi(2)).exp()),
+            freq: frequencies,
+            ..Curve::default()
+        };
+        let config = OptimizerConfig {
+            algorithm: String::from("autoeq:cmaes"),
+            num_filters: 4,
+            min_freq: 60.0,
+            max_freq: 500.0,
+            min_filter_improvement: 0.0,
+            max_iter: 1000,
+            seed: Some(42),
+            ..OptimizerConfig::default()
+        };
+        let prep =
+            prepare_single_channel_eq_with_normalization(&curve, &config, None, 48_000.0, None)
+                .expect("prepared test objective");
+        let context = OptimizationPassContext {
+            objective_data: &prep.objective_data,
+            args_template: &prep.args_template,
+            peq_model: prep.peq_model,
+            sample_rate: prep.sample_rate,
+            normalization: OptimizationPassNormalization::Single(&prep.input_normalization),
+        };
+        let counts = Arc::new(Mutex::new(Vec::new()));
+        let backend = SpacingRefusalBackend {
+            counts: Arc::clone(&counts),
+        };
+        let selection = adaptive_filter_search(&context, &config, None, &backend, None)
+            .expect("spacing refusal must back off, not fail");
+        assert_eq!(*counts.lock().expect("test mutex"), [1, 2]);
+        // The mock zeroes gains, so the kept k=1 pass prunes to the
+        // identity correction; backoff still applies and loss is finite.
+        assert!(selection.filters.is_empty());
+        assert!(selection.loss.is_finite());
+        assert!(
+            selection
+                .optimizer_evidence
+                .iter()
+                .any(|evidence| evidence.status.contains("spacing projection")),
+            "refusal evidence must be retained"
+        );
     }
 
     #[test]
@@ -1495,6 +1628,23 @@ fn adaptive_filter_search(
                     .0;
                 evidence.selected_for_output = false;
                 optimizer_evidence.push(evidence);
+                break;
+            }
+            // Backoff needs only a valid completed pass: an empty best is
+            // the identity correction, already reachable via the stall rule.
+            Err(error)
+                if k > 1 && error.is::<EqSpacingRefusal>() && best_loss.is_finite() =>
+            {
+                let mut evidence = error
+                    .downcast::<EqSpacingRefusal>()
+                    .expect("checked refusal type")
+                    .0;
+                evidence.selected_for_output = false;
+                optimizer_evidence.push(evidence);
+                log::warn!(
+                    "  Adaptive: {k} filters cannot satisfy minimum spacing; keeping {}",
+                    best_filters.len()
+                );
                 break;
             }
             Err(error) => return Err(error),

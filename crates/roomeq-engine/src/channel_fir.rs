@@ -273,19 +273,30 @@ fn process_hybrid(mut request: FirChannelRequest<'_>) -> Result<ChannelProcessin
         .prepared
         .usable_curve(&request.preprocessed.curve_for_optim)?;
     let optimization_curve = subtract_target_tilt(&usable_curve, request.target);
-    if request
+    // A post-IIR residual always carries phase (at least the IIR's own), so
+    // the fallback decision must use the pre-IIR measurement: without
+    // acoustic phase the excess-phase request degrades to magnitude-only
+    // inversion instead of failing the channel. Measured phase is never
+    // synthesized; it is only skipped.
+    let magnitude_only_optimizer;
+    let optimizer = if request
         .optimizer
         .fir
         .as_ref()
         .is_some_and(|fir| fir.phase.eq_ignore_ascii_case("kirkeby") && fir.correct_excess_phase)
         && optimization_curve.phase.is_none()
     {
-        return Err(AutoeqError::OptimizationFailed {
-            message:
-                "Kirkeby excess-phase correction requires acoustic phase on the reference curve"
-                    .into(),
-        });
-    }
+        warn!(
+            "Kirkeby excess-phase correction requested for '{}' but the measurement has no phase data; falling back to magnitude-only FIR",
+            request.channel_name
+        );
+        let mut fallback = request.optimizer.clone();
+        fallback.fir.as_mut().unwrap().correct_excess_phase = false;
+        magnitude_only_optimizer = fallback;
+        &magnitude_only_optimizer
+    } else {
+        request.optimizer
+    };
     // The Hybrid IIR stage must honour the configured multi-measurement
     // objective exactly like the mixed-phase path (F04); optimizing only the
     // representative curve silently drops minimax/variance/spatial strategies.
@@ -317,7 +328,7 @@ fn process_hybrid(mut request: FirChannelRequest<'_>) -> Result<ChannelProcessin
     );
     let coefficients = crate::fir::generate_fir_correction_prepared(
         &residual_curve,
-        request.optimizer,
+        optimizer,
         &residual_target,
         request.sample_rate,
     )

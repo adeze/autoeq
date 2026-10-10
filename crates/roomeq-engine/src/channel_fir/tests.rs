@@ -1027,15 +1027,91 @@ fn kirkeby_hybrid_preserves_seat_weights_without_phase_correction() {
 }
 
 #[test]
-fn kirkeby_hybrid_cannot_use_iir_phase_as_missing_acoustic_phase() {
-    let measurement = curve(false);
-    let prepared = prepared(measurement.clone());
-    let features = preprocessed(&measurement);
+fn kirkeby_hybrid_missing_acoustic_phase_falls_back_to_magnitude_only() {
+    // A phase-less measurement must not fail the channel, and must not
+    // synthesize phase from the IIR stage: the excess-phase request
+    // degrades to exactly the explicit magnitude-only design.
+    let run = |correct_excess_phase: bool| {
+        let measurement = curve(false);
+        let prepared = prepared(measurement.clone());
+        let features = preprocessed(&measurement);
+        let mut room_config = config();
+        room_config.optimizer.seed = Some(42);
+        let fir = room_config.optimizer.fir.as_mut().unwrap();
+        fir.phase = "kirkeby".into();
+        fir.correct_excess_phase = correct_excess_phase;
+        let target = build_target_context("left", &room_config, &measurement, None);
+        let resources = EqResources::default();
+        process_fir_channel(FirChannelRequest {
+            mode: FirChannelMode::Hybrid,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room_config,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room_config.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("missing_phase.wav"),
+            callback: None,
+        })
+        .expect("missing acoustic phase must fall back to magnitude-only")
+    };
+    let fallback = run(true);
+    let explicit = run(false);
+    assert!(
+        fallback
+            .channel
+            .plugins
+            .iter()
+            .any(|plugin| plugin.plugin_type == "convolution")
+    );
+    assert_eq!(
+        fallback.fir_coeffs.as_ref().unwrap(),
+        explicit.fir_coeffs.as_ref().unwrap()
+    );
+}
+
+#[test]
+fn kirkeby_spatial_missing_reference_phase_falls_back_to_magnitude_only() {
+    use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
+    let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 96);
+    let flat = Curve {
+        freq: frequencies.clone(),
+        spl: Array1::from_elem(96, 80.0),
+        ..Default::default()
+    };
+    let peak = Curve {
+        freq: frequencies.clone(),
+        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()),
+        ..Default::default()
+    };
+    let representative = Curve {
+        freq: frequencies.clone(),
+        spl: (&peak.spl + &flat.spl) / 2.0,
+        ..Default::default()
+    };
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(representative.clone(), vec![peak, flat], true),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
+    );
     let mut room_config = config();
-    let fir = room_config.optimizer.fir.as_mut().unwrap();
-    fir.phase = "kirkeby".into();
-    fir.correct_excess_phase = true;
-    let target = build_target_context("left", &room_config, &measurement, None);
+    room_config.optimizer.algorithm = "autoeq:cobyla".into();
+    room_config.optimizer.max_iter = 10;
+    room_config.optimizer.seed = Some(42);
+    let fir_config = room_config.optimizer.fir.as_mut().unwrap();
+    fir_config.phase = "kirkeby".into();
+    fir_config.correct_excess_phase = true;
+    fir_config.taps = 256;
+    room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
+        strategy: MultiMeasurementStrategy::WeightedSum,
+        weights: Some(vec![0.5, 0.5]),
+        ..Default::default()
+    });
+    let target = build_target_context("left", &room_config, &representative, None);
+    let features = preprocessed(&representative);
     let resources = EqResources::default();
     let result = process_fir_channel(FirChannelRequest {
         mode: FirChannelMode::Hybrid,
@@ -1047,16 +1123,11 @@ fn kirkeby_hybrid_cannot_use_iir_phase_as_missing_acoustic_phase() {
         preprocessed: &features,
         optimizer: &room_config.optimizer,
         eq_resources: &resources,
-        sidecar_reference: reference("missing_phase.wav"),
+        sidecar_reference: reference("missing_spatial_phase.wav"),
         callback: None,
-    });
-    assert!(
-        result
-            .err()
-            .expect("missing acoustic phase must fail before IIR generation")
-            .to_string()
-            .contains("requires acoustic phase")
-    );
+    })
+    .expect("missing spatial reference phase must fall back to magnitude-only");
+    assert_eq!(result.fir_coeffs.as_ref().unwrap().len(), 256);
 }
 
 #[test]

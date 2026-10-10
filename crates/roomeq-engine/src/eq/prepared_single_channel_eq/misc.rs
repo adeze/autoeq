@@ -4,7 +4,7 @@ use super::super::optimize::{OptimizerStopped, latch_observer_stop};
 use super::super::representative::measure_bass_rt60;
 use super::super::resources::{self, EqResources};
 use super::super::run_control::{
-    EqBudgetRefusal, EqRunControl, no_search_remaining, run_optimizer,
+    EqBudgetRefusal, EqRunControl, EqSpacingRefusal, no_search_remaining, run_optimizer,
 };
 use super::super::types::PreparedSingleChannelEq;
 use crate::Curve;
@@ -996,6 +996,14 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
                 global_evidence.status
             );
         } else {
+            // Definite spacing infeasibility is typed so the adaptive
+            // search can back off to fewer filters. Fixed-count passes
+            // propagate it unchanged (Display preserves the message).
+            if autoeq_optim::constraints::is_definite_spacing_infeasibility(
+                &global_evidence.status,
+            ) {
+                return Err(Box::new(EqSpacingRefusal(global_evidence)));
+            }
             return Err(format!(
                 "global optimizer produced unusable result: {}",
                 global_evidence.status

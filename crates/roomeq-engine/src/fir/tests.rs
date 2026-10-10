@@ -664,25 +664,23 @@ fn prepared_magnitude_fir_refuses_nonfinite_realized_coefficients() {
 }
 
 #[test]
-fn prepared_kirkeby_excess_phase_requires_phase_data() {
+fn prepared_kirkeby_excess_phase_without_data_falls_back_to_magnitude_only() {
     let measurement = create_test_curve(&[20.0, 1000.0, 20000.0], &[80.0; 3]);
-    let config = OptimizerConfig {
-        fir: Some(FirConfig {
-            taps: 64,
-            phase: "kirkeby".into(),
-            correct_excess_phase: true,
-            ..FirConfig::default()
-        }),
-        ..OptimizerConfig::default()
+    let target = flat_target_like(&measurement);
+    let run = |correct_excess_phase: bool| {
+        let config = OptimizerConfig {
+            fir: Some(FirConfig {
+                taps: 64,
+                phase: "kirkeby".into(),
+                correct_excess_phase,
+                ..FirConfig::default()
+            }),
+            ..OptimizerConfig::default()
+        };
+        generate_fir_correction_prepared(&measurement, &config, &target, 48_000.0)
+            .expect("missing phase must fall back to magnitude-only")
     };
-    let error = generate_fir_correction_prepared(
-        &measurement,
-        &config,
-        &flat_target_like(&measurement),
-        48_000.0,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("phase"), "{error}");
+    assert_eq!(run(true), run(false));
 }
 
 #[test]

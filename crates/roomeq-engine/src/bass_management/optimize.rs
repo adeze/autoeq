@@ -58,6 +58,20 @@ const TRIM_ANCHOR_TOLERANCE_DB: f64 = 1.0;
 /// crumbs hole filling earns) while legitimate tracking inside tolerance
 /// stays free.
 const TRIM_DEVIATION_WEIGHT: f64 = 30.0;
+/// Price of route trim above the joint-pool remainder, per dB squared.
+///
+/// Calibrated to zero (off): the trim and the MSO sub-output gains draw
+/// from one headroom pool, and trim stacked on spent pool is cut again by
+/// safety (measured unknown: +6 trim on +6 MSO, splice plays cold). But a
+/// static pool price cannot tell wasted overruns from affordable ones: it
+/// settles between the anchor pull and the pool regardless of downstream
+/// need, and any weight that moves unknown (10 and 30 measured) tips
+/// genelec-fir off its acceptance cliff into identity (even reshaping its
+/// basin: L rails to +6 at weight 10). Like the hard cap before it, correct
+/// enforcement needs true-headroom pools spanning route+FIR (Phase 3d).
+/// The mechanism stays wired so Phase 3d can price true overruns; the
+/// Phase 2 advisory keeps reporting the policy-pool position meanwhile.
+const POOL_OVERRUN_WEIGHT: f64 = 0.0;
 
 /// Price extreme route actuation so the DE prefers sane trims and delays.
 ///
@@ -67,21 +81,31 @@ const TRIM_DEVIATION_WEIGHT: f64 = 30.0;
 /// was capped). Trim is therefore priced by deviation from its measured
 /// anchor (main/sub level gap plus target lift): pricing raw magnitude would
 /// also kill legitimate tracking once the dip hinge plateaus its reward.
-/// Relative main/bass delay is free within one cycle at the crossover
-/// (genuine arrival alignment) and quadratic beyond it, where phase wraps
-/// make larger values redundant for the splice and only add latency and
-/// seat-dependent combing. Polarity is binary and stays unpriced. A
-/// non-finite anchor prices nothing rather than masking through `f64::max`.
+/// Trim above the joint-pool remainder is additionally priced quadratically:
+/// it stacks on MSO-spent headroom that safety cuts again, so the splice
+/// plays cold. Relative main/bass delay is free within one cycle at the
+/// crossover (genuine arrival alignment) and quadratic beyond it, where phase
+/// wraps make larger values redundant for the splice and only add latency and
+/// seat-dependent combing. Polarity is binary and stays unpriced.
+/// Non-finite anchor or pool prices nothing rather than masking through
+/// `f64::max`.
 fn route_actuation_regularization_db(
     trim_db: f64,
     trim_anchor_db: f64,
     main_delay_ms: f64,
     bass_delay_ms: f64,
     crossover_hz: f64,
+    pool_up_db: f64,
 ) -> f64 {
     let trim_price = if trim_anchor_db.is_finite() {
         let deviation = (trim_db - trim_anchor_db).abs() - TRIM_ANCHOR_TOLERANCE_DB;
         TRIM_DEVIATION_WEIGHT * deviation.max(0.0).powi(2)
+    } else {
+        0.0
+    };
+    let pool_price = if pool_up_db.is_finite() {
+        let overrun = (trim_db - pool_up_db).max(0.0);
+        POOL_OVERRUN_WEIGHT * overrun.powi(2)
     } else {
         0.0
     };
@@ -92,7 +116,7 @@ fn route_actuation_regularization_db(
         0.0
     };
     let delay_excess_ms = (relative_delay_ms - cycle_ms).max(0.0);
-    trim_price + delay_excess_ms * delay_excess_ms
+    trim_price + pool_price + delay_excess_ms * delay_excess_ms
 }
 
 fn constrained_route_loss(
@@ -1598,15 +1622,17 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
     // Phase 1 headroom budget: values identical to the inlined config reads
     // replaced here; behavior-neutral by construction.
     let headroom_budget = HeadroomBudget::from_legacy_config(config);
-    // Joint-pool enforcement stays OFF: capping trim-up at the fixed-policy
-    // remainder over-constrains electrically feasible fixtures (measured
-    // genelec-fir: MSO spends the 6 dB policy pool while the -20 dBFS
-    // provisioned sub bus still holds ~10 dB of true headroom, so
-    // enforcement collapsed a 0.41 dB correction into a 0.04 dB placebo).
-    // Correct enforcement needs true-headroom pools spanning route+FIR
-    // (Phase 3d). The Phase 2 advisory below still reports the joint-pool
-    // position (`pool_db`) so wars stay diagnosed without harming feasible
-    // fixtures.
+    // Joint-pool enforcement stays OFF, hard and soft: capping trim-up at
+    // the fixed-policy remainder over-constrains electrically feasible
+    // fixtures (measured genelec-fir: MSO spends the 6 dB policy pool while
+    // the -20 dBFS provisioned sub bus still holds ~10 dB of true headroom,
+    // so hard enforcement collapsed a 0.41 dB correction into a 0.04 dB
+    // placebo), and a soft pool price settles need-blind between the anchor
+    // pull and the pool (measured: weights 10 and 30 both tip genelec-fir
+    // into identity while unknown needs pool dominance to move). Correct
+    // enforcement needs true-headroom pools spanning route+FIR (Phase 3d).
+    // The Phase 2 advisory below still reports the joint-pool position
+    // (`pool_db`) so wars stay diagnosed without harming feasible fixtures.
     let applied_mso_boost_db = sub_outputs
         .iter()
         .map(|output| output.gain_db)
@@ -1878,6 +1904,7 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
                     main_delay_ms,
                     bass_delay_ms,
                     frequency,
+                    headroom_budget.joint_route_trim_up_db(applied_mso_boost_db),
                 ));
                 let evidence = crate::topology::assess_configured_crossover_cancellation(
                     config,
@@ -2012,6 +2039,7 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
                             main_delay_ms,
                             bass_delay_ms,
                             frequency,
+                            headroom_budget.joint_route_trim_up_db(applied_mso_boost_db),
                         );
                         Some(loss + 1_000.0 * excess * excess + penalty)
                     })
@@ -2303,33 +2331,57 @@ mod tests {
     #[test]
     fn actuation_regularization_prices_anchor_deviations_and_wrapped_delays() {
         // Sane routing: trim on its measured anchor, sub-cycle delay.
-        let sane = super::route_actuation_regularization_db(4.2, 4.2, 1.0, 2.0, 72.0);
+        let sane = super::route_actuation_regularization_db(4.2, 4.2, 1.0, 2.0, 72.0, 6.0);
         assert!((sane - 0.0).abs() < 1e-9, "sane routing overpriced: {sane}");
         // Tolerance keeps crossover interaction free.
-        let near = super::route_actuation_regularization_db(5.0, 4.2, 1.0, 2.0, 72.0);
+        let near = super::route_actuation_regularization_db(5.0, 4.2, 1.0, 2.0, 72.0, 6.0);
         assert!(
             (near - 0.0).abs() < 1e-9,
             "in-tolerance trim priced: {near}"
         );
         // Chase deviation past tolerance costs more than RMS crumbs.
-        let railed = super::route_actuation_regularization_db(6.0, 4.2, 1.0, 2.0, 72.0);
+        let railed = super::route_actuation_regularization_db(6.0, 4.2, 1.0, 2.0, 72.0, 6.0);
         assert!(railed > 15.0, "chase deviation underpriced: {railed}");
         // Opposite-rail cut (measured kef R: -12 dB) is punished hard.
-        let cut_rail = super::route_actuation_regularization_db(-12.0, 2.0, 1.0, 2.0, 72.0);
+        let cut_rail = super::route_actuation_regularization_db(-12.0, 2.0, 1.0, 2.0, 72.0, 6.0);
         assert!(cut_rail > 100.0);
         // Non-finite anchor prices nothing instead of masking.
-        let unanchored = super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0);
+        let unanchored = super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0, 6.0);
         assert!((unanchored - 0.0).abs() < 1e-9);
         // Degenerate delay (measured: 17.6 ms at ~72 Hz crossover) exceeds
         // one cycle (13.9 ms) and pays quadratic excess.
-        let wrapped = super::route_actuation_regularization_db(1.0, 1.0, 17.6, 0.0, 72.0);
+        let wrapped = super::route_actuation_regularization_db(1.0, 1.0, 17.6, 0.0, 72.0, 6.0);
         let cycle_ms: f64 = 1000.0 / 72.0;
         let expected = (17.6 - cycle_ms).powi(2);
         assert!((wrapped - expected).abs() < 1e-9);
         assert!(wrapped > 10.0);
         // Sub-cycle delays stay free.
-        let aligned = super::route_actuation_regularization_db(1.0, 1.0, 6.0, 2.0, 72.0);
+        let aligned = super::route_actuation_regularization_db(1.0, 1.0, 6.0, 2.0, 72.0, 6.0);
         assert!((aligned - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pool_overrun_follows_the_calibrated_weight_and_cuts_stay_free() {
+        // Trim at the pool remainder pays nothing beyond anchor pricing.
+        let at_pool = super::route_actuation_regularization_db(2.0, 2.0, 1.0, 2.0, 72.0, 2.0);
+        assert!((at_pool - 0.0).abs() < 1e-9, "at-pool trim priced: {at_pool}");
+        // Overrun pays the calibrated quadratic (currently zero: positive
+        // weights tip genelec-fir into identity while unknown needs pool
+        // dominance to move, so enforcement stays off pending true-headroom
+        // pools). The formula stays exact at any weight.
+        let overrun = super::route_actuation_regularization_db(6.0, 6.0, 1.0, 2.0, 72.0, 0.0);
+        let expected = super::POOL_OVERRUN_WEIGHT * 6.0_f64.powi(2);
+        assert!((overrun - expected).abs() < 1e-9);
+        assert_eq!(
+            super::POOL_OVERRUN_WEIGHT,
+            0.0,
+            "pool enforcement recalibrated; update the calibration record"
+        );
+        let cut = super::route_actuation_regularization_db(-4.0, -4.0, 1.0, 2.0, 72.0, 0.0);
+        assert!((cut - 0.0).abs() < 1e-9, "cut priced against pool: {cut}");
+        // Non-finite pool prices nothing instead of masking.
+        let nopool = super::route_actuation_regularization_db(6.0, 6.0, 1.0, 2.0, 72.0, f64::NAN);
+        assert!((nopool - 0.0).abs() < 1e-9);
     }
 
     #[test]

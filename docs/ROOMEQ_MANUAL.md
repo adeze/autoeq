@@ -2632,7 +2632,9 @@ grids and uses the same bounded scalar backends. Kirkeby now uses the same
 realized dB-basis search for multi-seat magnitude selection, while retaining
 the representative residual as its acoustic phase reference. Requested
 excess-phase correction requires actual reference acoustic phase; electrical
-IIR phase cannot replace missing measurement evidence.
+IIR phase cannot replace missing measurement evidence. Without measurement
+phase, RoomEQ warns and keeps magnitude-only correction instead of failing
+the channel; corrupt phase data still errors.
 
 Kirkeby FIR generation compares the actual windowed coefficients with a
 magnitude-only design using the same tap count, target and correction band.

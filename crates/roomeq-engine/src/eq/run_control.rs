@@ -173,6 +173,17 @@ impl std::fmt::Display for EqBudgetRefusal {
 }
 impl Error for EqBudgetRefusal {}
 
+/// A pass failed because its filter count cannot satisfy minimum spacing.
+/// The adaptive search may keep fewer filters; fixed-count passes propagate.
+#[derive(Debug)]
+pub(super) struct EqSpacingRefusal(pub OptimizerRunEvidence);
+impl std::fmt::Display for EqSpacingRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0.status)
+    }
+}
+impl Error for EqSpacingRefusal {}
+
 pub(super) fn no_search_remaining(control: Option<&EqRunControl<'_>>) -> bool {
     control.is_some_and(|control| control.control.remaining_evaluations() == 0)
 }

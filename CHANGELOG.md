@@ -37,6 +37,20 @@
   pre/post deployment is identical (input-level common safety stays
   judged); zero-strength trials no longer read their own deployment
   attenuation as regression or loss.
+- Fall back to magnitude-only Kirkeby FIR inversion (with a warning)
+  when excess-phase correction is requested but the measurement has no
+  phase data, instead of failing the channel. The fallback keys on the
+  pre-IIR measurement so IIR-only residual phase is never mistaken for
+  acoustic phase; corrupt phase data still errors.
+- Repair pinned minimum-spacing projections with a greedy earliest
+  placement before declaring infeasibility, and let the adaptive EQ
+  search back off to fewer filters when a count provably cannot fit
+  instead of discarding the smaller-count winners. Fixed-count passes
+  keep the strict projection error.
+- Wire (but calibrate off) a soft joint-pool overrun price in the
+  route optimizer: positive weights tip genelec-fir into identity
+  while unknown needs pool dominance to move, so enforcement stays
+  off pending true-headroom pools spanning route and FIR.
 
 - Add measured-IR full indirect Speech Transmission Index and per-octave modulation
   tables to RoomEQ reports using the IEC 60268-16:2020 model in `math-rir`.

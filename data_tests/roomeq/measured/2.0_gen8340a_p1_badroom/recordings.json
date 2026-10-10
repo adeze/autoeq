@@ -56,5 +56,12 @@
       "reference_channel": "L",
       "min_improvement_db": 0.05
     }
+  },
+  "recording_config": {
+    "room_dimensions": {
+      "length": 10.0,
+      "width": 6.0,
+      "height": 2.5
+    }
   }
 }

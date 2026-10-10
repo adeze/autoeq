@@ -8,6 +8,7 @@ use std::error::Error;
 use std::sync::Once;
 
 static EXCESS_PHASE_IDENTITY_WARNING: Once = Once::new();
+static MISSING_PHASE_FALLBACK_WARNING: Once = Once::new();
 
 /// Fit the realized finite FIR, not just the pre-window inversion spectrum.
 /// Windowing a band-limited excess-phase inverse can attenuate its bass even
@@ -376,7 +377,7 @@ fn generate_fir_correction_prepared_raw(
                     max_time_s: pr.max_time_s,
                 });
         let coeffs =
-            autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing_checked(
+            match autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing_checked(
                 measurement,
                 target_curve,
                 sample_rate,
@@ -386,7 +387,37 @@ fn generate_fir_correction_prepared_raw(
                 fir_config.correct_excess_phase,
                 fir_config.phase_smoothing,
                 pre_ringing,
-            )?;
+            ) {
+                Ok(coeffs) => coeffs,
+                // Missing phase is a measurement limitation, not a design bug.
+                // Fall back to magnitude-only inversion (multisub gain-only
+                // precedent) instead of failing the channel. Corrupt phase
+                // (NonFinitePhase) still errors via the arm below.
+                Err(autoeq_fir::FirDesignError::MissingPhase) => {
+                    MISSING_PHASE_FALLBACK_WARNING.call_once(|| {
+                        log::warn!(
+                            "Excess-phase FIR correction requested but measurement has no phase data; falling back to magnitude-only Kirkeby inversion"
+                        );
+                    });
+                    autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing(
+                        measurement,
+                        target_curve,
+                        sample_rate,
+                        n_taps,
+                        active_min_freq,
+                        active_max_freq,
+                        false,
+                        fir_config.phase_smoothing,
+                        fir_config.pre_ringing.as_ref().map(|pr| {
+                            math_audio_iir_fir::PreRingingConfig {
+                                threshold_db: pr.threshold_db,
+                                max_time_s: pr.max_time_s,
+                            }
+                        }),
+                    )
+                }
+                Err(error) => return Err(error.into()),
+            };
         let correction_rms =
             correction_rms_db(measurement, target_curve, active_min_freq, active_max_freq);
         let coeffs = recover_excess_phase_identity(

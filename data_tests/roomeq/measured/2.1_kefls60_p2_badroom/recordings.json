@@ -79,5 +79,12 @@
       "optimize_polarity": true,
       "max_delay_ms": 20.0
     }
+  },
+  "recording_config": {
+    "room_dimensions": {
+      "length": 10.0,
+      "width": 6.0,
+      "height": 2.5
+    }
   }
 }

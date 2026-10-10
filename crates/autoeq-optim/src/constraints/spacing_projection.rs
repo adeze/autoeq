@@ -44,7 +44,8 @@ fn octave_distance(lower_log10: f64, upper_log10: f64) -> f64 {
 /// Filter groups stay in their original vector slots. Only center frequencies
 /// may change. For a fixed frequency order the isotonic projection minimizes
 /// squared movement; when that order is infeasible, another order may be used.
-/// Bounds with equal endpoints remain fixed.
+/// A greedy earliest placement backstops pinned isotonic repairs before the
+/// order is abandoned. Bounds with equal endpoints remain fixed.
 ///
 /// # Errors
 ///
@@ -107,7 +108,7 @@ pub fn project_min_spacing(
     }
 }
 
-fn project_in_order(
+fn project_in_order_pava(
     x: &[f64],
     lower: &[f64],
     upper: &[f64],
@@ -208,6 +209,105 @@ fn project_in_order(
         ));
     }
     Ok(repaired)
+}
+
+/// Verify a repaired placement against the exact production constraint.
+fn placement_is_feasible(
+    repaired: &[f64],
+    lower: &[f64],
+    upper: &[f64],
+    indices: &[usize],
+    model: PeqModel,
+    min_spacing_oct: f64,
+) -> bool {
+    indices
+        .iter()
+        .all(|&i| repaired[i] >= lower[i] && repaired[i] <= upper[i])
+        && super::min_spacing::viol_spacing_from_xs(repaired, model, min_spacing_oct) == 0.0
+}
+
+/// Earliest feasible placement for a fixed filter order.
+///
+/// PAVA minimizes movement but can pin blocks against box edges where the
+/// ULP nudger gives up. Earliest placement is complete for difference
+/// constraints: if any placement satisfies this order and the boxes, the
+/// earliest one does. Decoded octave distance (the production constraint)
+/// decides every gap, never the log10 approximation.
+fn greedy_placement_in_order(
+    x: &[f64],
+    lower: &[f64],
+    upper: &[f64],
+    indices: &[usize],
+    min_spacing_oct: f64,
+) -> Result<Vec<f64>, String> {
+    /// ULP nudges bridging log10-gap/decoded-octave rounding per pair.
+    /// Mathematical gaps need only a few; exhaustion means unreachable.
+    const MAX_NUDGE: usize = 1024;
+    let gap = min_spacing_oct * std::f64::consts::LOG10_2;
+    let mut repaired = x.to_vec();
+    let mut prev: Option<f64> = None;
+    for &index in indices {
+        let value = match prev {
+            None => lower[index],
+            Some(p) => {
+                let mut v = (p + gap).max(lower[index]);
+                let mut nudges = 0;
+                while octave_distance(p, v) < min_spacing_oct {
+                    v = next_up(v);
+                    nudges += 1;
+                    if nudges > MAX_NUDGE || v > upper[index] {
+                        return Err(String::from(
+                            "spacing projection: greedy repair cannot meet spacing within bounds",
+                        ));
+                    }
+                }
+                v
+            }
+        };
+        if value > upper[index] {
+            return Err(String::from(
+                "spacing projection: greedy repair cannot meet spacing within bounds",
+            ));
+        }
+        repaired[index] = value;
+        prev = Some(value);
+    }
+    Ok(repaired)
+}
+
+fn project_in_order(
+    x: &[f64],
+    lower: &[f64],
+    upper: &[f64],
+    model: PeqModel,
+    min_spacing_oct: f64,
+    indices: &[usize],
+) -> Result<Vec<f64>, String> {
+    project_in_order_pava(x, lower, upper, model, min_spacing_oct, indices).or_else(
+        |original| {
+            greedy_placement_in_order(x, lower, upper, indices, min_spacing_oct)
+                .ok()
+                .filter(|candidate| {
+                    placement_is_feasible(candidate, lower, upper, indices, model, min_spacing_oct)
+                })
+                .ok_or(original)
+        },
+    )
+}
+
+/// Reports whether a projector error proves the filter count infeasible.
+///
+/// Definite errors let the adaptive search back off to fewer filters.
+/// Search-budget ("feasibility undetermined") and malformed-input errors
+/// stay strict.
+pub fn is_definite_spacing_infeasibility(reason: &str) -> bool {
+    const DEFINITE: [&str; 4] = [
+        "spacing projection: frequency bounds are infeasible",
+        "spacing projection: no ordering satisfies the frequency bounds",
+        "spacing projection: decoded frequencies cannot meet spacing within bounds",
+        "spacing projection: rounded result is infeasible",
+    ];
+    DEFINITE.iter().any(|suffix| reason.contains(suffix))
 }
 
 /// Find a feasible order of the existing filter identities when their current
@@ -577,5 +677,129 @@ mod tests {
             super::super::min_spacing::viol_spacing_from_xs(&repaired, PeqModel::Pk, 0.2),
             0.0
         );
+    }
+
+    #[test]
+    fn pinned_tight_band_falls_back_to_greedy_repair() {
+        // Captured 2.0_ascilab3/iir winner: seven Pk filters over a 1.36
+        // octave active band with tiled boxes. The upper five centers sit
+        // just under the 0.2 octave gap; PAVA pins against the box edges
+        // and the ULP nudger gives up ("rounded result is infeasible"),
+        // yet earliest placement fits.
+        let x = [
+            1.304294888438453,
+            6.0,
+            -10.93621444538024,
+            1.4027466616706856,
+            6.0,
+            -9.270147769349748,
+            1.4755909374237028,
+            0.5000037930734992,
+            4.499996845137993,
+            1.534826970249966,
+            5.999999921326473,
+            -22.49999782293844,
+            1.5940611777102593,
+            2.5200244553975817,
+            -17.16296105560578,
+            1.653295385414744,
+            0.5000030254136156,
+            4.499997626723097,
+            1.7125295931516948,
+            3.375784040147605,
+            4.5,
+        ];
+        let lower = [
+            1.3040940100155531,
+            0.5,
+            -22.5,
+            1.3040940100155531,
+            0.5,
+            -22.5,
+            1.3624419504977845,
+            0.5,
+            -22.5,
+            1.4207898909800158,
+            0.5,
+            -22.5,
+            1.4791378314622474,
+            0.5,
+            -22.5,
+            1.5374857719444788,
+            0.5,
+            -22.5,
+            1.5958337124267101,
+            0.5,
+            -22.5,
+        ];
+        let upper = [
+            1.3624419504977845,
+            6.0,
+            4.5,
+            1.4207898909800158,
+            6.0,
+            4.5,
+            1.4791378314622472,
+            6.0,
+            4.5,
+            1.5374857719444786,
+            6.0,
+            4.5,
+            1.5958337124267101,
+            6.0,
+            4.5,
+            1.6541816529089415,
+            6.0,
+            4.5,
+            1.7125295933911728,
+            6.0,
+            4.5,
+        ];
+        let repaired = project_min_spacing(&x, &lower, &upper, PeqModel::Pk, 0.2)
+            .expect("tight but feasible band must repair");
+        assert_eq!(
+            super::super::min_spacing::viol_spacing_from_xs(&repaired, PeqModel::Pk, 0.2),
+            0.0
+        );
+        for i in 0..7 {
+            assert!(
+                repaired[i * 3] >= lower[i * 3] && repaired[i * 3] <= upper[i * 3],
+                "center {i} out of bounds"
+            );
+            assert_eq!(repaired[i * 3 + 1], x[i * 3 + 1]);
+            assert_eq!(repaired[i * 3 + 2], x[i * 3 + 2]);
+        }
+    }
+
+    #[test]
+    fn greedy_repair_refuses_truly_infeasible_boxes() {
+        // Two filters whose boxes cannot host the 0.2 octave gap.
+        let x = [1.0, 1.0, 0.0, 1.01, 1.0, 0.0];
+        let lower = [1.0, 1.0, -6.0, 1.0, 1.0, -6.0];
+        let upper = [1.02, 6.0, 6.0, 1.02, 6.0, 6.0];
+        let error = project_min_spacing(&x, &lower, &upper, PeqModel::Pk, 0.2).unwrap_err();
+        assert!(
+            is_definite_spacing_infeasibility(&error),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn definite_infeasibility_ignores_undetermined_and_malformed() {
+        assert!(is_definite_spacing_infeasibility(
+            "spacing projection: rounded result is infeasible"
+        ));
+        assert!(is_definite_spacing_infeasibility(
+            "spacing projection: no ordering satisfies the frequency bounds"
+        ));
+        assert!(!is_definite_spacing_infeasibility(
+            "spacing projection: alternate-order search time limit reached; feasibility undetermined"
+        ));
+        assert!(!is_definite_spacing_infeasibility(
+            "spacing projection: frequency outside finite bounds"
+        ));
+        assert!(!is_definite_spacing_infeasibility(
+            "spacing repair refused: within_bounds=true, spacing=0, ceiling=1, min_gain=0"
+        ));
     }
 }

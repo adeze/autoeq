@@ -452,7 +452,8 @@ mod tests {
     fn mixed_crossover_returns_required_path_free_sidecar() {
         for phase in ["linear", "kirkeby"] {
             // Analytic zero-phase fixture for the requested excess-phase design;
-            // missing phase is refused by the prepared FIR entry-point tests.
+            // missing phase falls back to magnitude-only in the prepared FIR
+            // entry point, which would not exercise the excess-phase path.
             let mut curve = curve();
             curve.phase = Some(ndarray::Array1::zeros(curve.freq.len()));
             let mixed_config = MixedModeConfig {
