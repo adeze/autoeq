@@ -8,6 +8,7 @@ alias qa-roomeq := qa-roomeq-all
 # in crates/roomeq-qa/src/registry.json; recipes only select cost tier.
 [group('qa-roomeq')]
 qa-roomeq-pr:
+	just qa-roomeq-roundtrip
 	{{cargo}} run --features qa --bin roomeq-qa-coverage --release -- --tier pr
 	{{cargo}} run --features qa --bin roomeq-qa-synthetic --no-default-features --release -- --pr
 	{{cargo}} run --features qa --bin roomeq-qa-acoustic --release -- --tier pr
@@ -15,6 +16,15 @@ qa-roomeq-pr:
 	just qa-roomeq-stage-contracts
 	just qa-roomeq-parameters-pr
 	just qa-roomeq-escaped-defects
+
+# Fail-fast ideal+deformation round-trips: each case starts from a known-perfect
+# response, deforms it with a few parametric peaks plus light noise, runs the
+# production optimizer once with a fixed seed (no median-seed search), and
+# asserts the corrected response reconstructs the ideal. ~10s, runs first.
+[group('qa-roomeq')]
+qa-roomeq-roundtrip:
+	{{cargo}} test --release -p roomeq-synthetic roundtrip --lib
+	{{cargo}} test --release -p roomeq-qa synthetic::roundtrip --lib
 
 qa-roomeq-stage-contracts:
 	just qa-roomeq-pruning-conditions

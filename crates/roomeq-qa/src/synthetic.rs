@@ -33,6 +33,8 @@ mod decision;
 mod generate;
 mod misc;
 mod option;
+#[cfg(test)]
+mod roundtrip;
 mod run;
 mod types;
 

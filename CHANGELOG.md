@@ -1,5 +1,14 @@
 # 0.5.76
 
+- Add fail-fast RoomEQ round-trip QA (`just qa-roomeq-roundtrip`, first in
+  `qa-roomeq-pr`): each case starts from a known-perfect response, deforms
+  it with a few parametric peaks plus light noise
+  (`crates/roomeq-synthetic/src/roundtrip.rs`), runs the production
+  optimizer once with a fixed seed, and asserts the corrected response
+  reconstructs the ideal plus filter attribution
+  (`crates/roomeq-qa/src/synthetic/roundtrip.rs`). Covers 2.0, 2.1, 2.2
+  MSO, 5.1, multi-seat minimax, identity, and crossed-mains stereo, with
+  two guard-of-the-guard negative controls. ~5s for the full set.
 - Fix the DT1990 Pro flat QA recipe by using seeded native DE, whose
   convergence evidence satisfies the strict QA gate; PSO only reports budget
   completion. Keep the spacing and score-improvement checks unchanged.
