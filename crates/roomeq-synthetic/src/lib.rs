@@ -11,6 +11,7 @@ pub mod error {
 pub mod catalog;
 mod generate;
 mod misc;
+pub mod roundtrip;
 pub mod spatial;
 pub mod stimulus;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod types;
 pub use catalog::*;
 pub use generate::*;
 pub use misc::*;
+pub use roundtrip::*;
 pub use spatial::*;
 pub use stimulus::*;
 pub use timing::*;
