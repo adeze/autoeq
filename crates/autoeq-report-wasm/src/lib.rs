@@ -25,6 +25,7 @@ pub mod draw;
 pub mod eq_figures;
 pub mod eq_sections;
 pub mod evidence_sections;
+pub mod fir_response;
 pub mod gain_summary;
 pub mod grid;
 pub mod ir_group_delay;

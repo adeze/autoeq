@@ -6,6 +6,7 @@
 
 use crate::error::{AutoeqError, Result};
 use crate::response::{MIN_REALIZATION_RESPONSE_DB, apply_complex_response_with_min_db};
+use autoeq_core::fir_response::fir_response_at;
 use ndarray::Array1;
 use num_complex::Complex64;
 use roomeq_model::{ChannelDspChain, PluginConfigWrapper};
@@ -35,20 +36,6 @@ pub trait ConvolutionIrProvider {
             sample_rate,
         ))
     }
-}
-
-/// Evaluate the FIR polynomial with one complex rotation per frequency.
-fn fir_response_at(taps: &[f64], frequency_hz: f64, sample_rate: f64) -> Complex64 {
-    if taps.is_empty() {
-        return Complex64::new(1.0, 0.0);
-    }
-    // Horner's method evaluates the same finite DTFT as summing tap phasors,
-    // without computing sine/cosine once per tap. No grid interpolation or
-    // truncation is involved, including at narrow electrical peak anchors.
-    let z = Complex64::from_polar(1.0, -2.0 * PI * frequency_hz / sample_rate);
-    taps.iter()
-        .rev()
-        .fold(Complex64::default(), |acc, tap| acc * z + tap)
 }
 
 /// Provider for chains that are required not to contain convolution plugins.

@@ -18,6 +18,7 @@ pub mod direct_sound;
 pub mod dsp_conventions;
 pub mod error;
 pub mod evidence;
+pub mod fir_response;
 pub mod measurement_contracts;
 pub mod measurement_quality;
 pub mod param_utils;

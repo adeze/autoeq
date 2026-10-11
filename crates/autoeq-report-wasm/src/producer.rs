@@ -20,6 +20,7 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "fir_response" => encode(&crate::fir_response::response_from_request(request)?),
         "serialized_filter_response" => {
             let frequencies = request["frequencies"]
                 .as_array()

@@ -12,6 +12,7 @@ pub mod evidence;
 pub mod matrix;
 pub mod mic_phase_calibration;
 pub mod provenance;
+pub mod provenance_migration_cli;
 pub mod quality;
 pub mod read;
 pub mod timing;

@@ -404,17 +404,38 @@ def apply_plugins_to_curve(
                     for value, eq in zip(transfer, serialized_filter_response(filt, frequencies, sample_rate))
                 ]
         elif plugin_type == "convolution" and parameters.get("room_eq_fir_placement") == "per_driver":
-            taps = parameters.get("_fir_taps")
-            if not taps or parameters.get("_fir_sample_rate") != sample_rate:
-                raise ValueError("Physical FIR replay requires its matching WAV sidecar; use load_roomeq_json")
-            # Direct Horner DTFT: includes each driver's own phase and latency.
-            for index, frequency in enumerate(frequencies):
-                angle = -2.0 * math.pi * frequency / sample_rate
-                z = complex(math.cos(angle), math.sin(angle))
-                h = 0j
-                for tap in reversed(taps):
-                    h = h * z + tap
-                transfer[index] *= h
+            from .native_fir_response import fir_response
+
+            native_status = parameters.get("_native_fir_resource_status")
+            if native_status is not None:
+                if native_status != "available":
+                    reason = parameters.get("_native_fir_resource_reason")
+                    detail = f": {reason}" if isinstance(reason, str) and reason else ""
+                    raise ValueError(f"Physical FIR resource is unavailable{detail}")
+                rate = parameters.get("_native_fir_sample_rate")
+                resource_key = parameters.get("_native_fir_resource_key")
+                if resource_key != parameters.get("ir_file"):
+                    raise ValueError("Physical FIR resource key does not match the graph ir_file")
+                if rate != sample_rate:
+                    raise ValueError("Physical FIR sample rate does not match the report sample rate")
+                response = fir_response(
+                    frequencies,
+                    sample_rate,
+                    resource_key=resource_key,
+                    graph_sha256=parameters.get("_native_fir_graph_sha256"),
+                    resource_sha256=parameters.get("_native_fir_expected_resource_sha256"),
+                )
+            else:
+                taps = parameters.get("_fir_taps")
+                if not taps:
+                    raise ValueError(
+                        "Physical FIR replay is unavailable: no captured native resource or "
+                        "verified standalone FIR cache is available"
+                    )
+                if parameters.get("_fir_sample_rate") != sample_rate:
+                    raise ValueError("Physical FIR sample rate does not match the report sample rate")
+                response = fir_response(frequencies, sample_rate, taps=taps)
+            transfer = [value * fir for value, fir in zip(transfer, response)]
         elif plugin_type == "crossover":
             crossover = _crossover_response(
                 str(parameters.get("type", "LR24")),
