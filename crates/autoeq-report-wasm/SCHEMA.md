@@ -71,6 +71,29 @@ contains an HTML-escaped JSON figure/grid section. The shell mounts those throug
 the same WASM renderer, inheriting the enclosing tab. Producers must escape the
 entire attribute value, not interpolate raw JSON into HTML.
 
+### Capture-quality source actions
+
+The shared capture-quality section includes hidden `Select` and `Review retake`
+controls for each source. The shell only reveals them when
+`window.sotfReportHost` is a version-one bridge with a non-empty `reportId` and
+a callable `send` method. Standalone reports without that bridge continue to
+show all source and quality evidence without application actions. Source IDs
+are HTML-escaped when written to `data-capture-source-id` attributes.
+
+The host may dispatch `sotf-report-host-ready` with detail fields
+`{version: 1, reportId, theme, locale}` to update the active report context.
+Theme is `light` or `dark`; locales `en`, `fr`, `de`, and `es` localize the two
+control labels, and other locale values use English. After the report renderer
+successfully loads, validates the payload, builds the DOM, and renders, the
+shell calls `send({action: "ready", renderer: "autoeq-report-wasm"})` once for
+the active report ID. Renderer setup failures call
+`send({action: "error", message})` when a valid host bridge is available; the
+same error remains visible in the report page when no host is present. A source
+action sends `send({action: "select"|"retake", selection: {source_id,
+"microphone_id": null, "take_id": null}})`. The host owns report identity and
+eligibility. `Review retake` requests review of a source; it does not start a
+capture.
+
 ### `grid`
 
 Carries `figure` axis/title/legend metadata and `grid` data:

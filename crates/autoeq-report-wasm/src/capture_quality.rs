@@ -310,15 +310,15 @@ pub fn append_capture_quality_section(
 
     validate_report(report)?;
     let mut html = String::from(
-        "<section class=\"capture-quality\"><h2>Capture quality</h2><table><thead><tr><th>Source</th><th>Channel</th><th>Mic</th><th>Position</th><th>Take</th><th>Stimulus</th><th>Policy</th><th>Metric</th><th>Status</th><th>Value</th><th>Band</th><th>Method</th><th>Threshold</th><th>Evidence and recommendation</th></tr></thead><tbody>",
+        "<section class=\"capture-quality\"><h2>Capture quality</h2><table><thead><tr><th>Source</th><th>Channel</th><th>Mic</th><th>Position</th><th>Take</th><th>Stimulus</th><th>Policy</th><th>Metric</th><th>Status</th><th>Value</th><th>Band</th><th>Method</th><th>Threshold</th><th>Evidence and recommendation</th><th>Actions</th></tr></thead><tbody>",
     );
 
     for source in &report.sources {
         if source.findings.is_empty() {
-            render_source_row(&mut html, source, None);
+            render_source_row(&mut html, source, None, true);
         } else {
-            for finding in &source.findings {
-                render_source_row(&mut html, source, Some(finding));
+            for (index, finding) in source.findings.iter().enumerate() {
+                render_source_row(&mut html, source, Some(finding), index == 0);
             }
         }
     }
@@ -598,6 +598,7 @@ fn render_source_row(
     html: &mut String,
     source: &CaptureQualitySource,
     finding: Option<&CaptureQualityFinding>,
+    include_actions: bool,
 ) {
     html.push_str("<tr>");
     push_cell(html, &source.source_id);
@@ -638,6 +639,17 @@ fn render_source_row(
         push_cell(html, "—");
         push_cell(html, "—");
         push_cell(html, "—");
+    }
+    if include_actions {
+        html.push_str(
+            "<td><div class=\"capture-quality-actions\" hidden data-capture-source-id=\"",
+        );
+        escape_html_into(html, &source.source_id);
+        html.push_str(
+            "\"><button type=\"button\" data-report-capture-action=\"select\" disabled>Select</button><button type=\"button\" data-report-capture-action=\"retake\" disabled>Review retake</button></div></td>",
+        );
+    } else {
+        html.push_str("<td></td>");
     }
     html.push_str("</tr>");
 }
@@ -806,6 +818,68 @@ mod tests {
         assert!(json.contains("Left &lt;main&gt;"));
         assert!(json.contains("octave_sweep · 48000 Hz · 8.250 s"));
         assert!(!json.contains("Left <main>"));
+    }
+
+    #[test]
+    fn source_controls_are_hidden_until_host_ready_and_escape_untrusted_ids() {
+        let mut source = source_with_findings(vec![warning_finding(), unknown_finding()]);
+        source.source_id = "source\" data-x=\"y\"><script>alert('x')</script>".to_string();
+        let report = CaptureQualityReport {
+            schema_version: CAPTURE_QUALITY_INPUT_VERSION,
+            sources: vec![source],
+        };
+        let mut payload = ReportPayload::new("Room report");
+
+        append_capture_quality_section(&mut payload, &report).expect("append quality section");
+
+        let html = match &payload.sections[0] {
+            Section::Html { html, .. } => html,
+            _ => panic!("quality section is HTML"),
+        };
+        assert!(
+            html.contains("class=\"capture-quality-actions\" hidden data-capture-source-id=\"")
+        );
+        assert!(html.contains(
+            "data-capture-source-id=\"source&quot; data-x=&quot;y&quot;&gt;&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
+        ));
+        assert!(!html.contains("data-capture-source-id=\"source\" data-x="));
+        assert!(!html.contains("<script>alert('x')</script>"));
+        assert!(html.contains("data-report-capture-action=\"select\" disabled>Select</button>"));
+        assert!(
+            html.contains("data-report-capture-action=\"retake\" disabled>Review retake</button>")
+        );
+        assert_eq!(html.matches("data-report-capture-action=").count(), 2);
+        assert!(
+            html.contains("Unknown"),
+            "unknown quality evidence remains visible"
+        );
+    }
+
+    #[test]
+    fn shell_actions_use_the_versioned_sotf_host_contract() {
+        let shell = include_str!("../shell/template.html");
+        for contract in [
+            "window.sotfReportHost",
+            "host.version !== 1",
+            "host.reportId",
+            "host.send({action: \"ready\", renderer: \"autoeq-report-wasm\"})",
+            "host.send({action: \"error\", message})",
+            "showError(\"Could not start the 2D report renderer: \" + error)",
+            "sotf-report-host-ready",
+            "const labels = captureActionLabels[reportLocale(host?.locale)];",
+            "if (labels[action]) button.textContent = labels[action];",
+            "selection: {source_id: sourceId, microphone_id: null, take_id: null}",
+            "action !== \"select\" && action !== \"retake\"",
+            "html[data-report-theme=\"dark\"]",
+            "Sélectionner",
+            "Auswählen",
+            "Seleccionar",
+        ] {
+            assert!(
+                shell.contains(contract),
+                "missing shell bridge contract: {contract}"
+            );
+        }
     }
 
     #[test]
