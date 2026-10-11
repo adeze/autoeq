@@ -10,6 +10,7 @@ mod types;
 
 pub use dsp_response_cache::{
     apply_channel_dsp_chain_to_curve, apply_channel_dsp_chain_to_curve_with_embedded_irs,
+    apply_channel_dsp_chain_to_curve_with_provider,
     apply_channel_dsp_chain_to_curve_with_sidecar_dir,
     channel_electrical_response_with_embedded_irs,
 };

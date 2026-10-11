@@ -57,6 +57,7 @@ from .dsp import (
     sum_driver_initial_curves,
     symmetric_complex_sum,
 )
+from .native_driver_replay import resolve_native_driver_curve
 from .figures import (
     ComparisonFigureBatch,
     _mode_color,
@@ -152,6 +153,24 @@ def _channel_display_final_curve(
     if channel_name == physical_sub:
         return post_dsp_curves.get(channel_name) or channel_data.get("final_curve")
     return channel_data.get("final_curve")
+
+
+def _report_sample_rate(data: Any) -> float | None:
+    """Use explicit host replay context before legacy plotting defaults."""
+    if getattr(data, "native_dsp_replay_present", False) is True:
+        rate = getattr(data, "native_playback_sample_rate", None)
+        if type(rate) is int and 0 < rate <= 0xFFFFFFFF:
+            return float(rate)
+        replay = getattr(data, "native_dsp_replay", None)
+        rate = replay.get("sample_rate_hz") if isinstance(replay, dict) else None
+        if type(rate) is int and 0 < rate <= 0xFFFFFFFF:
+            return float(rate)
+        return None
+    try:
+        rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    except (OverflowError, TypeError, ValueError):
+        return 48_000.0
+    return rate if math.isfinite(rate) and rate > 0.0 else 48_000.0
 
 
 def _driver_shaping_summary_html(
@@ -803,6 +822,19 @@ def build_report_payload(
     # channel this is the crossover-aware complex sum of its high-passed main
     # output and its own low-passed route through the physical subwoofer.
     post_dsp_curves = build_post_dsp_source_curves(data)
+    routed_unavailable = getattr(data, "native_routed_source_unavailability", None)
+    if isinstance(routed_unavailable, dict) and routed_unavailable:
+        details = "".join(
+            "<li>" + escape(str(source)) + ": " + escape(str(reason)) + "</li>"
+            for source, reason in sorted(routed_unavailable.items(), key=lambda item: str(item[0]))
+        )
+        _emit_html(
+            overview,
+            '<section class="epa-footer"><h3>Corrected routed response unavailable</h3>'
+            "<p>Required evidence is missing; corrected response omitted for these "
+            "logical sources.</p><ul>"
+            + details + "</ul></section>",
+        )
     bass_report = metadata.get("bass_management") or {}
     physical_sub = (
         bass_report.get("physical_sub_output")
@@ -847,29 +879,52 @@ def build_report_payload(
             # Raw measurements stop at the recorded band; the stored curve
             # continues past it for DSP replay and must not be drawn as data.
             initial_curve = clip_curve_to_measured_band(driver.get("initial_curve"), driver)
-            final_curve = clip_curve_to_measured_band(
-                per_driver_corrected_curve(data, channel_name, driver_index), driver
+            native_handled, native_curve, native_reason = resolve_native_driver_curve(
+                data, channel_name, driver
             )
+            if native_handled:
+                final_curve = native_curve
+            else:
+                final_curve = clip_curve_to_measured_band(
+                    per_driver_corrected_curve(data, channel_name, driver_index), driver
+                )
             passes = extract_eq_passes(eq_source)
             # The tab EQ plot appears only when EQ exists (mirroring the
             # legacy empty-EQ behavior); otherwise the tab keeps its
             # response plots without an EQ section.
             eq_response_view = (
-                per_driver_effective_eq(data, channel_name, driver_index)
-                if channel_has_eq(channel_data)
-                else None
+                None
+                if native_handled
+                else (
+                    per_driver_effective_eq(data, channel_name, driver_index)
+                    if channel_has_eq(channel_data)
+                    else None
+                )
             )
             target_view = None
             lfe_plus_channel = None
             acoustic_data = driver.get("measured_acoustics") or {}
             ir_pre = acoustic_data.get("pre_ir") or driver.get("pre_ir")
             ir_post = driver.get("post_ir")
-            caption_html = (
-                f'<p class="epa-footer">Physical driver output of {escape(channel_name)}: '
-                "its measurement through this driver's own DSP chain "
-                "(shared EQ + driver gain/crossover/route). The EQ plot below "
-                "shows this total driver shaping.</p>\n"
-            )
+            if native_handled and native_reason:
+                caption_html = (
+                    f'<p class="epa-footer">Raw measurement only; corrected response '
+                    f'unavailable for {escape(tab_label)}: {escape(native_reason)}.</p>\n'
+                )
+            elif native_handled:
+                caption_html = (
+                    f'<p class="epa-footer">Corrected physical-driver response for '
+                    f'{escape(channel_name)} includes this driver after shared EQ, gain, '
+                    "and crossover. Total driver EQ preview unavailable; "
+                    "individual filter details remain below.</p>\n"
+                )
+            else:
+                caption_html = (
+                    f'<p class="epa-footer">Physical driver output of {escape(channel_name)}: '
+                    "its measurement through this driver's own DSP chain "
+                    "(shared EQ + driver gain/crossover/route). The EQ plot below "
+                    "shows this total driver shaping.</p>\n"
+                )
         else:
             acoustic_data = channel_data
             initial_curve = channel_data.get("initial_curve")
@@ -920,17 +975,32 @@ def build_report_payload(
             **channel_data, "initial_curve": initial_curve}}}), tab=tab_label)
 
         # EQ response plot (uses per-pass breakdown when 3-pass labels are present)
-        fig_eq = create_multipass_eq_figure(
-            tab_label, eq_source, eq_response_view,
-            sample_rate=float(data.get("sample_rate", 48_000.0)),
-            tab=tab_label,
+        eq_sample_rate = _report_sample_rate(data)
+        native_without_rate = (
+            getattr(data, "native_dsp_replay_present", False) is True
+            and eq_sample_rate is None
         )
-        if fig_eq is None:
-            fig_eq = create_eq_figure(
-                tab_label, eq_filters, eq_response_view,
-                sample_rate=float(data.get("sample_rate", 48_000.0)),
+        if native_without_rate:
+            fig_eq = None
+            _emit_html(
+                sections,
+                    '<p class="epa-footer">EQ response plot unavailable: no explicit '
+                    "playback sample rate is available; the plot was omitted.</p>",
                 tab=tab_label,
             )
+        else:
+            assert eq_sample_rate is not None
+            fig_eq = create_multipass_eq_figure(
+                tab_label, eq_source, eq_response_view,
+                sample_rate=eq_sample_rate,
+                tab=tab_label,
+            )
+            if fig_eq is None:
+                fig_eq = create_eq_figure(
+                    tab_label, eq_filters, eq_response_view,
+                    sample_rate=eq_sample_rate,
+                    tab=tab_label,
+                )
         if fig_eq:
             fig_full["figure"]["y2"] = wasm_report.axis("EQ gain (dB)", "linear", -25.0, 25.0)
             for trace in fig_eq["figure"]["series"]:

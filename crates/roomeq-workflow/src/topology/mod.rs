@@ -27,5 +27,9 @@ pub(crate) use home_cinema::reconstruct_deployed_source_curves_with_evidence;
 #[cfg(test)]
 pub(crate) use roomeq_engine::topology::*;
 
+pub use home_cinema::{
+    reconstruct_deployed_source_curves_with_ir_provider,
+    reconstruct_deployed_source_curves_with_ir_provider_and_evidence,
+};
 pub use optimize::*;
 pub use types::{WorkflowProgressCallback, WorkflowProgressCallbackFactory, WorkflowStageCallback};

@@ -222,6 +222,9 @@ def _combined_panel_data(data: dict, json_path=None) -> dict:
     eq_row_traces: list[tuple[str, list, list, int, int | None]] = []
     for channel_index, (channel_name, channel_data) in enumerate(channels):
         drivers = get_plottable_drivers(channel_data)
+        if drivers and getattr(data, "native_dsp_replay_present", False):
+            # Native driver tabs explain the unavailable electrical preview.
+            continue
         if drivers and channel_has_eq(channel_data):
             labels = driver_display_names(data, channel_name)
             expanded = False

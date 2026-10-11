@@ -36,6 +36,44 @@ use roomeq_model::{
 };
 use std::collections::HashMap;
 
+/// Apply one serialized chain using frozen caller-owned IR evidence when present.
+/// The injected-provider path never derives a filesystem path or embedded-FIR association.
+fn apply_reconstruction_chain<P: roomeq_engine::dsp_realization::ConvolutionIrProvider>(
+    chain: &ChannelDspChain,
+    curve: &Curve,
+    sample_rate: f64,
+    sidecar_dir: &std::path::Path,
+    fir_coeffs: Option<&[f64]>,
+    provider: &mut Option<&mut P>,
+) -> Result<Curve> {
+    if let Some(provider) = provider.as_deref_mut() {
+        return crate::ctc::apply_channel_dsp_chain_to_curve_with_provider(
+            chain,
+            curve,
+            sample_rate,
+            provider,
+        );
+    }
+
+    if let Some(fir_coeffs) = fir_coeffs {
+        let embedded_irs = embedded_convolution_irs(&chain.plugins, Some(fir_coeffs))?;
+        crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
+            chain,
+            curve,
+            sample_rate,
+            sidecar_dir,
+            &embedded_irs,
+        )
+    } else {
+        crate::ctc::apply_channel_dsp_chain_to_curve_with_sidecar_dir(
+            chain,
+            curve,
+            sample_rate,
+            sidecar_dir,
+        )
+    }
+}
+
 pub(super) struct HomeCinemaExecutor;
 
 const DESIRED_CROSSOVER_TARGET_UNDERFILL_DB: f64 = 1.0;
@@ -215,6 +253,14 @@ fn is_source_pre_route_plugin(plugin: &PluginConfigWrapper) -> bool {
         == Some("pre_route")
 }
 
+fn is_source_post_route_plugin(plugin: &PluginConfigWrapper) -> bool {
+    plugin
+        .parameters
+        .get("room_eq_stage")
+        .and_then(serde_json::Value::as_str)
+        == Some("post_route")
+}
+
 /// Extract the failing role from a final routed crossover underfill error.
 fn underfill_error_role(message: &str) -> Option<String> {
     const PREFIX: &str = "final routed crossover underfill for '";
@@ -352,6 +398,22 @@ fn realize_source_pre_route_transfer(
     sidecar_dir: &std::path::Path,
     embedded_irs: &HashMap<String, Vec<f64>>,
 ) -> Result<Curve> {
+    let (chain, transfer_input) =
+        prepare_source_pre_route_transfer(source_channel, plugins, reference);
+    crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
+        &chain,
+        &transfer_input,
+        sample_rate,
+        sidecar_dir,
+        embedded_irs,
+    )
+}
+
+fn prepare_source_pre_route_transfer(
+    source_channel: &str,
+    plugins: impl IntoIterator<Item = PluginConfigWrapper>,
+    reference: &Curve,
+) -> (ChannelDspChain, Curve) {
     let plugins = plugins
         .into_iter()
         .filter(is_source_pre_route_plugin)
@@ -362,14 +424,27 @@ fn realize_source_pre_route_transfer(
         phase: Some(ndarray::Array1::zeros(reference.freq.len())),
         ..Curve::default()
     };
-    realize_plugins_on_curve(
-        source_channel,
+    let chain = ChannelDspChain {
+        channel: source_channel.to_string(),
         plugins,
-        &transfer_input,
-        sample_rate,
-        sidecar_dir,
-        embedded_irs,
-    )
+        drivers: None,
+        initial_curve: None,
+        final_curve: None,
+        eq_response: None,
+        target_curve: None,
+        pre_ir: None,
+        post_ir: None,
+        fir_temporal_masking: None,
+        direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
+    };
+    (chain, transfer_input)
 }
 
 fn embedded_convolution_irs(
@@ -411,6 +486,7 @@ fn source_pre_route_transfers(
     reference: &Curve,
     sample_rate: f64,
     sidecar_dir: &std::path::Path,
+    provider: &mut Option<&mut impl roomeq_engine::dsp_realization::ConvolutionIrProvider>,
 ) -> Result<HashMap<String, Curve>> {
     source_roles
         .into_iter()
@@ -418,35 +494,75 @@ fn source_pre_route_transfers(
             let Some(chain) = channels.get(&role) else {
                 if engine_home_cinema::role_for_channel(&role) == roomeq_model::HomeCinemaRole::Lfe
                 {
-                    let transfer = realize_source_pre_route_transfer(
-                        &role,
-                        std::iter::empty(),
-                        reference,
-                        sample_rate,
-                        sidecar_dir,
-                        &HashMap::new(),
-                    )?;
+                    let transfer = if let Some(provider) = provider.as_deref_mut() {
+                        realize_source_pre_route_transfer_with_provider(
+                            &role,
+                            std::iter::empty(),
+                            reference,
+                            sample_rate,
+                            provider,
+                        )?
+                    } else {
+                        realize_source_pre_route_transfer(
+                            &role,
+                            std::iter::empty(),
+                            reference,
+                            sample_rate,
+                            sidecar_dir,
+                            &HashMap::new(),
+                        )?
+                    };
                     return Ok((role, transfer));
                 }
                 return Err(AutoeqError::InvalidConfiguration {
                     message: format!("missing source chain '{role}' for pre-route realization"),
                 });
             };
-            let embedded_irs = embedded_convolution_irs(
-                &chain.plugins,
-                fir_coeffs_by_channel.get(&role).map(Vec::as_slice),
-            )?;
-            let transfer = realize_source_pre_route_transfer(
-                &role,
-                chain.plugins.clone(),
-                reference,
-                sample_rate,
-                sidecar_dir,
-                &embedded_irs,
-            )?;
+            let fir_coeffs = fir_coeffs_by_channel.get(&role).map(Vec::as_slice);
+            let transfer = if let Some(provider) = provider.as_deref_mut() {
+                realize_source_pre_route_transfer_with_provider(
+                    &role,
+                    chain.plugins.clone(),
+                    reference,
+                    sample_rate,
+                    provider,
+                )?
+            } else {
+                // Retain the legacy association rule: one retained FIR is
+                // associated against the full channel plugin list before the
+                // source-stage subset is realized.
+                let embedded_irs = embedded_convolution_irs(&chain.plugins, fir_coeffs)?;
+                realize_source_pre_route_transfer(
+                    &role,
+                    chain.plugins.clone(),
+                    reference,
+                    sample_rate,
+                    sidecar_dir,
+                    &embedded_irs,
+                )?
+            };
             Ok((role, transfer))
         })
         .collect()
+}
+
+fn realize_source_pre_route_transfer_with_provider<
+    P: roomeq_engine::dsp_realization::ConvolutionIrProvider,
+>(
+    source_channel: &str,
+    plugins: impl IntoIterator<Item = PluginConfigWrapper>,
+    reference: &Curve,
+    sample_rate: f64,
+    provider: &mut P,
+) -> Result<Curve> {
+    let (chain, transfer_input) =
+        prepare_source_pre_route_transfer(source_channel, plugins, reference);
+    crate::ctc::apply_channel_dsp_chain_to_curve_with_provider(
+        &chain,
+        &transfer_input,
+        sample_rate,
+        provider,
+    )
 }
 
 /// Advisory prefix recording a refused crossover timing reference.
@@ -553,6 +669,74 @@ pub(crate) fn reconstruct_deployed_source_curves_with_evidence(
     Ok((curves, evidence))
 }
 
+/// Reconstruct deployed routed curves using caller-owned frozen convolution IRs.
+///
+/// Every serialized convolution plugin is resolved by its exact `ir_file`
+/// through `provider`; this route never falls back to a sidecar path or a
+/// channel-level single-FIR association. The sample rate must be the explicit
+/// DSP playback rate for the saved graph.
+///
+/// # Errors
+/// Returns an error when routed topology, stage ownership, required measured
+/// phase, or any referenced convolution resource is unavailable or invalid.
+pub fn reconstruct_deployed_source_curves_with_ir_provider<
+    P: roomeq_engine::dsp_realization::ConvolutionIrProvider,
+>(
+    channels: &HashMap<String, ChannelDspChain>,
+    graph: &BassManagementRoutingGraph,
+    optimization: Option<&engine_home_cinema::BassManagementOptimizationReport>,
+    sample_rate: f64,
+    provider: &mut P,
+) -> Result<HashMap<String, Curve>> {
+    let mut provider = Some(provider);
+    reconstruct_deployed_source_curves_impl_with_provider(
+        channels,
+        &HashMap::new(),
+        graph,
+        optimization,
+        sample_rate,
+        std::path::Path::new("."),
+        &mut provider,
+        SpliceSafety::Strict,
+    )
+}
+
+/// Reconstruct deployed curves and strict crossover evidence from frozen IRs.
+///
+/// This uses the same strict topology and splice assessment as the legacy
+/// evidence entrypoint, while resolving FIRs only through `provider`.
+///
+/// # Errors
+/// Returns an error when routed topology, stage ownership, required measured
+/// phase, or any referenced convolution resource is unavailable or invalid.
+pub fn reconstruct_deployed_source_curves_with_ir_provider_and_evidence<
+    P: roomeq_engine::dsp_realization::ConvolutionIrProvider,
+>(
+    channels: &HashMap<String, ChannelDspChain>,
+    graph: &BassManagementRoutingGraph,
+    optimization: Option<&engine_home_cinema::BassManagementOptimizationReport>,
+    sample_rate: f64,
+    provider: &mut P,
+) -> Result<(
+    HashMap<String, Curve>,
+    Vec<roomeq_model::CrossoverCancellationEvidence>,
+)> {
+    let mut provider = Some(provider);
+    let mut evidence = Vec::new();
+    let curves = reconstruct_deployed_source_curves_impl_with_provider(
+        channels,
+        &HashMap::new(),
+        graph,
+        optimization,
+        sample_rate,
+        std::path::Path::new("."),
+        &mut provider,
+        SpliceSafety::Record(&mut evidence),
+    )?;
+    evidence.sort_by(|a, b| a.source_channel.cmp(&b.source_channel));
+    Ok((curves, evidence))
+}
+
 /// Deployed reconstruction with per-role splice outcomes for every role.
 ///
 /// Unlike the evidence variant, one role's rejection or hard assessment
@@ -649,6 +833,35 @@ fn reconstruct_deployed_source_curves_impl(
     optimization: Option<&engine_home_cinema::BassManagementOptimizationReport>,
     sample_rate: f64,
     sidecar_dir: &std::path::Path,
+    splice_safety: SpliceSafety<'_>,
+) -> Result<HashMap<String, Curve>> {
+    let mut provider: Option<&mut roomeq_engine::dsp_realization::NoConvolutionIr> = None;
+    reconstruct_deployed_source_curves_impl_with_provider(
+        channels,
+        fir_coeffs_by_channel,
+        graph,
+        optimization,
+        sample_rate,
+        sidecar_dir,
+        &mut provider,
+        splice_safety,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit provider and splice-safety parameters mirror the deployed reconstruction contract"
+)]
+fn reconstruct_deployed_source_curves_impl_with_provider<
+    P: roomeq_engine::dsp_realization::ConvolutionIrProvider,
+>(
+    channels: &HashMap<String, ChannelDspChain>,
+    fir_coeffs_by_channel: &HashMap<String, Vec<f64>>,
+    graph: &BassManagementRoutingGraph,
+    optimization: Option<&engine_home_cinema::BassManagementOptimizationReport>,
+    sample_rate: f64,
+    sidecar_dir: &std::path::Path,
+    provider: &mut Option<&mut P>,
     mut splice_safety: SpliceSafety<'_>,
 ) -> Result<HashMap<String, Curve>> {
     let lfe_role = &graph.physical_sub_output;
@@ -676,16 +889,13 @@ fn reconstruct_deployed_source_curves_impl(
             message: format!("physical sub chain '{lfe_role}' has no initial curve"),
         })?
         .into();
-    let common_sub_embedded_irs = embedded_convolution_irs(
-        &common_sub_chain.plugins,
-        fir_coeffs_by_channel.get(lfe_role).map(Vec::as_slice),
-    )?;
-    let common_sub_curve = crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
+    let common_sub_curve = apply_reconstruction_chain(
         &common_sub_chain,
         &sub_initial,
         sample_rate,
         sidecar_dir,
-        &common_sub_embedded_irs,
+        fir_coeffs_by_channel.get(lfe_role).map(Vec::as_slice),
+        provider,
     )?;
     let redirected_destinations = graph
         .routes
@@ -695,14 +905,17 @@ fn reconstruct_deployed_source_curves_impl(
         .collect::<std::collections::BTreeSet<_>>();
     // Sum and filter on the receiving main's grid. Interpolating a previously
     // summed dB/phase curve across a sub cancellation changes the acoustic model.
-    let realize_sub_on_grid = |frequencies: &ndarray::Array1<f64>| -> Result<Curve> {
+    let realize_sub_on_grid = |frequencies: &ndarray::Array1<f64>,
+                               provider: &mut Option<&mut P>|
+     -> Result<Curve> {
         let input = roomeq_engine::topology::interpolate_bass_response(frequencies, &sub_initial);
-        let common_sub_curve = crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
+        let common_sub_curve = apply_reconstruction_chain(
             &common_sub_chain,
             &input,
             sample_rate,
             sidecar_dir,
-            &common_sub_embedded_irs,
+            fir_coeffs_by_channel.get(lfe_role).map(Vec::as_slice),
+            provider,
         )?;
         Ok(if redirected_destinations.len() > 1 {
             let optimization = optimization.ok_or_else(|| AutoeqError::InvalidConfiguration {
@@ -757,11 +970,13 @@ fn reconstruct_deployed_source_curves_impl(
                     })
                     .cloned()
                     .collect();
-                curve = crate::ctc::apply_channel_dsp_chain_to_curve_with_sidecar_dir(
+                curve = apply_reconstruction_chain(
                     &filter_chain,
                     &curve,
                     sample_rate,
                     sidecar_dir,
+                    None,
+                    provider,
                 )?;
                 curve.spl.mapv_inplace(|level| level + output.gain_db);
                 let mut curve = roomeq_engine::topology::apply_delay_and_polarity_to_curve(
@@ -816,92 +1031,95 @@ fn reconstruct_deployed_source_curves_impl(
             common_sub_curve.clone()
         })
     };
-    let realize_sub_outputs_on_grid =
-        |frequencies: &ndarray::Array1<f64>| -> Result<(HashMap<String, Curve>, Curve)> {
-            let single_output_fallback = (graph.physical_sub_outputs.len() <= 1)
-                .then(|| realize_sub_on_grid(frequencies))
-                .transpose()?;
-            let input =
-                roomeq_engine::topology::interpolate_bass_response(frequencies, &sub_initial);
-            let common = crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
-                &common_sub_chain,
-                &input,
+    let realize_sub_outputs_on_grid = |frequencies: &ndarray::Array1<f64>,
+                                       provider: &mut Option<&mut P>|
+     -> Result<(HashMap<String, Curve>, Curve)> {
+        let single_output_fallback = (graph.physical_sub_outputs.len() <= 1)
+            .then(|| realize_sub_on_grid(frequencies, provider))
+            .transpose()?;
+        let input = roomeq_engine::topology::interpolate_bass_response(frequencies, &sub_initial);
+        let common = apply_reconstruction_chain(
+            &common_sub_chain,
+            &input,
+            sample_rate,
+            sidecar_dir,
+            fir_coeffs_by_channel.get(lfe_role).map(Vec::as_slice),
+            provider,
+        )?;
+        let Some(drivers) = sub_driver_chains.as_ref() else {
+            return Ok((HashMap::new(), single_output_fallback.unwrap_or(common)));
+        };
+        let mut outputs = HashMap::with_capacity(drivers.len());
+        for driver in drivers {
+            let initial = driver.initial_curve.clone().ok_or_else(|| {
+                AutoeqError::InvalidMeasurement {
+                    message: format!(
+                        "multi-sub driver '{}' has no initial curve for deployed reconstruction",
+                        driver.name
+                    ),
+                }
+            })?;
+            let mut curve = roomeq_engine::topology::interpolate_bass_response(
+                &common.freq,
+                &Curve::from(initial),
+            );
+            let mut filter_chain = common_sub_chain.clone();
+            filter_chain.drivers = None;
+            filter_chain.plugins = driver
+                .plugins
+                .iter()
+                .filter(|plugin| {
+                    (plugin.plugin_type != "gain"
+                        || plugin
+                            .parameters
+                            .get("room_eq_correction_gain")
+                            .and_then(|value| value.as_bool())
+                            == Some(true))
+                        && plugin.plugin_type != "delay"
+                        && plugin.plugin_type != "crossover"
+                })
+                .cloned()
+                .collect();
+            curve = apply_reconstruction_chain(
+                &filter_chain,
+                &curve,
                 sample_rate,
                 sidecar_dir,
-                &common_sub_embedded_irs,
+                None,
+                provider,
             )?;
-            let Some(drivers) = sub_driver_chains.as_ref() else {
-                return Ok((HashMap::new(), single_output_fallback.unwrap_or(common)));
-            };
-            let mut outputs = HashMap::with_capacity(drivers.len());
-            for driver in drivers {
-                let initial = driver.initial_curve.clone().ok_or_else(|| {
-                    AutoeqError::InvalidMeasurement {
-                        message: format!(
-                            "multi-sub driver '{}' has no initial curve for deployed reconstruction",
-                            driver.name
-                        ),
-                    }
-                })?;
-                let mut curve = roomeq_engine::topology::interpolate_bass_response(
-                    &common.freq,
-                    &Curve::from(initial),
-                );
-                let mut filter_chain = common_sub_chain.clone();
-                filter_chain.drivers = None;
-                filter_chain.plugins = driver
-                    .plugins
-                    .iter()
-                    .filter(|plugin| {
-                        (plugin.plugin_type != "gain"
-                            || plugin
-                                .parameters
-                                .get("room_eq_correction_gain")
-                                .and_then(|value| value.as_bool())
-                                == Some(true))
-                            && plugin.plugin_type != "delay"
-                            && plugin.plugin_type != "crossover"
-                    })
-                    .cloned()
-                    .collect();
-                curve = crate::ctc::apply_channel_dsp_chain_to_curve_with_sidecar_dir(
-                    &filter_chain,
+            if let Some((frequency, crossover_type)) = output::driver_low_pass(driver) {
+                curve = apply_crossover_response_to_curve(
                     &curve,
+                    &crossover_type,
+                    frequency,
                     sample_rate,
-                    sidecar_dir,
-                )?;
-                if let Some((frequency, crossover_type)) = output::driver_low_pass(driver) {
-                    curve = apply_crossover_response_to_curve(
-                        &curve,
-                        &crossover_type,
-                        frequency,
-                        sample_rate,
-                        true,
-                    );
-                }
-                if !curve_has_usable_phase(&curve) {
-                    return Err(AutoeqError::InvalidMeasurement {
-                        message: format!(
-                            "multi-sub driver '{}' has no usable phase for deployed reconstruction",
-                            driver.name
-                        ),
-                    });
-                }
-                // The common post-route transfer belongs to every physical
-                // output, but route gain/delay/polarity remain owned by the
-                // matrix edge and are applied by the replay function below.
-                curve.spl = &curve.spl + &common.spl - &input.spl;
-                if let (Some(phase), Some(common_phase), Some(input_phase)) = (
-                    curve.phase.as_mut(),
-                    common.phase.as_ref(),
-                    input.phase.as_ref(),
-                ) {
-                    *phase = &*phase + common_phase - input_phase;
-                }
-                outputs.insert(driver.name.clone(), curve);
+                    true,
+                );
             }
-            Ok((outputs, single_output_fallback.unwrap_or(common)))
-        };
+            if !curve_has_usable_phase(&curve) {
+                return Err(AutoeqError::InvalidMeasurement {
+                    message: format!(
+                        "multi-sub driver '{}' has no usable phase for deployed reconstruction",
+                        driver.name
+                    ),
+                });
+            }
+            // The common post-route transfer belongs to every physical
+            // output, but route gain/delay/polarity remain owned by the
+            // matrix edge and are applied by the replay function below.
+            curve.spl = &curve.spl + &common.spl - &input.spl;
+            if let (Some(phase), Some(common_phase), Some(input_phase)) = (
+                curve.phase.as_mut(),
+                common.phase.as_ref(),
+                input.phase.as_ref(),
+            ) {
+                *phase = &*phase + common_phase - input_phase;
+            }
+            outputs.insert(driver.name.clone(), curve);
+        }
+        Ok((outputs, single_output_fallback.unwrap_or(common)))
+    };
     let source_roles = graph
         .routes
         .iter()
@@ -935,26 +1153,48 @@ fn reconstruct_deployed_source_curves_impl(
                         message: format!("main channel '{role}' has no initial curve"),
                     })?
                     .into();
-                let embedded_irs = embedded_convolution_irs(
-                    &chain.plugins,
+                // The physical routing contract places source `pre_route`
+                // processing before the route matrix and output `post_route`
+                // processing after it. A main channel's correction EQ is
+                // output-owned: realize the direct high-pass branch first,
+                // then apply only its output stage before summing redirected
+                // bass below.
+                let mut main_route_chain = chain.clone();
+                main_route_chain.plugins.retain(|plugin| {
+                    is_source_pre_route_plugin(plugin)
+                        || plugin
+                            .parameters
+                            .get("room_eq_stage")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("route_owned")
+                });
+                let direct_main = apply_reconstruction_chain(
+                    &main_route_chain,
+                    &initial,
+                    sample_rate,
+                    sidecar_dir,
                     fir_coeffs_by_channel.get(&role).map(Vec::as_slice),
+                    provider,
                 )?;
-                Some(
-                    crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
-                        chain,
-                        &initial,
-                        sample_rate,
-                        sidecar_dir,
-                        &embedded_irs,
-                    )?,
-                )
+                let mut main_output_chain = chain.clone();
+                main_output_chain
+                    .plugins
+                    .retain(is_source_post_route_plugin);
+                Some(apply_reconstruction_chain(
+                    &main_output_chain,
+                    &direct_main,
+                    sample_rate,
+                    sidecar_dir,
+                    fir_coeffs_by_channel.get(&role).map(Vec::as_slice),
+                    provider,
+                )?)
             };
             let frequencies = main_curve.as_ref().map(|main| &main.freq).unwrap_or(&common_sub_curve.freq);
             let (sub_output_curves, routed_common_sub_curve) =
-                realize_sub_outputs_on_grid(frequencies)?;
+                realize_sub_outputs_on_grid(frequencies, provider)?;
             let source_transfers = source_pre_route_transfers(
                 channels, fir_coeffs_by_channel, [role.clone()], &routed_common_sub_curve,
-                sample_rate, sidecar_dir,
+                sample_rate, sidecar_dir, provider,
             )?;
             let bass = engine_bass_management::predict_bass_source_curve_from_output_routes(
                 &routed_common_sub_curve,
@@ -5139,6 +5379,61 @@ mod post_dsp_level_tests {
         }
     }
 
+    #[test]
+    fn frozen_ir_provider_resolves_multiple_exact_resources_without_path_fallback() {
+        use roomeq_engine::dsp_realization::ConvolutionIrProvider;
+
+        struct FrozenIrs {
+            requests: Vec<(String, u32)>,
+        }
+
+        impl ConvolutionIrProvider for FrozenIrs {
+            fn taps(
+                &mut self,
+                ir_file: &str,
+                sample_rate: u32,
+            ) -> roomeq_engine::error::Result<&[f64]> {
+                self.requests.push((ir_file.to_string(), sample_rate));
+                match ir_file {
+                    "frozen/main.wav" => Ok(&[1.0, 0.25]),
+                    "frozen/sub.wav" => Ok(&[1.0, -0.125]),
+                    other => Err(roomeq_engine::error::AutoeqError::InvalidConfiguration {
+                        message: format!("unexpected frozen IR key {other}"),
+                    }),
+                }
+            }
+        }
+
+        let mut dsp_chain = chain("L", curve(60.0), None);
+        dsp_chain.plugins = ["frozen/main.wav", "frozen/sub.wav"]
+            .into_iter()
+            .map(roomeq_engine::output::create_convolution_plugin)
+            .collect();
+        let mut frozen = FrozenIrs {
+            requests: Vec::new(),
+        };
+        let mut provider = Some(&mut frozen);
+        let input = curve(0.0);
+        let output = super::apply_reconstruction_chain(
+            &dsp_chain,
+            &input,
+            48_000.0,
+            std::path::Path::new("/must/not/be/read"),
+            Some(&[9.0]),
+            &mut provider,
+        )
+        .expect("both exact frozen IR keys are resolved by the provider");
+
+        drop(provider);
+        assert!(frozen.requests.len() >= 2);
+        assert_eq!(frozen.requests.len() % 2, 0);
+        for pair in frozen.requests.chunks_exact(2) {
+            assert_eq!(pair[0], ("frozen/main.wav".into(), 48_000));
+            assert_eq!(pair[1], ("frozen/sub.wav".into(), 48_000));
+        }
+        assert_ne!(output.spl, input.spl);
+    }
+
     fn low_route(source: &str, source_index: usize) -> BassManagementRoute {
         BassManagementRoute {
             group_id: None,
@@ -5845,6 +6140,75 @@ mod post_dsp_level_tests {
             let wrapped_error = (phase - expected + 180.0).rem_euclid(360.0) - 180.0;
             assert!(wrapped_error.abs() < 1.0e-10);
         }
+    }
+
+    #[test]
+    fn deployed_main_post_route_processing_only_changes_direct_branch() {
+        let main_input = curve(80.0);
+        let sub_input = curve(80.0);
+        let mut main = chain("L", main_input.clone(), Some(main_input));
+        main.plugins.push(mark_plugin_stage(
+            roomeq_engine::output::create_gain_plugin(2.0),
+            "pre_route",
+        ));
+        main.plugins.push(mark_plugin_stage(
+            roomeq_engine::output::create_gain_plugin(3.0),
+            "post_route",
+        ));
+        let mut sub = chain("LFE", sub_input.clone(), Some(sub_input));
+        sub.plugins.push(mark_plugin_stage(
+            roomeq_engine::output::create_gain_plugin(4.0),
+            "post_route",
+        ));
+
+        let mut direct = low_route("L", 0);
+        direct.destination = "L".to_string();
+        direct.destination_index = 0;
+        direct.pre_chain_channel = Some("L".to_string());
+        direct.post_chain_channel = Some("L".to_string());
+        direct.route_kind = "main_highpass_to_self".to_string();
+        direct.low_pass_hz = None;
+        let mut redirected = low_route("L", 0);
+        redirected.destination_index = 1;
+        redirected.gain_db = -6.0;
+        redirected.gain_linear = 10.0_f64.powf(-6.0 / 20.0);
+        redirected.matrix_gain = redirected.gain_linear;
+        redirected.low_pass_hz = None;
+        let mut lfe = low_route("LFE", 1);
+        lfe.low_pass_hz = None;
+        let graph = BassManagementRoutingGraph {
+            physical_sub_output: "LFE".to_string(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
+            input_channels: vec!["L".to_string(), "LFE".to_string()],
+            output_channels: vec!["L".to_string(), "LFE".to_string()],
+            routes: vec![direct, redirected, lfe],
+            matrix: None,
+            input_trim_db: HashMap::new(),
+            post_dsp_main_alignment_band_hz: None,
+            advisories: Vec::new(),
+        };
+
+        let deployed = super::reconstruct_deployed_source_curves_unenforced(
+            &HashMap::from([("L".to_string(), main), ("LFE".to_string(), sub)]),
+            &HashMap::new(),
+            &graph,
+            None,
+            48_000.0,
+            std::path::Path::new("."),
+        )
+        .expect("resolve input, direct output, and physical-sub stages");
+
+        let direct_amplitude = 10.0_f64.powf(85.0 / 20.0);
+        let redirected_amplitude = 10.0_f64.powf(80.0 / 20.0);
+        let expected_level = 20.0 * (direct_amplitude + redirected_amplitude).log10();
+        let actual = &deployed["L"].spl;
+        assert!(
+            actual
+                .iter()
+                .all(|level| (level - expected_level).abs() < 1.0e-9),
+            "expected direct branch +2 dB input +3 dB output and redirected branch +2 dB input -6 dB route +4 dB sub output (no main output EQ leak): {actual:?}"
+        );
     }
 
     #[test]

@@ -14,17 +14,31 @@ MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 _POLL_INTERVAL_SECONDS = 0.01
 
 
-def build_host_report_payload(input_path, output_path, sections_path, directory):
+def build_host_report_payload(input_path, output_path, sections_path, directory, playback_sample_rate=""):
     """Retain the canonical loaded object while the host computes shared sections."""
     from .loaders import load_roomeq_json
 
     data = load_roomeq_json(Path(input_path))
     try:
+        attach_playback_context(data, playback_sample_rate)
         return build_host_report_payload_from_data(
             data, output_path, sections_path, directory, input_path=Path(input_path)
         )
     finally:
         data.close()
+
+
+def attach_playback_context(data, value):
+    """Attach explicit host playback context without changing graph provenance."""
+    if value is None or value == "":
+        return
+    if isinstance(value, str):
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError("DSP playback sample rate must be a positive integer")
+        value = int(value)
+    if type(value) is not int or not 0 < value <= 0xFFFFFFFF:
+        raise ValueError("DSP playback sample rate must be a positive u32 integer")
+    data.native_playback_sample_rate = value
 
 
 def build_host_report_payload_from_data(

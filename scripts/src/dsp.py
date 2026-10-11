@@ -8,6 +8,18 @@ from .native_ir_group_delay import compute_group_delay_from_ir
 from .data_extract import get_plottable_drivers
 
 
+def _playback_sample_rate(data):
+    """Prefer caller-owned playback context over legacy graph defaults."""
+    rate = getattr(data, "native_playback_sample_rate", None)
+    if rate is not None:
+        if type(rate) is not int or not 0 < rate <= 0xFFFFFFFF:
+            raise ValueError("DSP playback sample-rate context is invalid")
+        return float(rate)
+    if getattr(data, "native_dsp_replay_present", False):
+        raise ValueError("Native DSP replay requires explicit playback-rate context")
+    return float(data.get("sample_rate", 48_000.0) or 48_000.0)
+
+
 def smooth_octave(freq: list[float], spl: list[float], octave_fraction: float) -> list[float]:
     """
     Apply octave smoothing to frequency response data.
@@ -538,7 +550,7 @@ def sum_driver_initial_curves(channel_data: dict | None) -> dict | None:
 
 def replay_serialized_output(data: dict) -> dict[str, dict]:
     """Replay serialized channel chains without consuming reported curves."""
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     replayed = {}
     for name, channel in (data.get("channels", {}) or {}).items():
         curve = channel.get("initial_curve") or channel.get("raw_curve")
@@ -800,6 +812,9 @@ def per_driver_effective_eq(
     subwoofer of a multi-sub channel. Returns `None` when the driver
     has no usable frequency grid.
     """
+    if getattr(data, "native_dsp_replay_present", False):
+        # Prepared acoustic curves do not certify a separate electrical EQ preview.
+        return None
     channel = (data.get("channels") or {}).get(channel_name)
     drivers = get_plottable_drivers(channel)
     if driver_index < 0 or driver_index >= len(drivers):
@@ -808,7 +823,7 @@ def per_driver_effective_eq(
     chain = per_driver_chain_plugins(data, channel_name, driver_index) or []
     if not grid or not chain:
         return None
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     return apply_plugins_to_curve(
         {"freq": list(grid), "spl": [0.0] * len(grid)}, chain, sample_rate
     )
@@ -826,11 +841,15 @@ def per_driver_corrected_curve(
     drivers = get_plottable_drivers(channel)
     if driver_index < 0 or driver_index >= len(drivers):
         return None
+    if getattr(data, "native_dsp_replay_present", False):
+        from .native_driver_replay import resolve_native_driver_curve
+        _, curve, _ = resolve_native_driver_curve(data, channel_name, drivers[driver_index])
+        return curve
     initial = drivers[driver_index].get("initial_curve")
     chain = per_driver_chain_plugins(data, channel_name, driver_index) or []
     if not initial or not chain:
         return None
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     return apply_plugins_to_curve(initial, chain, sample_rate)
 
 
@@ -849,6 +868,11 @@ def build_post_dsp_source_curves(data: dict) -> dict[str, dict]:
     Multi-driver subs replay each driver's own measurement so the result
     stays at the acoustic level instead of the level-relative aggregate.
     """
+    from .native_source_replay import resolve_native_source_curves
+    handled, native_curves = resolve_native_source_curves(data)
+    if handled:
+        return native_curves
+
     deployed = data.get("deployed_source_curves") or {}
     if deployed:
         return deployed
@@ -885,7 +909,7 @@ def build_post_dsp_source_curves(data: dict) -> dict[str, dict]:
         for plugin in sub_channel.get("plugins", [])
         if (plugin.get("parameters", {}) or {}).get("room_eq_stage") == "post_route"
     ]
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
 
     # The channel aggregate of a multi-driver sub is level-relative
     # optimizer state. Redirected branches must replay the acoustic
