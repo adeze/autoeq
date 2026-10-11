@@ -756,6 +756,18 @@ FIR energy spread and spatial validity require final-chain measurements/listenin
 
 ## Measurement provenance
 
+### Joint-optimization input discipline
+
+Subs and mains combined for joint optimization (GD-Opt group-delay
+alignment across channels) must come from one capture plan/process run
+with identical response frequency grids. GD-Opt requires exact grid
+equality across channels and skips joint optimization with a
+`frequency_grid_mismatch` advisory otherwise; it never resamples or
+interpolates mismatched grids. `sotf-capture plan-process` records a
+`joint_optimization` warning in `pending_processing` when the analyzed
+takes in one run diverge, so a mixed or inconsistent selection is
+visible before RoomEQ runs.
+
 ### Per-source direct-sound capture facts
 
 Each measurement source may carry its own `provenance`. For gated/direct-sound
