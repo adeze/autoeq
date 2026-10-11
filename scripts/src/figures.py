@@ -27,7 +27,6 @@ from .data_extract import (
     compute_y_range,
     compute_average_spl_in_range,
     driver_display_names,
-    extract_eq_passes,
     get_all_crossover_frequencies,
     get_channel_sort_key,
     get_plottable_drivers,
@@ -37,6 +36,8 @@ from .native_bass_figures import (
     headroom_figure as _native_bass_headroom_figure,
     routing_figure as _native_bass_routing_figure,
 )
+from .native_eq_figures import create_eq_figure, create_multipass_eq_figure
+from .native_combined_figures import combined_figures as _native_combined_figures
 from .native_response_figures import (
     add_channel_response_overlays as _native_add_channel_response_overlays,
     create_channel_figure as _native_create_channel_figure,
@@ -101,242 +102,6 @@ def create_zoomed_figure(
     )
 
 
-def create_eq_figure(
-    channel_name: str,
-    eq_filters: list[dict],
-    eq_response_data: dict | None = None,
-    sample_rate: float = 48_000.0,
-    tab=None,
-):
-    """Build an EQ frequency-response section.
-
-    Args:
-        channel_name: Name of the channel.
-        eq_filters: List of EQ filter dicts (for individual filter decomposition).
-        eq_response_data: Optional pre-computed EQ response from JSON output
-            (with 'freq' and 'spl' keys). When provided, used for the combined
-            EQ curve instead of recomputing from biquad filters.
-    """
-    if not eq_filters and not eq_response_data:
-        return None
-
-    # Use pre-computed EQ response from JSON if available, otherwise compute from filters
-    if eq_response_data and "freq" in eq_response_data and "spl" in eq_response_data:
-        freq_points = eq_response_data["freq"]
-        eq_response = eq_response_data["spl"]
-    else:
-        freq_points = generate_freq_points(20.0, min(20000.0, sample_rate / 2), 500)
-        freq_points = [min(f, sample_rate / 2) for f in freq_points]
-        eq_response = compute_eq_response(eq_filters, freq_points, sample_rate)
-
-    if not eq_response:
-        return None
-
-    series_list = []
-
-    # Add combined EQ response
-    series_list.append(
-        series(
-            "Combined EQ",
-            freq_points,
-            eq_response,
-            color="rgba(100, 100, 255, 0.9)",
-            width=2,
-        )
-    )
-
-    # Add individual filter responses
-    colors = [
-        "rgba(255, 150, 150, 0.6)",
-        "rgba(150, 255, 150, 0.6)",
-        "rgba(150, 150, 255, 0.6)",
-        "rgba(255, 255, 150, 0.6)",
-        "rgba(255, 150, 255, 0.6)",
-        "rgba(150, 255, 255, 0.6)",
-        "rgba(200, 200, 200, 0.6)",
-    ]
-
-    for i, filt in enumerate(eq_filters):
-        single_response = compute_eq_response([filt], freq_points, sample_rate)
-        freq = filt.get("freq", 0)
-        gain = filt.get("db_gain", 0)
-        filter_type = filt.get("filter_type", "peak")
-        if filt.get("topology") == "kautz_filter":
-            filter_label = "KAUTZ bank (unity + weighted basis)"
-        else:
-            prefix = "WARPED " if filt.get("topology") == "warped_biquad" else ""
-            filter_label = f"{prefix}{filter_type.upper()} {freq:.0f}Hz {gain:+.1f}dB"
-
-        series_list.append(
-            series(
-                filter_label,
-                freq_points,
-                single_response,
-                color=colors[i % len(colors)],
-                width=1,
-                dash="dot",
-            )
-        )
-
-    # Add 0 dB reference line
-    series_list.append(
-        series(
-            "0 dB",
-            [freq_points[0], freq_points[-1]],
-            [0, 0],
-            color="rgba(150, 150, 150, 0.5)",
-            width=1,
-            dash="dash",
-        )
-    )
-
-    # Compute y-range from EQ response
-    y_limit: int | None = None
-    y_min = -15
-    y_max = 15
-
-    if eq_response:
-        is_lfe = "lfe" in channel_name.lower()
-        if is_lfe:
-            lfe_spl = []
-            for f, s in zip(freq_points, eq_response):
-                if 20 <= f <= 200:
-                    lfe_spl.append(s)
-            if lfe_spl:
-                max_abs = max(abs(min(lfe_spl)), abs(max(lfe_spl)))
-                y_limit = max(10, math.ceil(max_abs / 5) * 5 + 5)
-            else:
-                y_limit = 15
-        else:
-            eq_max = max(eq_response)
-            eq_min = min(eq_response)
-            y_max = math.ceil(eq_max / 5) * 5
-            y_min = math.floor(eq_min / 5) * 5
-            y_min = max(y_min, y_max - 50)
-            y_limit = None
-    else:
-        y_limit = 15
-
-    # Compute y_range for plot
-    if y_limit is not None:
-        plot_y_range = [-y_limit, y_limit]
-    else:
-        plot_y_range = [y_min, y_max]
-
-    return figure(
-        f"EQ Response: {channel_name}",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("Gain (dB)", "linear", plot_y_range[0], plot_y_range[1]),
-        series_list=series_list,
-        tab=tab,
-    )
-
-
-def create_multipass_eq_figure(
-    channel_name: str,
-    channel_data: dict,
-    eq_response_data: dict | None = None,
-    sample_rate: float = 48_000.0,
-    tab=None,
-):
-    """Build a per-pass EQ-responses section for the 3-pass pipeline.
-
-    When labeled passes exist (cea2034_speaker_correction, user_preference),
-    shows each pass as a distinct colored curve plus the combined response.
-    Falls back to the standard create_eq_figure for single-pass configs.
-
-    Args:
-        channel_name: Name of the channel.
-        channel_data: Full channel data dict from roomeq output.
-        eq_response_data: Optional pre-computed combined EQ response.
-    """
-    passes = extract_eq_passes(channel_data)
-
-    if not passes:
-        return None
-
-    # If only one unlabeled pass, fall back to standard EQ figure
-    has_labeled = any(p["label"] for p in passes)
-    if not has_labeled:
-        all_filters = []
-        for p in passes:
-            all_filters.extend(p["filters"])
-        return create_eq_figure(
-            channel_name, all_filters, eq_response_data, sample_rate, tab=tab
-        )
-
-    freq_points = generate_freq_points(20.0, min(20000.0, sample_rate / 2), 500)
-    freq_points = [min(f, sample_rate / 2) for f in freq_points]
-    series_list = []
-
-    # Collect all filters for the combined response
-    all_filters = []
-    for p in passes:
-        all_filters.extend(p["filters"])
-
-    # Combined EQ response (from pre-computed data or calculated)
-    if eq_response_data and "freq" in eq_response_data and "spl" in eq_response_data:
-        combined_freq = eq_response_data["freq"]
-        combined_response = eq_response_data["spl"]
-    else:
-        combined_freq = freq_points
-        combined_response = compute_eq_response(all_filters, freq_points, sample_rate)
-
-    if combined_response:
-        series_list.append(
-            series(
-                "Combined (all passes)",
-                combined_freq,
-                combined_response,
-                color="rgba(50, 50, 50, 0.9)",
-                width=2.5,
-            )
-        )
-
-    # Per-pass responses
-    for p in passes:
-        pass_response = compute_eq_response(p["filters"], freq_points, sample_rate)
-        if pass_response:
-            series_list.append(
-                series(
-                    p["display_name"],
-                    freq_points,
-                    pass_response,
-                    color=p["color"],
-                    width=2,
-                )
-            )
-
-    # 0 dB reference
-    series_list.append(
-        series(
-            "0 dB",
-            [freq_points[0], freq_points[-1]],
-            [0, 0],
-            color="rgba(150, 150, 150, 0.5)",
-            width=1,
-            dash="dash",
-        )
-    )
-
-    # Y-range
-    y_min, y_max = -15, 15
-    if combined_response:
-        eq_max = max(combined_response)
-        eq_min = min(combined_response)
-        y_max = math.ceil(eq_max / 5) * 5
-        y_min = math.floor(eq_min / 5) * 5
-        y_min = max(y_min, y_max - 50)
-
-    return figure(
-        f"EQ Response (3-Pass): {channel_name}",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("Gain (dB)", "linear", y_min, y_max),
-        series_list=series_list,
-        tab=tab,
-    )
-
-
 def _get_driver_initial_curves(channel_data: dict) -> list[tuple[str, dict]] | None:
     """Extract per-driver initial curves from a channel's driver chains.
 
@@ -361,39 +126,12 @@ def _get_driver_initial_curves(channel_data: dict) -> list[tuple[str, dict]] | N
     return result if result else None
 
 
-def _driver_trace_kwargs(driver_index: int, color: str, point_count: int) -> dict:
-    """Return line-style kwargs distinguishing drivers within one channel.
-
-    Render-only port of the old trace-style helper: marker symbols are dropped, so
-    every driver is a plain solid line in the channel color (width 2).
-    Drivers stay distinguishable via their ``Original:`` / ``EQ:`` series
-    names. ``point_count`` is kept for signature compatibility.
-    """
-    return {"color": color, "width": 2.0, "dash": "solid"}
-
-
 def _combined_panel_data(data: dict, json_path=None) -> dict:
     """Collect the shared per-channel curves for the combined overview.
 
-    Returns channel order, colors, EQ traces, post-DSP curves, target
-    overlays, crossover markers, and the shared SPL y-range so the
-    Before/Corrected panels stay visually comparable.
+    Returns channel order and prepared numeric traces for Rust presentation.
     """
     channels_dict = data.get("channels", {})
-
-    # Color palette for channels
-    channel_colors = [
-        "rgba(31, 119, 180, 0.9)",  # blue
-        "rgba(255, 127, 14, 0.9)",  # orange
-        "rgba(44, 160, 44, 0.9)",  # green
-        "rgba(214, 39, 40, 0.9)",  # red
-        "rgba(148, 103, 189, 0.9)",  # purple
-        "rgba(140, 86, 75, 0.9)",  # brown
-        "rgba(227, 119, 194, 0.9)",  # pink
-        "rgba(127, 127, 127, 0.9)",  # gray
-        "rgba(188, 189, 34, 0.9)",  # olive
-        "rgba(23, 190, 207, 0.9)",  # cyan
-    ]
 
     # Generate frequency points for EQ response
     freq_points = generate_freq_points(20.0, 20000.0, 500)
@@ -511,26 +249,11 @@ def _combined_panel_data(data: dict, json_path=None) -> dict:
         eq_y_upper = 15
         eq_y_lower = -15
 
-    # --- Crossover vertical lines (shared by all 3 panels) ---
+    # Crossover positions remain numerical input; Rust builds the marks.
     crossover_freqs = get_all_crossover_frequencies(data)
-    vlines = []
-    for xover_freq in crossover_freqs:
-        freq_label = (
-            f"{xover_freq / 1000:.1f}k" if xover_freq >= 1000 else f"{xover_freq:.0f}"
-        )
-        vlines.append(
-            vline(
-                xover_freq,
-                "rgba(180, 80, 180, 0.7)",
-                dash="dashdot",
-                width=1.5,
-                label=f"Xover {freq_label} Hz",
-            )
-        )
 
     return {
         "channels": channels,
-        "channel_colors": channel_colors,
         "freq_points": freq_points,
         "per_driver_initial": per_driver_initial,
         "post_dsp_curves": post_dsp_curves,
@@ -540,196 +263,95 @@ def _combined_panel_data(data: dict, json_path=None) -> dict:
         "spl_y_max": spl_y_max,
         "eq_y_lower": eq_y_lower,
         "eq_y_upper": eq_y_upper,
-        "vlines": vlines,
+        "crossovers": crossover_freqs,
     }
 
 
 def create_combined_figure(data: dict, json_path=None, tab=None) -> list:
-    """Create the combined overview as three stacked panels.
-
-    One graph, three vertically aligned subplots sharing the frequency
-    x-axis (the schema has no multi-axis figure, so the panels are three
-    consecutive sections both renderers draw stacked in payload order):
-
-    1. Before EQ — every channel plus its dotted target overlay;
-    2. EQ — every channel/driver shaping curve on a Gain axis;
-    3. Corrected — every post-DSP channel plus its dotted target overlay.
-
-    Each panel carries only its own legend entries. The Before/Corrected
-    panels share one SPL y-range so they stay visually comparable.
-
-    Args:
-        data: Output JSON data (roomeq result with correction filters)
-        json_path: Path to output JSON (used to resolve relative target files)
-        tab: Tab label passed into the emitted sections.
-    """
+    """Build the three combined overview panels from prepared response data."""
     channels_dict = data.get("channels", {})
-
-    x_axis = axis("Frequency (Hz)", "log", 20, 20000)
     if not channels_dict:
-        print("Warning: No channels found in the JSON file")
-        return [
-            figure(
-                "Combined Overview — Before EQ",
-                x_axis,
-                axis("SPL (dB)", "linear", -20, 30),
-                series_list=[],
-                tab=tab,
-            )
-        ]
+        return _native_combined_figures({"has_channels": False}, tab)
 
     panels = _combined_panel_data(data, json_path)
     channels = panels["channels"]
-    channel_colors = panels["channel_colors"]
-    freq_points = panels["freq_points"]
     per_driver_initial = panels["per_driver_initial"]
     post_dsp_curves = panels["post_dsp_curves"]
     target_curves = panels["target_curves"]
-    eq_row_traces = panels["eq_row_traces"]
-    vlines = panels["vlines"]
-    spl_axis = axis("SPL (dB)", "linear", panels["spl_y_min"], panels["spl_y_max"])
+    prepared = {
+        "has_channels": True,
+        "spl_y_min": panels["spl_y_min"],
+        "spl_y_max": panels["spl_y_max"],
+        "eq_y_lower": panels["eq_y_lower"],
+        "eq_y_upper": panels["eq_y_upper"],
+        "eq_frequency_extent": [panels["freq_points"][0], panels["freq_points"][-1]],
+        "crossovers": panels["crossovers"],
+        "before_series": [],
+        "eq_series": [],
+        "corrected_series": [],
+    }
 
-    # --- Panel 1: Before EQ (all channels + dotted targets) ---
-    before_series: list[dict] = []
-    for i, (channel_name, channel_data) in enumerate(channels):
-        color = channel_colors[i % len(channel_colors)]
+    def add_series(role, name, curve, color_index, *, dash="solid", width=2.0, smooth=False):
+        if not curve or "freq" not in curve or "spl" not in curve:
+            return
+        spl = (
+            smooth_octave(curve["freq"], curve["spl"], DEFAULT_SMOOTHING)
+            if smooth
+            else curve["spl"]
+        )
+        prepared[role].append({
+            "name": name,
+            "x": curve["freq"],
+            "y": spl,
+            "color_index": color_index % 10,
+            "dash": dash,
+            "width": width,
+        })
+
+    for channel_index, (channel_name, channel_data) in enumerate(channels):
         if channel_name in per_driver_initial:
-            for d_idx, (driver_name, dcurve) in enumerate(
-                per_driver_initial[channel_name]
-            ):
-                spl_smoothed = smooth_octave(
-                    dcurve["freq"], dcurve["spl"], DEFAULT_SMOOTHING
-                )
-                style = _driver_trace_kwargs(d_idx, color, len(spl_smoothed))
-                before_series.append(
-                    series(
-                        f"{channel_name}/{driver_name} (before)",
-                        dcurve["freq"],
-                        spl_smoothed,
-                        color=style["color"],
-                        width=style["width"],
-                        dash=style["dash"],
-                    )
+            for driver_name, curve in per_driver_initial[channel_name]:
+                add_series(
+                    "before_series",
+                    f"{channel_name}/{driver_name} (before)",
+                    curve,
+                    channel_index,
+                    smooth=True,
                 )
         else:
-            initial_curve = channel_data.get("initial_curve")
-            if initial_curve:
-                spl_smoothed = smooth_octave(
-                    initial_curve["freq"],
-                    initial_curve["spl"],
-                    DEFAULT_SMOOTHING,
-                )
-                before_series.append(
-                    series(
-                        f"{channel_name} (before)",
-                        initial_curve["freq"],
-                        spl_smoothed,
-                        color=color,
-                        width=2.0,
-                    )
-                )
-    for i, (channel_name, _) in enumerate(channels):
-        target_curve = target_curves.get(channel_name)
-        if not target_curve:
-            continue
-        color = channel_colors[i % len(channel_colors)]
-        before_series.append(
-            series(
-                f"{channel_name} target",
-                target_curve["freq"],
-                target_curve["spl"],
-                color=color,
-                width=2.0,
-                dash="dot",
+            add_series(
+                "before_series",
+                f"{channel_name} (before)",
+                channel_data.get("initial_curve"),
+                channel_index,
+                smooth=True,
             )
+        target = target_curves.get(channel_name)
+        add_series(
+            "before_series", f"{channel_name} target", target, channel_index,
+            dash="dot",
         )
 
-    # --- Panel 2: EQ (all channels/drivers on the Gain axis) ---
-    eq_series: list[dict] = []
-    for trace_name, eq_freq, eq_spl, color_index, _driver_index in eq_row_traces:
-        color = channel_colors[color_index % len(channel_colors)]
-        eq_series.append(
-            series(
-                trace_name,
-                eq_freq,
-                eq_spl,
-                color=color,
-                width=2.0,
-            )
-        )
-    eq_series.append(
-        series(
-            "0 dB",
-            [freq_points[0], freq_points[-1]],
-            [0, 0],
-            color="rgba(150, 150, 150, 0.5)",
-            width=1,
-            dash="dash",
-        )
-    )
-
-    # --- Panel 3: Corrected (all post-DSP channels + dotted targets) ---
-    corrected_series: list[dict] = []
-    for i, (channel_name, channel_data) in enumerate(channels):
-        color = channel_colors[i % len(channel_colors)]
         final_curve = post_dsp_curves.get(channel_name)
-
-        if final_curve and "freq" in final_curve and "spl" in final_curve:
-            freq = final_curve["freq"]
-            spl_smoothed = smooth_octave(freq, final_curve["spl"], DEFAULT_SMOOTHING)
-            corrected_series.append(
-                series(
-                    f"{channel_name} (corrected)",
-                    freq,
-                    spl_smoothed,
-                    color=color,
-                    width=2.0,
-                )
-            )
-    for i, (channel_name, _) in enumerate(channels):
-        target_curve = target_curves.get(channel_name)
-        if not target_curve:
-            continue
-        color = channel_colors[i % len(channel_colors)]
-        corrected_series.append(
-            series(
-                f"{channel_name} target",
-                target_curve["freq"],
-                target_curve["spl"],
-                color=color,
-                width=2.0,
-                dash="dot",
-            )
+        add_series(
+            "corrected_series", f"{channel_name} (corrected)", final_curve,
+            channel_index, smooth=True,
+        )
+        add_series(
+            "corrected_series", f"{channel_name} target", target, channel_index,
+            dash="dot",
         )
 
-    return [
-        figure(
-            "Combined Overview — Before EQ",
-            x_axis,
-            spl_axis,
-            series_list=before_series,
-            vlines=vlines,
-            tab=tab,
-        ),
-        figure(
-            "Combined Overview — EQ",
-            axis("Frequency (Hz)", "log", 20, 20000),
-            axis(
-                "Gain (dB)", "linear", panels["eq_y_lower"], panels["eq_y_upper"]
-            ),
-            series_list=eq_series,
-            vlines=vlines,
-            tab=tab,
-        ),
-        figure(
-            "Combined Overview — Corrected",
-            axis("Frequency (Hz)", "log", 20, 20000),
-            axis("SPL (dB)", "linear", panels["spl_y_min"], panels["spl_y_max"]),
-            series_list=corrected_series,
-            vlines=vlines,
-            tab=tab,
-        ),
-    ]
+    for trace_name, eq_freq, eq_spl, color_index, _driver_index in panels["eq_row_traces"]:
+        prepared["eq_series"].append({
+            "name": trace_name,
+            "x": eq_freq,
+            "y": eq_spl,
+            "color_index": color_index % 10,
+            "dash": "solid",
+            "width": 2.0,
+        })
+    return _native_combined_figures(prepared, tab)
 
 
 def _driver_low_pass(driver: dict) -> tuple[float | None, str | None]:

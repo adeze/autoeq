@@ -80,7 +80,10 @@ from .figures import (
     create_t60_octaves_figure,
 )
 from .loaders import RoomEqData
+from .native_eq_sections import render_eq_section as _render_eq_section
 from .payload_binding import verify_payload_binding
+from .native_evidence_sections import evidence_section as _evidence_section
+from .native_dashboard_payload import dashboard_payload as _dashboard_payload
 from .signal_flow import signal_flow_sections
 from .target_overlay import (
     TARGET_LEVEL_MATCH_BAND_HZ,
@@ -231,25 +234,40 @@ def _driver_shaping_summary_html(
     )
 
 
+def _eq_filter_descriptor(filt: dict) -> dict:
+    """Prepare serialized filter values; Rust owns display formatting."""
+    descriptor = {
+        "topology": filt.get("topology"),
+        "filter_type": str(filt.get("filter_type", "peak")),
+        "freq": filt.get("freq", 0),
+        "q": filt.get("q", 1),
+        "db_gain": filt.get("db_gain", 0),
+    }
+    if descriptor["topology"] == "kautz_filter":
+        descriptor["sections"] = [
+            {"pole": pole, "q": q, "weight": gain}
+            for pole, q, gain in kautz_sections(filt, math.inf)
+        ]
+    return descriptor
+
+
+def _eq_pass_descriptors(passes: list[dict]) -> list[dict]:
+    """Prepare validated pass metadata and filter rows for the Rust renderer."""
+    return [
+        {
+            "label": p.get("label", ""),
+            "display_name": p.get("display_name", ""),
+            "color": p.get("color", ""),
+            "filters": [_eq_filter_descriptor(filt) for filt in p.get("filters", [])],
+        }
+        for p in passes
+    ]
+
+
 def _format_eq_filter_line(filt: dict, number: int) -> str:
-    """Render one numbered EQ filter row."""
-    if filt.get("topology") == "kautz_filter":
-        # Parameter display only; the transfer evaluator validates actual Nyquist.
-        sections = kautz_sections(filt, math.inf)
-        entries = "; ".join(
-            f"section {i}: pole={pole:.1f} Hz, Q={q:.2f}, weight={gain:+.6g} (linear)"
-            for i, (pole, q, gain) in enumerate(sections, 1)
-        )
-        return f"Filter {number}: KAUTZ bank (unity dry path); {entries}<br>\n"
-    filter_type = filt.get("filter_type", "peak")
-    if filt.get("topology") == "warped_biquad":
-        filter_type = f"WARPED {filter_type}"
-    freq = filt.get("freq", 0)
-    q = filt.get("q", 1)
-    gain = filt.get("db_gain", 0)
-    return (
-        f"Filter {number}: {escape(str(filter_type).upper())} @ {freq:.1f} Hz, "
-        f"Q={q:.2f}, Gain={gain:+.1f} dB<br>\n"
+    """Render one numbered EQ filter row through the canonical producer."""
+    return _render_eq_section(
+        "filter_line", {"filter": _eq_filter_descriptor(filt), "number": number}
     )
 
 
@@ -259,29 +277,7 @@ def _eq_passes_list_html(passes: list[dict]) -> str:
     Numbering restarts at 1 within each rendered group; callers splitting
     filters by origin render one group per origin.
     """
-    parts: list[str] = []
-    has_labeled = any(p["label"] for p in passes)
-    if has_labeled:
-        for p in passes:
-            parts.append(
-                f'\n                    <h4 style="color: {p["color"]}; '
-                'margin-bottom: 5px;">'
-                f"{p['display_name']}</h4>\n"
-                '                    <div class="filter-list" '
-                'style="margin-bottom: 10px;">\n'
-            )
-            for j, filt in enumerate(p["filters"], 1):
-                parts.append(_format_eq_filter_line(filt, j))
-            parts.append("                    </div>\n")
-    else:
-        parts.append('\n                    <div class="filter-list">\n')
-        number = 0
-        for p in passes:
-            for filt in p["filters"]:
-                number += 1
-                parts.append(_format_eq_filter_line(filt, number))
-        parts.append("                    </div>\n")
-    return "".join(parts)
+    return _render_eq_section("passes", {"passes": _eq_pass_descriptors(passes)})
 
 
 def _driver_eq_filters_html(
@@ -318,87 +314,23 @@ def _driver_eq_filters_html(
     shared_count = sum(len(p["filters"]) for p in shared_passes)
     if driver_count == 0 and shared_count == 0:
         return ""
-    total = driver_count + shared_count
-    safe_driver = escape(driver_name)
-    safe_channel = escape(str(channel_name))
-    parts = [
-        ('\n                <div class="filters-section">\n'
-        "                    <h3>EQ Filters</h3>\n"
-        '                    <p class="epa-footer">'
-        f"{total} PEQ filter(s) total: {driver_count} driver + "
-        f"{shared_count} shared channel. Numbering restarts in each tab; "
-        "the EQ plot shows the combined response.</p>\n")
-    ]
-    if driver_count > 0 and shared_count > 0:
-        drv_id = f"{id_prefix}_drv"
-        sh_id = f"{id_prefix}_sh"
-        parts.append(
-            '                    <div class="eq-tabs">\n'
-            '                        <div class="eq-tab-header">\n'
-            '                            <button class="eq-tab-btn active" '
-            f'onclick="openEqTab(event, \'{drv_id}\')">'
-            f"Driver: {safe_driver} ({driver_count})</button>\n"
-            '                            <button class="eq-tab-btn" '
-            f'onclick="openEqTab(event, \'{sh_id}\')">'
-            f"Shared channel {safe_channel} ({shared_count})</button>\n"
-            "                        </div>\n"
-            f'                        <div id="{drv_id}" class="eq-tab-panel active">\n'
-            f"{_eq_passes_list_html(driver_passes)}"
-            "                        </div>\n"
-            f'                        <div id="{sh_id}" class="eq-tab-panel">\n'
-            f"{_eq_passes_list_html(shared_passes)}"
-            "                        </div>\n"
-            "                    </div>\n"
-        )
-    else:
-        origin = f"Driver: {safe_driver}" if driver_count > 0 else f"Shared channel {safe_channel}"
-        passes = driver_passes if driver_count > 0 else shared_passes
-        parts.append(
-            f"                    <h4>{origin} ({total})</h4>\n"
-            f"{_eq_passes_list_html(passes)}"
-        )
-    parts.append("                </div>\n")
-    return "".join(parts)
+    return _render_eq_section(
+        "driver_filters",
+        {
+            "driver_name": driver_name,
+            "channel_name": str(channel_name),
+            "id_prefix": id_prefix,
+            "driver_passes": _eq_pass_descriptors(driver_passes),
+            "shared_passes": _eq_pass_descriptors(shared_passes),
+        },
+    )
 
 
 def _eq_filter_table_html(passes: list[dict]) -> str:
     """Render EQ passes as compact tables (one per pass when labeled)."""
-    parts: list[str] = []
-    has_labeled = any(p["label"] for p in passes)
-    for p in passes:
-        if not p["filters"]:
-            continue
-        if has_labeled:
-            parts.append(
-                f'            <h4 style="color: {p["color"]}; margin-bottom: 5px;">'
-                f"{p['display_name']}</h4>\n"
-            )
-        parts.append(
-            '            <table class="bm-table">\n'
-            "                <thead><tr><th>#</th><th>Type</th><th>Freq</th>"
-            "<th>Q</th><th>Gain</th></tr></thead>\n"
-            "                <tbody>\n"
-        )
-        for j, filt in enumerate(p["filters"], 1):
-            if filt.get("topology") in ("kautz_filter", "warped_biquad"):
-                parts.append(
-                    f'<tr><td>{j}</td><td colspan="4">'
-                    + _format_eq_filter_line(filt, j) + '</td></tr>\n'
-                )
-                continue
-            filter_type = str(filt.get("filter_type", "peak")).upper()
-            freq = filt.get("freq", 0)
-            q = filt.get("q", 1)
-            gain = filt.get("db_gain", 0)
-            freq_str = f"{freq:.1f} Hz" if isinstance(freq, (int, float)) else "-"
-            q_str = f"{q:.2f}" if isinstance(q, (int, float)) else "-"
-            gain_str = f"{gain:+.1f} dB" if isinstance(gain, (int, float)) else "-"
-            parts.append(
-                f"                    <tr><td>{j}</td><td>{filter_type}</td>"
-                f"<td>{freq_str}</td><td>{q_str}</td><td>{gain_str}</td></tr>\n"
-            )
-        parts.append("                </tbody>\n            </table>\n")
-    return "".join(parts)
+    return _render_eq_section(
+        "filter_table", {"passes": _eq_pass_descriptors(passes)}
+    )
 
 
 def _gain_plugins_html(data: dict) -> str:
@@ -419,12 +351,11 @@ def _all_eq_filters_html(data: dict) -> str:
     carries EQ filters.
     """
     channels = data.get("channels") or {}
-    panels: list[tuple[str, int, str]] = []
+    panels: list[dict] = []
     for entry in display_channel_entries(data):
         channel_name = entry["channel"]
         driver_index = entry["driver"]
-        safe_label = escape(str(entry["label"]))
-        groups: list[tuple[str, list[dict]]] = []
+        groups: list[dict] = []
         if driver_index is not None:
             split = split_driver_eq_plugins(data, channel_name, driver_index)
             if split is None:
@@ -438,51 +369,26 @@ def _all_eq_filters_html(data: dict) -> str:
             driver_passes = extract_eq_passes({"plugins": split[0]})
             shared_passes = extract_eq_passes({"plugins": split[1]})
             if any(p["filters"] for p in driver_passes):
-                groups.append((f"Driver: {driver_name}", driver_passes))
+                groups.append({
+                    "origin": f"Driver: {driver_name}",
+                    "passes": _eq_pass_descriptors(driver_passes),
+                })
             if any(p["filters"] for p in shared_passes):
-                groups.append((f"Shared channel {channel_name}", shared_passes))
+                groups.append({
+                    "origin": f"Shared channel {channel_name}",
+                    "passes": _eq_pass_descriptors(shared_passes),
+                })
         else:
             passes = extract_eq_passes(channels.get(channel_name) or {})
             if any(p["filters"] for p in passes):
-                groups.append((f"Channel {channel_name}", passes))
+                groups.append({
+                    "origin": f"Channel {channel_name}",
+                    "passes": _eq_pass_descriptors(passes),
+                })
         if not groups:
             continue
-        total = sum(sum(len(p["filters"]) for p in passes) for _, passes in groups)
-        body = [f"            <h3>{safe_label}</h3>\n"]
-        for origin, passes in groups:
-            count = sum(len(p["filters"]) for p in passes)
-            body.append(f"            <h4>{escape(origin)} ({count})</h4>\n")
-            body.append(_eq_filter_table_html(passes))
-        panels.append((safe_label, total, "".join(body)))
-    if not panels:
-        return ""
-    parts = [
-        ('        <div class="plot-container">\n'
-        "            <h2>All EQ Filters</h2>\n"
-        '            <p class="epa-footer">Complete PEQ listing for every '
-        "channel and driver (same data and numbering as the per-tab "
-        "sections below). Select a channel to show its filters.</p>\n"
-        '            <div class="eq-tabs">\n'
-        '                <div class="eq-tab-header">\n'),
-    ]
-    for index, (label, total, _) in enumerate(panels):
-        active = " active" if index == 0 else ""
-        parts.append(
-            '                    <button class="eq-tab-btn'
-            + active + '" '
-            f'onclick="openEqTab(event, \'alleq_{index}\')">'
-            f"{label} ({total})</button>\n"
-        )
-    parts.append("                </div>\n")
-    for index, (_, _, body) in enumerate(panels):
-        active = " active" if index == 0 else ""
-        parts.append(
-            f'                <div id="alleq_{index}" class="eq-tab-panel{active}">\n'
-            f"{body}"
-            "                </div>\n"
-        )
-    parts.append("            </div>\n        </div>\n")
-    return "".join(parts)
+        panels.append({"label": str(entry["label"]), "groups": groups})
+    return _render_eq_section("all_filters", {"panels": panels})
 
 
 def _crossover_config_html(data: dict) -> str:
@@ -508,71 +414,16 @@ _EPA_FIELDS: list[tuple[str, str, str]] = [
 
 # Fields where a larger value is the desired outcome (pre → post).
 # Used to colour the delta column green/red.
-_EPA_HIGHER_IS_BETTER: set[str] = {
-    "preference",
-    "evaluation",
-    "total_loudness_sone",
-    "loudness_balance",
-}
 
 
 def _format_delta(field: str, pre: float | None, post: float | None) -> str:
-    """Return an HTML-colored span with the post-pre delta for an EPA field."""
-    if pre is None or post is None:
-        return '<span style="color:#999">-</span>'
-    delta = post - pre
-    if abs(delta) < 1e-9:
-        return '<span style="color:#999">=</span>'
-    higher_is_better = field in _EPA_HIGHER_IS_BETTER
-    improved = (delta > 0) == higher_is_better
-    color = "#2ecc71" if improved else "#e74c3c"
-    return f'<span style="color:{color};font-weight:600">{delta:+.3f}</span>'
+    """Render the saved EPA change with canonical direction and formatting."""
+    return _evidence_section("delta", field=field, pre=pre, post=post)
 
 
 def _epa_channel_table_html(channel_epa: dict | None) -> str:
-    """Render the pre/post EPA comparison table for a single channel.
-
-    `channel_epa` is the `epa_per_channel[<channel>]` dict holding `pre` and
-    `post` EpaScore objects. Returns an empty string if the data is missing
-    or malformed so the caller can just append it unconditionally.
-    """
-    if not channel_epa:
-        return ""
-    pre = channel_epa.get("pre") or {}
-    post = channel_epa.get("post") or {}
-    if not pre and not post:
-        return ""
-
-    rows: list[str] = []
-    for field, label, fmt in _EPA_FIELDS:
-        pre_val = pre.get(field)
-        post_val = post.get(field)
-        pre_str = fmt.format(pre_val) if isinstance(pre_val, (int, float)) else "-"
-        post_str = fmt.format(post_val) if isinstance(post_val, (int, float)) else "-"
-        delta_html = _format_delta(field, pre_val, post_val)
-        rows.append(
-            f"                        <tr><td>{label}</td>"
-            f"<td>{pre_str}</td><td>{post_str}</td>"
-            f"<td>{delta_html}</td></tr>\n"
-        )
-
-    return (
-        '                <div class="epa-section">\n'
-        '                    <h3>EPA Psychoacoustic Scores</h3>\n'
-        '                    <table class="epa-table">\n'
-        "                        <thead><tr>"
-        "<th>Metric</th><th>Before EQ</th><th>After EQ</th><th>Δ</th>"
-        "</tr></thead>\n"
-        "                        <tbody>\n"
-        + "".join(rows)
-        + "                        </tbody>\n"
-        "                    </table>\n"
-        '                    <p class="epa-footer">Higher is better for '
-        "Preference / Evaluation / Total loudness / Loudness balance; "
-        "lower is better for Activity / Sharpness deviation / Roughness. "
-        "Δ cells are green when the change improves the metric.</p>\n"
-        "                </div>\n"
-    )
+    """Render saved before/after EPA evidence through the shared producer."""
+    return _evidence_section("epa_channel", epa=channel_epa)
 
 
 def _epa_comparison_table_html(
@@ -648,25 +499,8 @@ def _epa_comparison_table_html(
 
 
 def _epa_summary_pref(metadata: dict) -> tuple[float | None, float | None]:
-    """Return the (pre, post) preference averaged across all channels.
-
-    Returns `(None, None)` if `metadata.epa_per_channel` is absent or empty.
-    """
-    per_channel = metadata.get("epa_per_channel") or {}
-    if not per_channel:
-        return (None, None)
-    pre_vals: list[float] = []
-    post_vals: list[float] = []
-    for entry in per_channel.values():
-        pre = (entry or {}).get("pre") or {}
-        post = (entry or {}).get("post") or {}
-        if isinstance(pre.get("preference"), (int, float)):
-            pre_vals.append(pre["preference"])
-        if isinstance(post.get("preference"), (int, float)):
-            post_vals.append(post["preference"])
-    pre_avg = sum(pre_vals) / len(pre_vals) if pre_vals else None
-    post_avg = sum(post_vals) / len(post_vals) if post_vals else None
-    return (pre_avg, post_avg)
+    """Return shared saved-channel preference means without inferring evidence."""
+    return tuple(_evidence_section("epa_summary", metadata=metadata))
 
 
 def _fmt_db(value: object, suffix: str = " dB") -> str:
@@ -723,170 +557,17 @@ def _eq_filter_counts(data: dict) -> list[int]:
 
 def _eq_filter_summary_html(data: dict) -> str:
     counts = _eq_filter_counts(data)
-    if not counts:
-        return '<td style="color:#999">-</td>'
-    if min(counts) == max(counts):
-        return f"<td>{counts[0]}</td>"
-    avg = sum(counts) / len(counts)
-    return f"<td>{min(counts)}-{max(counts)} (avg {avg:.1f})</td>"
+    return _render_eq_section("summary", {"counts": counts})
 
 
 def _gd_summary_cells_html(metadata: dict) -> str:
-    """Render comparison-table cells for metadata.group_delay."""
-    gd = metadata.get("group_delay") or {}
-    if not gd:
-        return (
-            '<td style="color:#999">-</td>'
-            '<td style="color:#999">-</td>'
-            '<td style="color:#999">-</td>'
-            '<td style="color:#999">-</td>'
-            '<td style="color:#999">-</td>'
-        )
-
-    advisory = str(gd.get("advisory", "-"))
-    advisory_color = "#2ecc71" if advisory == "success" else "#b9770e"
-    applied = gd.get("applied")
-    applied_str = "yes" if applied is True else "no" if applied is False else "-"
-    applied_color = "#2ecc71" if applied is True else "#999"
-    pre = gd.get("sum_gd_pre_rms_ms")
-    post = gd.get("sum_gd_post_rms_ms")
-    rms_str = f"{_fmt_ms(pre)} → {_fmt_ms(post)}"
-    improvement = gd.get("improvement_db")
-    improvement_str = f"{improvement:+.2f} dB" if isinstance(improvement, (int, float)) else "-"
-    improvement_color = (
-        "#2ecc71" if isinstance(improvement, (int, float)) and improvement >= 0.0 else "#e74c3c"
-    )
-    ap_counts = gd.get("per_channel_ap_count") or []
-    ap_total = sum(v for v in ap_counts if isinstance(v, int))
-    mean_coh = gd.get("mean_coherence")
-    coh_str = f", coh={mean_coh:.2f}" if isinstance(mean_coh, (int, float)) else ""
-    ap_str = f"{ap_total}{coh_str}"
-
-    return (
-        f'<td style="color:{advisory_color};font-weight:600">{escape(advisory)}</td>'
-        f'<td style="color:{applied_color};font-weight:600">{applied_str}</td>'
-        f"<td>{rms_str}</td>"
-        f'<td style="color:{improvement_color};font-weight:600">{improvement_str}</td>'
-        f"<td>{ap_str}</td>"
-    )
+    """Render saved group-delay summary cells through the shared producer."""
+    return _evidence_section("group_delay", metadata=metadata)
 
 
 def _mixed_phase_summary_html(metadata: dict, channels: dict | list) -> str:
-    """Render per-channel mixed-phase and FIR temporal evidence."""
-    mixed_phase = metadata.get("mixed_phase_per_channel") or {}
-    if isinstance(channels, dict):
-        channel_map = channels
-    elif isinstance(channels, list):
-        channel_map = {
-            str(channel.get("channel")): channel
-            for channel in channels
-            if isinstance(channel, dict) and channel.get("channel")
-        }
-    else:
-        channel_map = {}
-
-    temporal_by_channel = {
-        name: (channel or {}).get("fir_temporal_masking")
-        for name, channel in channel_map.items()
-        if isinstance(channel, dict) and (channel or {}).get("fir_temporal_masking")
-    }
-    perceptual = metadata.get("perceptual_metrics") or {}
-    has_global_fir_metrics = any(
-        isinstance(perceptual.get(field), (int, float))
-        for field in (
-            "fir_pre_ringing_audible_db",
-            "fir_post_ringing_audible_db",
-            "fir_temporal_masking_penalty",
-        )
-    )
-    if not mixed_phase and not temporal_by_channel and not has_global_fir_metrics:
-        return ""
-
-    def phase_range(report: dict) -> str:
-        minimum = report.get("residual_excess_phase_min_deg")
-        maximum = report.get("residual_excess_phase_max_deg")
-        if isinstance(minimum, (int, float)) and isinstance(maximum, (int, float)):
-            return f"{minimum:+.2f}° to {maximum:+.2f}°"
-        return "-"
-
-    def phase_rms(report: dict) -> str:
-        value = report.get("residual_excess_phase_rms_deg")
-        return f"{value:.2f}°" if isinstance(value, (int, float)) else "-"
-
-    def ringing_pair(masking: dict, peak_field: str, audible_field: str) -> str:
-        peak = masking.get(peak_field)
-        audible = masking.get(audible_field)
-        if isinstance(peak, (int, float)) and isinstance(audible, (int, float)):
-            return f"{peak:+.2f} / {audible:+.2f} dB"
-        if isinstance(peak, (int, float)):
-            return f"{peak:+.2f} / - dB"
-        if isinstance(audible, (int, float)):
-            return f"- / {audible:+.2f} dB"
-        return "-"
-
-    rows: list[str] = []
-    channel_names = sorted(
-        set(mixed_phase) | set(temporal_by_channel), key=get_channel_sort_key
-    )
-    for channel_name in channel_names:
-        phase = mixed_phase.get(channel_name) or {}
-        masking = temporal_by_channel.get(channel_name) or {}
-        taps = phase.get("fir_taps")
-        taps_str = str(taps) if isinstance(taps, int) else "-"
-        penalty = masking.get("penalty")
-        penalty_str = f"{penalty:.3f}" if isinstance(penalty, (int, float)) else "-"
-        rows.append(
-            "<tr>"
-            f"<td>{escape(str(channel_name))}</td>"
-            f"<td>{_fmt_ms(phase.get('estimated_delay_ms'))}</td>"
-            f"<td>{taps_str}</td>"
-            f"<td>{phase_range(phase)}</td>"
-            f"<td>{phase_rms(phase)}</td>"
-            f"<td>{_fmt_ms(masking.get('main_time_ms'))}</td>"
-            f"<td>{ringing_pair(masking, 'pre_ringing_peak_db', 'pre_ringing_audible_db')}</td>"
-            f"<td>{ringing_pair(masking, 'post_ringing_peak_db', 'post_ringing_audible_db')}</td>"
-            f"<td>{penalty_str}</td>"
-            "</tr>\n"
-        )
-
-    pre = perceptual.get("fir_pre_ringing_audible_db")
-    post = perceptual.get("fir_post_ringing_audible_db")
-    penalty = perceptual.get("fir_temporal_masking_penalty")
-    summary_parts: list[str] = []
-    if isinstance(pre, (int, float)) or isinstance(post, (int, float)):
-        summary_parts.append(
-            "Worst audible pre/post ringing: "
-            f"{pre:+.2f} dB" if isinstance(pre, (int, float)) else "Worst audible pre/post ringing: -"
-        )
-        summary_parts[-1] += (
-            f" / {post:+.2f} dB" if isinstance(post, (int, float)) else " / -"
-        )
-    if isinstance(penalty, (int, float)):
-        summary_parts.append(f"worst temporal masking penalty: {penalty:.3f}")
-    summary_html = (
-        f'<p class="epa-footer">{escape("; ".join(summary_parts))}.</p>\n'
-        if summary_parts
-        else ""
-    )
-
-    table_html = ""
-    if rows:
-        table_html = (
-            '<table class="bm-table">\n'
-            "<thead><tr><th>Channel</th><th>Estimated delay</th><th>FIR taps</th>"
-            "<th>Residual phase range</th><th>Residual RMS</th><th>Main impulse</th>"
-            "<th>Pre peak / audible</th><th>Post peak / audible</th><th>Penalty</th>"
-            "</tr></thead>\n<tbody>\n"
-            + "".join(rows)
-            + "</tbody>\n</table>\n"
-        )
-    return (
-        '<div class="filters-section mixed-phase-section">\n'
-        "<h3>Mixed-Phase and FIR Timing</h3>\n"
-        + table_html
-        + summary_html
-        + "</div>\n"
-    )
+    """Render serialized mixed-phase/FIR timing through the shared producer."""
+    return _evidence_section("mixed_phase", metadata=metadata, channels=channels)
 
 
 def _bass_management_summary_html(report: dict) -> str:
@@ -920,9 +601,6 @@ def _rust_shared_sections(data: dict) -> dict[str, Any]:
 
 
 # Verdict severities shared by the three playback-status boxes.
-_STATUS_OK = "#2ecc71"
-_STATUS_WARN = "#f1c40f"
-_STATUS_BAD = "#e74c3c"
 
 # Top-level report buckets rendered as centered shell tabs. DSP analysis
 # carries the correction rationale and the signal flow; Acoustics analysis
@@ -991,100 +669,13 @@ def _report_provenance(datasets: list[tuple[str, dict]]) -> dict:
     return provenance
 
 
-def _status_box_html(title: str, color: str, paragraphs: list[str]) -> str:
-    """One verdict box; titles and paragraphs are escaped HTML."""
-    return (f'<section class="playback-status-box" role="note" '
-            f'style="flex:1;min-width:260px;border:2px solid {color};padding:16px">'
-            f'<h2>{escape(title)}</h2>'
-            + "".join(f"<p>{escape(detail)}</p>" for detail in paragraphs)
-            + "</section>\n")
 
 
 def _playback_status_html(metadata: dict, label: str = "", *, data: dict | None = None) -> str:
-    """Three-box verdict: recorded eligibility, payload binding, playback approval.
-
-    Each box carries its own severity so a stale payload no longer hides a
-    recorded acceptance (or vice versa): eligibility reports the recorded
-    acceptance verdict, binding reports whether the delivered bytes still
-    match the decision ledger, and playback combines both into the final
-    go/no-go plus its conditional input assumptions.
-    """
-    acceptance = metadata.get("correction_acceptance") or {}
-    outcome = acceptance.get("outcome")
-    eligible = outcome == "unchanged" or (
-        outcome == "accepted" and acceptance.get("accepted") is True
-        and acceptance.get("decision") == "accepted"
-    )
+    """Render playback eligibility using the authoritative payload binding result."""
     verified, binding_reason, _ = verify_payload_binding(data or {})
-    approved = eligible and verified
-    prefix = f"{label} — " if label else ""
-
-    # Box 1: what RoomEQ recorded about this graph (green only on a clean,
-    # self-consistent acceptance; yellow when there is no usable verdict).
-    eligibility_title = prefix + "Saved DSP playback eligibility: " + str(outcome or "unverified")
-    violations = [str(item) for item in acceptance.get("violations", [])
-                  if isinstance(item, str) and item.strip()]
-    if eligible and outcome in ("accepted", "unchanged"):
-        eligibility_color = _STATUS_OK
-        eligibility = [f"Recorded verdict: {outcome}."]
-    elif outcome in ("accepted", "unchanged"):
-        eligibility_color = _STATUS_BAD
-        eligibility = [("Recorded verdict is contradictory: outcome "
-                       f"'{outcome}' without matching accepted/decision flags.")]
-    elif outcome == "rejected":
-        eligibility_color = _STATUS_BAD
-        eligibility = ["Recorded verdict: rejected."]
-    elif outcome is None:
-        eligibility_color = _STATUS_WARN
-        eligibility = ["No recorded acceptance verdict (legacy or unverified output)."]
-    else:
-        eligibility_color = _STATUS_WARN
-        eligibility = [f"Recorded verdict: {outcome} — no playback approval."]
-    if violations:
-        eligibility.append("Recorded violations: " + "; ".join(violations) + ".")
-
-    # Box 2: whether the delivered bytes still match the recorded decisions.
-    binding_title = prefix + ("Delivered payload: verified" if verified
-                              else "Delivered payload: not verified")
-    binding_color = _STATUS_OK if verified else _STATUS_WARN
-
-    # Box 3: the final go/no-go with its conditional input assumptions.
-    playback_title = prefix + "Playback approval"
-    playback: list[str] = []
-    if not approved:
-        playback.append("Not approved for playback. These curves are diagnostic only.")
-    else:
-        playback.append("Approved for playback under the declared contract.")
-        playback.append("Recorded validation is evidence for the saved graph and its declared playback contract, "
-                       "not an independent replay by this report.")
-    policy = ((metadata.get("effective_config") or {}).get("optimizer") or {}).get("finalization") or {}
-    peaks = {"default": policy.get("default_input_peak", 1.0),
-             **(policy.get("input_peak_limits") or {})}
-    reduced = {name: peak for name, peak in peaks.items()
-               if isinstance(peak, (int, float)) and math.isfinite(peak) and 0 < peak < 1}
-    if reduced:
-        values = ", ".join(f"{name}: {20 * math.log10(peak):.2f} dBFS"
-                           for name, peak in sorted(reduced.items()))
-        playback.append("Conditional on enforced input-peak ceilings (" + values + "). "
-                       "This report does not enforce them; full-scale input safety is not established.")
-    limited = [check["id"].split(":", 1)[1]
-               for stage in metadata.get("stage_outcomes", [])
-               for check in stage.get("checks", [])
-               if check.get("id", "").startswith("runtime_limiter_physical_output:")]
-    if limited:
-        playback.append("Runtime limiter required on physical outputs: " + ", ".join(limited) + ". "
-                       "Response curves describe small-signal playback below limiting. Loud bass peaks "
-                       "may be reduced dynamically. Protection is sample-peak, not a true-peak or "
-                       "loudspeaker-excursion guarantee. Do not bypass the limiter or add downstream gain.")
-    playback_color = _STATUS_BAD if not approved else (
-        _STATUS_WARN if reduced or limited else _STATUS_OK)
-
-    return ('<section class="playback-status" role="group" aria-label="Playback verdict" '
-            'style="display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0">'
-            + _status_box_html(eligibility_title, eligibility_color, eligibility)
-            + _status_box_html(binding_title, binding_color, [binding_reason])
-            + _status_box_html(playback_title, playback_color, playback)
-            + "</section>\n")
+    return _evidence_section("playback_status", metadata=metadata, label=label,
+                             binding_verified=verified, binding_reason=binding_reason)
 
 
 def build_report_payload(
@@ -1496,31 +1087,25 @@ def build_report_payload(
                 tab=tab_label,
             )
         elif has_labeled and passes:
-            filter_parts = [
-                ('<div class="filters-section">\n'
-                '    <h3>EQ Filters (3-Pass Pipeline)</h3>\n')
-            ]
-            for p in passes:
-                filter_parts.append(
-                    f'<h4 style="color: {p["color"]}; margin-bottom: 5px;">'
-                    f"{p['display_name']}</h4>\n"
-                    '<div class="filter-list" style="margin-bottom: 10px;">\n'
-                )
-                for j, f in enumerate(p["filters"], 1):
-                    filter_parts.append(_format_eq_filter_line(f, j))
-                filter_parts.append("</div>\n")
-            filter_parts.append("</div>\n")
-            _emit_html(sections, "".join(filter_parts), tab=tab_label)
+            filter_html = _render_eq_section(
+                "filter_section",
+                {
+                    "title": "EQ Filters (3-Pass Pipeline)",
+                    "labeled": True,
+                    "passes": _eq_pass_descriptors(passes),
+                },
+            )
+            _emit_html(sections, filter_html, tab=tab_label)
         elif eq_filters:
-            filter_parts = [
-                ('<div class="filters-section">\n'
-                '    <h3>EQ Filters</h3>\n'
-                '    <div class="filter-list">\n')
-            ]
-            for j, f in enumerate(eq_filters, 1):
-                filter_parts.append(_format_eq_filter_line(f, j))
-            filter_parts.append("</div>\n</div>\n")
-            _emit_html(sections, "".join(filter_parts), tab=tab_label)
+            filter_html = _render_eq_section(
+                "filter_section",
+                {
+                    "title": "EQ Filters",
+                    "labeled": False,
+                    "passes": _eq_pass_descriptors([{"filters": eq_filters}]),
+                },
+            )
+            _emit_html(sections, filter_html, tab=tab_label)
 
         if is_driver_tab:
             shaping_html = _driver_shaping_summary_html(data, channel_name, driver_index)
@@ -1547,44 +1132,19 @@ def build_report_payload(
         else:
             _emit_html(sections, capture_views_html(capture_verification))
 
-    # Assemble the self-contained HTML+WASM report.
-    time_domain.insert(0, wasm_report.html_section(
-        '<p>Arrival timing and applied delays are in Time of Flight. '
-        'The diagnostics below describe the measured room impulse responses.</p>'))
-    epa.insert(0, wasm_report.html_section(
-        '<p>EPA scores are model-based psychoacoustic estimates before and after DSP. '
-        'They are not listening-test results or proof of improved audibility. '
-        'Compare each metric using its stated direction and units.</p>'))
-    modes = resonance_summary_html(data)
-    if modes:
-        time_domain.append({"kind": "html", "html": modes, "tab": None, "footer": True})
-    # The relative-level table details per-speaker levels, so it leads the
-    # Details tab even though it is computed from the whole output.
-    _relative_levels = level_compensation_html(data)
-    if _relative_levels:
-        speakers.insert(0, wasm_report.html_section(_relative_levels))
-
-    sections = list(status_sections)
+    # The shared producer owns document layout, grouping, and unavailable states.
     flow_snapshot = shared_section("signal_flow_sections")
     if flow_snapshot is None:
         flow_snapshot = signal_flow_sections(data)
-    for bucket, subhead, contents in (
-        (BUCKET_DSP, "Why this correction?", why),
-        (BUCKET_ACOUSTICS, "Summary", overview),
-        (BUCKET_ACOUSTICS, "Details per speaker", speakers),
-        (BUCKET_ACOUSTICS, "Time of Flight", timing),
-        (BUCKET_ACOUSTICS, "Symmetric monitors", symmetric),
-        (BUCKET_ACOUSTICS, "Time domain analysis", time_domain),
-        (BUCKET_PSYCHOACOUSTIC, "Section 6: EPA scores", epa),
-        (BUCKET_DSP, "DSP signal flow", flow_snapshot),
-    ):
-        if not contents:
-            contents.append(wasm_report.html_section("<p>No data available in this output.</p>"))
-        sections.extend({**section, "bucket": bucket, "subhead": subhead}
-                        for section in contents)
-    payload = wasm_report.payload(page_title, sections,
-                                  _report_provenance([("", data)]))
-    return payload
+    return _dashboard_payload(
+        page_title, status_sections,
+        {"why": why, "overview": overview, "speakers": speakers,
+         "timing": timing, "symmetric": symmetric, "time_domain": time_domain,
+         "epa": epa, "flow": flow_snapshot},
+        _report_provenance([("", data)]),
+        relative_levels_html=level_compensation_html(data),
+        modes_html=resonance_summary_html(data),
+    )
 
 
 def create_html_report(

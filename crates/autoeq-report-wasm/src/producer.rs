@@ -20,6 +20,27 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "dashboard_payload" => encode(&crate::dashboard_payload::dashboard_payload(request)?),
+        "eq_section_html" => encode(
+            &crate::eq_sections::eq_section_html(
+                request["builder"]
+                    .as_str()
+                    .ok_or("missing EQ section builder")?,
+                &request["prepared"],
+            )
+            .map_err(|error| error.to_string())?,
+        ),
+        "combined_figures" => encode(&crate::combined_figures::combined_figures(
+            &request["prepared"],
+            request.get("tab"),
+        )),
+        "eq_figure" => encode(&crate::eq_figures::build_eq_figure(
+            request["builder"]
+                .as_str()
+                .ok_or("missing EQ figure builder")?,
+            request,
+        )?),
+        "evidence_section" => encode(&crate::evidence_sections::evidence_section(request)?),
         "temporal_figure" => encode(&crate::temporal_figures::build_temporal_figure(
             request["builder"]
                 .as_str()
