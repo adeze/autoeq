@@ -1292,18 +1292,16 @@ def _playback_status_html(metadata: dict, label: str = "", *, data: dict | None 
             + "</section>\n")
 
 
-def create_html_report(
+def build_report_payload(
     data: dict,
-    output_path: Path,
     output_json_path: Path | None = None,
     smoothed_octaves: float = 1.0,
     capture_verification: dict | None = None,
-) -> None:
-    """Create an HTML report with all channel plots.
+) -> dict:
+    """Build every RoomEQ dashboard without loading HTML or WASM assets.
 
     Args:
         data: Output JSON data (roomeq result)
-        output_path: Path to write HTML report
         output_json_path: Path to output JSON (for resolving relative paths)
         smoothed_octaves: Fractional-octave smoothing for the Section 2
             smoothed-response overlays (feat-report asks for 1 octave).
@@ -1769,8 +1767,26 @@ def create_html_report(
                         for section in contents)
     payload = wasm_report.payload(page_title, sections,
                                   _report_provenance([("", data)]))
-    wasm_report.write_report(output_path, page_title, payload)
+    return payload
 
+
+def create_html_report(
+    data: dict,
+    output_path: Path,
+    output_json_path: Path | None = None,
+    smoothed_octaves: float = 1.0,
+    capture_verification: dict | None = None,
+) -> None:
+    """Write the shared report document using the canonical dashboard payload.
+
+    Native consumers can use :func:`build_report_payload` and assemble the same
+    payload with the shared Rust/WASM library. Dashboard calculations remain
+    owned here until their upstream Rust replacements have numerical parity.
+    """
+    payload = build_report_payload(
+        data, output_json_path, smoothed_octaves, capture_verification
+    )
+    wasm_report.write_report(output_path, payload["title"], payload)
     print(f"HTML report written to: {output_path}")
 
 

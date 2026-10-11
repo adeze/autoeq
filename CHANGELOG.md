@@ -1,5 +1,8 @@
 # Unreleased
 
+- Expose canonical RoomEQ dashboard JSON without loading renderer assets; native consumers assemble it through the shared Rust/WASM library.
+- Preserve additive payload metadata through the shared capture-quality augmentation API, with validation before mutation.
+
 - Add a versioned, renderer-neutral capture-quality report input and shared
   Rust/WASM section builder. Preserve source, stimulus, policy and unavailable
   evidence without requiring an app-specific dashboard renderer.

@@ -9,10 +9,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{ReportPayload, Section};
+use crate::schema::{ReportPayload, ReportProvenance, Section};
 
 /// Current version of the capture-quality input contract.
 pub const CAPTURE_QUALITY_INPUT_VERSION: u32 = 1;
+
+const CAPTURE_QUALITY_BUCKET: &str = "DSP analysis";
+const CAPTURE_QUALITY_SUBHEAD: &str = "Capture quality";
 
 /// A capture-quality report containing source identities and measured findings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,6 +325,121 @@ pub fn append_capture_quality_section(
 
     html.push_str("</tbody></table></section>");
     payload.sections.push(Section::Html { html, tab: None });
+    Ok(())
+}
+
+/// Appends capture findings to a versioned JSON payload without dropping extensions.
+///
+/// Existing top-level and section fields are preserved byte-for-value. The new
+/// section uses the same DSP bucket and Capture quality subhead as the host
+/// report integration. An empty source list leaves a valid payload unchanged.
+///
+/// # Examples
+/// ```
+/// use autoeq_report_wasm::{
+///     CaptureQualityReport, append_capture_quality_section_to_value,
+/// };
+///
+/// let mut payload = serde_json::json!({
+///     "schema": "autoeq-report-data-v1",
+///     "title": "Room report",
+///     "sections": []
+/// });
+/// append_capture_quality_section_to_value(
+///     &mut payload,
+///     &CaptureQualityReport::default(),
+/// )?;
+/// assert!(payload["sections"].as_array().unwrap().is_empty());
+/// # Ok::<(), autoeq_report_wasm::CaptureQualityReportError>(())
+/// ```
+///
+/// # Errors
+/// Returns an error for an unsupported payload or input version, malformed
+/// payload structure, or invalid capture-quality evidence. The payload remains
+/// unchanged when this function returns an error.
+pub fn append_capture_quality_section_to_value(
+    payload: &mut serde_json::Value,
+    report: &CaptureQualityReport,
+) -> Result<(), CaptureQualityReportError> {
+    validate_json_payload(payload)?;
+    if report.schema_version != CAPTURE_QUALITY_INPUT_VERSION {
+        return Err(CaptureQualityReportError::new(format!(
+            "unsupported capture-quality input schema {}; expected {}",
+            report.schema_version, CAPTURE_QUALITY_INPUT_VERSION
+        )));
+    }
+    validate_report(report)?;
+    if report.sources.is_empty() {
+        return Ok(());
+    }
+
+    let title = payload
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CaptureQualityReportError::new("report payload title is missing"))?;
+    let mut evidence = ReportPayload::new(title);
+    append_capture_quality_section(&mut evidence, report)?;
+    let section = evidence
+        .sections
+        .pop()
+        .ok_or_else(|| CaptureQualityReportError::new("quality section was not generated"))?;
+    let mut section_value = serde_json::to_value(section).map_err(|error| {
+        CaptureQualityReportError::new(format!("could not serialize quality section: {error}"))
+    })?;
+    section_value["bucket"] = serde_json::Value::String(CAPTURE_QUALITY_BUCKET.to_string());
+    section_value["subhead"] = serde_json::Value::String(CAPTURE_QUALITY_SUBHEAD.to_string());
+
+    let sections = payload
+        .get_mut("sections")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| CaptureQualityReportError::new("report payload sections are missing"))?;
+    sections.push(section_value);
+    Ok(())
+}
+
+fn validate_json_payload(payload: &serde_json::Value) -> Result<(), CaptureQualityReportError> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| CaptureQualityReportError::new("report payload must be a JSON object"))?;
+    let schema = object
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CaptureQualityReportError::new("report payload schema is missing"))?;
+    if schema != crate::schema::SCHEMA_VERSION {
+        return Err(CaptureQualityReportError::new(format!(
+            "unsupported report payload schema {schema:?}; expected {:?}",
+            crate::schema::SCHEMA_VERSION
+        )));
+    }
+    if object
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .is_none()
+    {
+        return Err(CaptureQualityReportError::new(
+            "report payload title is missing",
+        ));
+    }
+    let sections = object
+        .get("sections")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| CaptureQualityReportError::new("report payload sections are missing"))?;
+    for (index, section) in sections.iter().enumerate() {
+        serde_json::from_value::<Section>(section.clone()).map_err(|error| {
+            CaptureQualityReportError::new(format!(
+                "report payload section {index} is invalid: {error}"
+            ))
+        })?;
+    }
+    if let Some(provenance) = object.get("provenance") {
+        if !provenance.is_null() {
+            serde_json::from_value::<ReportProvenance>(provenance.clone()).map_err(|error| {
+                CaptureQualityReportError::new(format!(
+                    "report payload provenance is invalid: {error}"
+                ))
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -714,6 +832,113 @@ mod tests {
             serde_json::from_str("{}").expect("legacy empty input uses version one");
         assert_eq!(decoded_input.schema_version, CAPTURE_QUALITY_INPUT_VERSION);
         assert!(decoded_input.sources.is_empty());
+    }
+
+    #[test]
+    fn value_api_preserves_existing_extensions_and_adds_shared_grouping() {
+        let mut payload = serde_json::json!({
+            "schema": crate::schema::SCHEMA_VERSION,
+            "title": "Room report",
+            "sections": [{
+                "kind": "html",
+                "html": "<p>summary</p>",
+                "tab": null,
+                "bucket": "Acoustics analysis",
+                "subhead": "Summary",
+                "flat": true,
+                "future_section_field": {"keep": 7}
+            }],
+            "future_payload_field": {"keep": true}
+        });
+        let original_section = payload["sections"][0].clone();
+        let report = CaptureQualityReport {
+            schema_version: CAPTURE_QUALITY_INPUT_VERSION,
+            sources: vec![source_with_findings(vec![
+                warning_finding(),
+                unknown_finding(),
+            ])],
+        };
+
+        append_capture_quality_section_to_value(&mut payload, &report)
+            .expect("append quality section to JSON payload");
+
+        let sections = payload["sections"].as_array().expect("sections array");
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0], original_section);
+        assert_eq!(payload["future_payload_field"]["keep"], true);
+        let quality_section = &sections[1];
+        assert_eq!(quality_section["kind"], "html");
+        assert_eq!(quality_section["bucket"], CAPTURE_QUALITY_BUCKET);
+        assert_eq!(quality_section["subhead"], CAPTURE_QUALITY_SUBHEAD);
+        let html = quality_section["html"].as_str().expect("quality HTML");
+        assert!(html.contains("Unknown"));
+        assert!(html.contains("No measurable quiet-window noise floor."));
+    }
+
+    #[test]
+    fn value_api_empty_sources_are_a_no_op_after_schema_validation() {
+        let mut payload = serde_json::json!({
+            "schema": crate::schema::SCHEMA_VERSION,
+            "title": "Room report",
+            "sections": [],
+            "extension": [1, 2, 3]
+        });
+        let original = payload.clone();
+
+        append_capture_quality_section_to_value(&mut payload, &CaptureQualityReport::default())
+            .expect("empty valid input is a no-op");
+
+        assert_eq!(payload, original);
+
+        payload["schema"] = serde_json::Value::String("unsupported".to_string());
+        let unsupported = payload.clone();
+        assert!(
+            append_capture_quality_section_to_value(&mut payload, &CaptureQualityReport::default())
+                .is_err()
+        );
+        assert_eq!(payload, unsupported);
+    }
+
+    #[test]
+    fn value_api_rejects_invalid_inputs_without_mutating_payload() {
+        let mut payload = serde_json::json!({
+            "schema": crate::schema::SCHEMA_VERSION,
+            "title": "Room report",
+            "sections": []
+        });
+        let original = payload.clone();
+        let mut invalid_finding = warning_finding();
+        invalid_finding.value = Some(f64::INFINITY);
+        let report = CaptureQualityReport {
+            schema_version: CAPTURE_QUALITY_INPUT_VERSION,
+            sources: vec![source_with_findings(vec![invalid_finding])],
+        };
+
+        assert!(append_capture_quality_section_to_value(&mut payload, &report).is_err());
+        assert_eq!(payload, original);
+
+        let unsupported_report = CaptureQualityReport {
+            schema_version: CAPTURE_QUALITY_INPUT_VERSION + 1,
+            sources: vec![source_with_findings(vec![warning_finding()])],
+        };
+        assert!(
+            append_capture_quality_section_to_value(&mut payload, &unsupported_report).is_err()
+        );
+        assert_eq!(payload, original);
+
+        let valid_report = CaptureQualityReport {
+            schema_version: CAPTURE_QUALITY_INPUT_VERSION,
+            sources: vec![source_with_findings(vec![warning_finding()])],
+        };
+        let mut unsupported_payload = payload.clone();
+        unsupported_payload["schema"] =
+            serde_json::Value::String("unsupported-report-schema".to_string());
+        let before = unsupported_payload.clone();
+        assert!(
+            append_capture_quality_section_to_value(&mut unsupported_payload, &valid_report)
+                .is_err()
+        );
+        assert_eq!(unsupported_payload, before);
     }
 
     #[test]

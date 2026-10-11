@@ -18,6 +18,6 @@ pub use capture_quality::{
     CAPTURE_QUALITY_INPUT_VERSION, CaptureQualityBand, CaptureQualityFinding, CaptureQualityMetric,
     CaptureQualityReport, CaptureQualityReportError, CaptureQualitySource, CaptureQualityStatus,
     CaptureQualityThreshold, CaptureStimulusMetadata, CaptureThresholdComparison,
-    append_capture_quality_section,
+    append_capture_quality_section, append_capture_quality_section_to_value,
 };
 pub use schema::*;
