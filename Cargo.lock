@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "autoeq-cli"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "autoeq-plot",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "autoeq-optim"
-version = "0.5.62"
+version = "0.5.63"
 dependencies = [
  "autoeq-core",
  "autoeq-measurements",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "autoeq-qa"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "autoeq-artifacts",
  "autoeq-cli",

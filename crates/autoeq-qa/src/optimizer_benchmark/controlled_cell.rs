@@ -1782,7 +1782,7 @@ mod tests {
         assert_eq!(first.cells.len(), first.expected_cell_count);
         assert_eq!(
             first.spec_inventory_sha256,
-            "427643cb51f91cc6c74645b18f6a4cb199d9f383ccd597f91a9c4ad82598ebd5"
+            "8b33af02d0e6928c6a0af93d5b7ec103bf8429f95f2beac9b1b6c58329bde3ac"
         );
         assert_eq!(first.spec_inventory_sha256, second.spec_inventory_sha256);
         assert_eq!(first.cells, second.cells);

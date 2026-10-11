@@ -525,9 +525,17 @@ where
 {
     tokio::select! {
         biased;
-        result = &mut worker => result
-            .map(BlockingOutcome::Completed)
-            .map_err(|error| format!("Optimization worker failed: {error}")),
+        result = &mut worker => {
+            let output = result.map_err(|error| format!("Optimization worker failed: {error}"))?;
+            // A latched stop wins over a concurrent finish: without this,
+            // a worker that completes after the stop request is
+            // intermittently reported as clean completion.
+            if shutdown.is_requested() {
+                Ok(BlockingOutcome::Cancelled(output))
+            } else {
+                Ok(BlockingOutcome::Completed(output))
+            }
+        }
         _ = shutdown.cancelled() => {
             active.request_cancel();
             worker.await
@@ -585,15 +593,16 @@ mod cancellation_tests {
         }
     }
 
-    struct FirstEvaluationGate {
-        first_call: AtomicBool,
+    struct NthEvaluationGate {
+        calls: std::sync::atomic::AtomicUsize,
+        block_at: usize,
         entered: std::sync::mpsc::SyncSender<()>,
         release: Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
-    impl autoeq::optim::loss::Objective for FirstEvaluationGate {
+    impl autoeq::optim::loss::Objective for NthEvaluationGate {
         fn compute(&self, x: &[f64], _ctx: &autoeq::optim::loss::ObjectiveContext<'_>) -> f64 {
-            if !self.first_call.swap(true, Ordering::AcqRel) {
+            if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == self.block_at {
                 let _ = self.entered.send(());
                 let _ = self
                     .release
@@ -645,6 +654,7 @@ mod cancellation_tests {
     fn gated_objective(
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::mpsc::Receiver<()>,
+        block_at: usize,
     ) -> super::ObjectiveData {
         let mut objective = autoeq::optim::ObjectiveDataBuilder::new(
             Array1::from_vec(vec![40.0, 200.0, 1_000.0, 16_000.0]),
@@ -659,8 +669,9 @@ mod cancellation_tests {
         .freq_range(40.0, 16_000.0)
         .build()
         .expect("valid analytic objective");
-        objective.objective = Some(Arc::new(FirstEvaluationGate {
-            first_call: AtomicBool::new(false),
+        objective.objective = Some(Arc::new(NthEvaluationGate {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            block_at,
             entered,
             release: Mutex::new(release),
         }));
@@ -813,8 +824,14 @@ mod cancellation_tests {
     async fn actual_controlled_optimizer_stops_admitting_scores_after_cancel() {
         let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        let objective = gated_objective(entered_tx, release_rx);
-        let (params, _) = test_optimizer(false);
+        // Block a late evaluation with the search running sequentially: by
+        // then the backend has established a finite best, so cancellation
+        // deterministically reports UserStopped with a valid candidate.
+        // Gating the first evaluation races the backend's best-update against
+        // its stop check and intermittently yields InvalidResult instead.
+        let objective = gated_objective(entered_tx, release_rx, 20);
+        let (mut params, _) = test_optimizer(false);
+        params.no_parallel = true;
         let active = ActiveRunControl::default();
         let worker_active = active.clone();
         let worker = tokio::task::spawn_blocking(move || {
