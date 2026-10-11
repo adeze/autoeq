@@ -20,6 +20,19 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "target_csv_shape" => {
+            let csv = request["csv"].as_str().ok_or("missing target CSV text")?;
+            let result = match crate::target_csv::parse_target_csv(csv) {
+                Ok(target) => serde_json::json!({"target": target}),
+                Err(error) => serde_json::json!({
+                    "error": {"kind": error.kind(), "message": error.to_string()}
+                }),
+            };
+            encode(&result)
+        }
+        "report_provenance" => encode(&crate::report_provenance::report_provenance(
+            &request["prepared"],
+        )),
         "comparison_figure_sections" => encode(
             &crate::comparison_figures::comparison_figure_sections(&request["prepared"]),
         ),

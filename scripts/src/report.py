@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import wasm_report
+from .native_report_provenance import report_provenance as _rust_report_provenance
 from .acceptance_views import acceptance_views_html, waveform_status_html
 from .acoustic_report import (
     early_reflection_figures,
@@ -590,19 +591,18 @@ def _report_provenance(datasets: list[tuple[str, dict]]) -> dict:
     versions, stamps = [], []
     for _, data in datasets:
         version = _roomeq_version(data)
-        if version and version not in versions:
+        if version:
             versions.append(version)
         stamp = (data.get("metadata") or {}).get("timestamp")
-        if isinstance(stamp, str) and stamp.strip() and stamp not in stamps:
-            stamps.append(stamp.strip())
-    provenance: dict = {}
-    if versions:
-        provenance["roomeq_version"] = " / ".join(versions)
-    if stamps:
-        provenance["data_timestamp"] = " / ".join(stamps)
-    provenance["generated_at"] = (
-        datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    return provenance
+        if isinstance(stamp, str) and stamp.strip():
+            stamps.append(stamp)
+    return _rust_report_provenance({
+        "versions": versions,
+        "timestamps": stamps,
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    })
 
 
 

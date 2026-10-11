@@ -542,6 +542,7 @@ name = "autoeq-report-wasm"
 version = "0.5.0"
 dependencies = [
  "base64",
+ "csv",
  "gpui-d3rs",
  "rustfft",
  "serde",

@@ -1,0 +1,103 @@
+[
+  {
+    "name": "bom_aliases_whitespace_duplicate_last_sorted",
+    "csv": "\uFEFF FREQUENCY_HZ , Level_DB \r\n 100 , 70 \r\n100,71\n1000,NaN\n0,20\n",
+    "target": {"freq": [100.0], "spl": [71.0]}
+  },
+  {
+    "name": "alias_priority",
+    "csv": "freq, frequency, spl_db, SPL\n100,200,10,20\n",
+    "target": {"freq": [200.0], "spl": [20.0]}
+  },
+  {
+    "name": "duplicate_normalized_headers_last_wins",
+    "csv": "frequency, FREQUENCY, spl, SPL \n100,200,3,4\n",
+    "target": {"freq": [200.0], "spl": [4.0]}
+  },
+  {
+    "name": "quoted_extra_field",
+    "csv": "frequency,spl,note\n100,70,\"quoted, value\"\n",
+    "target": {"freq": [100.0], "spl": [70.0]}
+  },
+  {
+    "name": "extra_fields_ignored",
+    "csv": "frequency,spl\n100,70,ignored,extra\n",
+    "target": {"freq": [100.0], "spl": [70.0]}
+  },
+  {
+    "name": "quoted_multiline_extra_field",
+    "csv": "frequency,spl,note\n100,70,\"a\nb\"\n",
+    "target": {"freq": [100.0], "spl": [70.0]}
+  },
+  {
+    "name": "unclosed_quote_tolerated_by_legacy_reader",
+    "csv": "frequency,spl\n100,\"70\n",
+    "target": {"freq": [100.0], "spl": [70.0]}
+  },
+  {
+    "name": "blank_row_skipped",
+    "csv": "frequency,spl\n\n100,70\n",
+    "target": {"freq": [100.0], "spl": [70.0]}
+  },
+  {
+    "name": "quote_inside_unquoted_numeric_cell",
+    "csv": "frequency,spl\n100,7\"0\n",
+    "error": {"kind": "value", "message": "could not convert string to float: '7\"0'"}
+  },
+  {
+    "name": "text_after_closing_quote",
+    "csv": "frequency,spl\n100,\"70\"junk\n",
+    "error": {"kind": "value", "message": "could not convert string to float: '70junk'"}
+  },
+  {
+    "name": "unicode_decimal_digits",
+    "csv": "frequency,spl\n١٢.٣,8٠\n",
+    "target": {"freq": [12.3], "spl": [80.0]}
+  },
+  {
+    "name": "invalid_number",
+    "csv": "frequency,spl\nnot-a-number,70\n",
+    "error": {"kind": "value", "message": "could not convert string to float: 'not-a-number'"}
+  },
+  {
+    "name": "short_row",
+    "csv": "frequency,spl\n100\n",
+    "error": {"kind": "value", "message": "target CSV needs frequency/freq and spl/spl_db columns"}
+  },
+  {
+    "name": "missing_columns",
+    "csv": "other,level\n100,70\n",
+    "error": {"kind": "value", "message": "target CSV needs frequency/freq and spl/spl_db columns"}
+  },
+  {
+    "name": "header_only",
+    "csv": "frequency,spl\n",
+    "error": {"kind": "value", "message": "target CSV has no finite positive-frequency points"}
+  },
+  {
+    "name": "empty",
+    "csv": "",
+    "error": {"kind": "value", "message": "target CSV has no finite positive-frequency points"}
+  },
+  {
+    "name": "leading_blank_header",
+    "csv": "\nfrequency,spl\n100,80\n",
+    "error": {"kind": "value", "message": "target CSV needs frequency/freq and spl/spl_db columns"}
+  },
+  {
+    "name": "oversized_extra_field_precedes_invalid_number",
+    "csv_prefix": "frequency,spl,note\ninvalid,70,",
+    "repeat_char": "é",
+    "repeat_count": 131073,
+    "csv_suffix": "\n",
+    "error": {"kind": "csv", "message": "field larger than field limit (131072)"}
+  },
+  {
+    "name": "leading_blank_header_stops_before_later_oversized_row",
+    "csv_prefix": "\nfrequency,spl\n100,80\n",
+    "repeat_char": "é",
+    "repeat_count": 131073,
+    "csv_suffix": "\n",
+    "error": {"kind": "value", "message": "target CSV needs frequency/freq and spl/spl_db columns"}
+  }
+]

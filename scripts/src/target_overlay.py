@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import math
 from pathlib import Path
 
 from .native_target_overlay import (
@@ -11,23 +9,16 @@ from .native_target_overlay import (
     target_overlay_helper as _target_overlay_helper,
     target_shape_for_channel as _native_target_shape_for_channel,
 )
+from .native_target_csv import parse_target_csv as _parse_native_target_csv
 
-
-_FREQUENCY_COLUMNS = ("frequency", "freq", "frequency_hz", "freq_hz")
-_SPL_COLUMNS = ("spl", "spl_db", "level", "level_db")
 
 #: Midband (Hz) over which a design-target level is matched to measured data.
 #: Reports anchor every channel tab's target to the per-channel mean of the
 #: measured L/R pair over this band so one global calibration offset applies.
 TARGET_LEVEL_MATCH_BAND_HZ = (100.0, 10_000.0)
-
-
-def _column(row: dict[str, str], names: tuple[str, ...]) -> str | None:
-    normalized = {str(key).strip().lower(): value for key, value in row.items()}
-    for name in names:
-        if name in normalized:
-            return normalized[name]
-    return None
+# Target files are small response tables; bounding reads also bounds the JSON
+# request copied into native/WASM report transport.
+MAX_TARGET_CSV_BYTES = 8 * 1024 * 1024
 
 
 def _configured_target_path(data: dict, json_path: Path | None) -> Path | None:
@@ -56,27 +47,14 @@ def load_target_shape(data: dict, json_path: Path | None = None) -> dict | None:
         return None
 
     try:
-        points: dict[float, float] = {}
-        with path.open(newline="", encoding="utf-8-sig") as handle:
-            for row in csv.DictReader(handle):
-                frequency_text = _column(row, _FREQUENCY_COLUMNS)
-                spl_text = _column(row, _SPL_COLUMNS)
-                if frequency_text is None or spl_text is None:
-                    raise ValueError(
-                        "target CSV needs frequency/freq and spl/spl_db columns"
-                    )
-                frequency = float(frequency_text)
-                spl = float(spl_text)
-                if frequency > 0.0 and math.isfinite(frequency) and math.isfinite(spl):
-                    points[frequency] = spl
-        if not points:
-            raise ValueError("target CSV has no finite positive-frequency points")
+        with path.open("rb") as handle:
+            csv_bytes = handle.read(MAX_TARGET_CSV_BYTES + 1)
+        if len(csv_bytes) > MAX_TARGET_CSV_BYTES:
+            raise ValueError("target CSV exceeds the 8 MiB size limit")
+        return _parse_native_target_csv(csv_bytes.decode("utf-8-sig"))
     except (OSError, UnicodeError, ValueError) as error:
         print(f"Warning: Could not load target curve '{path}': {error}")
         return None
-
-    frequencies = sorted(points)
-    return {"freq": frequencies, "spl": [points[freq] for freq in frequencies]}
 
 
 def _interpolate_log_space(target: dict, frequencies: list[float]) -> list[float]:
