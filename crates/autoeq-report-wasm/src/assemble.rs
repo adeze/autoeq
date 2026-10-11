@@ -24,14 +24,24 @@ pub struct ShellAssets {
 
 /// Assemble a self-contained HTML report.
 pub fn assemble_html(title: &str, payload_json: &str, assets: &ShellAssets) -> String {
+    // JSON is embedded in a script data block. HTML parsers still recognize
+    // a closing script tag inside a JSON string, so escape those characters
+    // without changing the decoded payload. Both native and WASM callers use
+    // this boundary rather than maintaining host-specific escaping.
+    let payload_json = payload_json
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     assets
         .template
-        .replace("{{PAGE_TITLE}}", &escape_html(title))
-        .replace("{{PAYLOAD_JSON}}", payload_json)
         .replace("{{WASM_2D_B64}}", &assets.wasm_2d_b64)
         .replace("{{GLUE_2D_B64}}", &assets.glue_2d_b64)
         .replace("{{WASM_GPUI_B64}}", &assets.wasm_gpui_b64)
         .replace("{{GLUE_GPUI_B64}}", &assets.glue_gpui_b64)
+        .replace("{{PAGE_TITLE}}", &escape_html(title))
+        .replace("{{PAYLOAD_JSON}}", &payload_json)
 }
 
 /// Base64-encode raw bytes (standard alphabet, no line breaks).
@@ -95,5 +105,30 @@ mod tests {
             .decode(&enc)
             .expect("decode");
         assert_eq!(back, raw);
+    }
+
+    #[test]
+    fn embedded_payload_cannot_close_its_script_block() {
+        let assets = ShellAssets {
+            template: "<script type=\"application/json\">{{PAYLOAD_JSON}}</script>".into(),
+            wasm_2d_b64: String::new(),
+            glue_2d_b64: String::new(),
+            wasm_gpui_b64: String::new(),
+            glue_gpui_b64: String::new(),
+        };
+        let value =
+            serde_json::json!({"label":"</script><script>alert(1)</script>&{{WASM_2D_B64}}"});
+        let html = assemble_html("Report", &value.to_string(), &assets);
+        assert_eq!(html.matches("</script>").count(), 1);
+        let embedded = html
+            .split_once('>')
+            .unwrap()
+            .1
+            .strip_suffix("</script>")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(embedded).unwrap(),
+            value
+        );
     }
 }

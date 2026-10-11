@@ -9,8 +9,15 @@
 //! colors, and interaction remain shared with the Canvas fallback.
 
 pub mod assemble;
+pub mod capture_quality;
 pub mod draw;
 pub mod grid;
 pub mod schema;
 
+pub use capture_quality::{
+    CAPTURE_QUALITY_INPUT_VERSION, CaptureQualityBand, CaptureQualityFinding, CaptureQualityMetric,
+    CaptureQualityReport, CaptureQualityReportError, CaptureQualitySource, CaptureQualityStatus,
+    CaptureQualityThreshold, CaptureStimulusMetadata, CaptureThresholdComparison,
+    append_capture_quality_section,
+};
 pub use schema::*;
