@@ -70,13 +70,12 @@ pub fn dashboard_payload(request: &Value) -> Result<Value, String> {
             }
         } else if *role == "epa" {
             contents.insert(0,html_section("<p>EPA scores are model-based psychoacoustic estimates before and after DSP. They are not listening-test results or proof of improved audibility. Compare each metric using its stated direction and units.</p>"));
-        } else if *role == "speakers" {
-            if let Some(levels) = request["relative_levels_html"]
+        } else if *role == "speakers"
+            && let Some(levels) = request["relative_levels_html"]
                 .as_str()
                 .filter(|value| !value.is_empty())
-            {
-                contents.insert(0, html_section(levels));
-            }
+        {
+            contents.insert(0, html_section(levels));
         }
         if contents.is_empty() {
             contents.push(html_section("<p>No data available in this output.</p>"));

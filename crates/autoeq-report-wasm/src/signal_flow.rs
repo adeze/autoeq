@@ -161,13 +161,12 @@ fn build_routed(
 
     let mut destination_names = Vec::<String>::new();
     for route in routes {
-        if let Some(destination) = route.get("destination").and_then(Value::as_str) {
-            if !destination_names
+        if let Some(destination) = route.get("destination").and_then(Value::as_str)
+            && !destination_names
                 .iter()
                 .any(|existing| existing == destination)
-            {
-                destination_names.push(destination.to_owned());
-            }
+        {
+            destination_names.push(destination.to_owned());
         }
     }
     let mut ordered_destinations = destination_names.clone();

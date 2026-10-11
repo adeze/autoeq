@@ -84,7 +84,7 @@ pub fn crossover_config_html(data: &Value) -> String {
                 let frequency_text = format_frequency(frequency);
                 let type_text = params
                     .and_then(|params| params.get("type"))
-                    .map(|value| python_string(value))
+                    .map(python_string)
                     .unwrap_or_else(|| {
                         if kind == "band_split" {
                             "band_split"
@@ -98,13 +98,13 @@ pub fn crossover_config_html(data: &Value) -> String {
                 } else {
                     params
                         .and_then(|params| params.get("output"))
-                        .map(|value| python_string(value))
+                        .map(python_string)
                         .unwrap_or_else(|| "-".to_string())
                 };
                 let stage_text = params
                     .and_then(|params| params.get("room_eq_stage"))
                     .filter(|value| !value.is_null())
-                    .map(|value| python_string(value))
+                    .map(python_string)
                     .unwrap_or_else(|| "-".to_string());
                 plugin_rows.push_str(&format!(
                     "                    <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
@@ -136,20 +136,20 @@ pub fn crossover_config_html(data: &Value) -> String {
         }
         let source = route
             .get("source_channel")
-            .map(|value| python_string(value))
+            .map(python_string)
             .unwrap_or_else(|| "-".to_string());
         let destination = route
             .get("destination")
-            .map(|value| python_string(value))
+            .map(python_string)
             .unwrap_or_else(|| "-".to_string());
         let kind = route
             .get("route_kind")
-            .map(|value| python_string(value))
+            .map(python_string)
             .unwrap_or_else(|| "-".to_string());
         let crossover_type = route
             .get("crossover_type")
             .filter(|value| !value.is_null())
-            .map(|value| python_string(value))
+            .map(python_string)
             .unwrap_or_else(|| "-".to_string());
         route_rows.push_str(&format!(
             "                    <tr><td>{} → {}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",

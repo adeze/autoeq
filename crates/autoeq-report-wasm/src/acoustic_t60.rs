@@ -7,7 +7,7 @@
 // Rust guideline compliant 2026-02-21
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::report_helpers::escape_html;
 
@@ -220,18 +220,18 @@ fn itu_reference(data: &Value) -> Option<Value> {
             .iter()
             .map(|key| dimensions.get(*key).and_then(finite_number))
             .collect::<Option<Vec<_>>>();
-        if let Some(values) = values {
-            if values.iter().all(|value| *value > 0.0) {
-                let volume = values.iter().product::<f64>();
-                if volume.is_finite() && volume > 0.0 {
-                    let tm = 0.25 * (volume / 100.0).powf(1.0 / 3.0);
-                    if tm.is_finite() {
-                        return Some(json!({
-                            "tm": tm,
-                            "volume_m3": volume,
-                            "source": format!("volume recommendation ({} m³)", general_number(volume)),
-                        }));
-                    }
+        if let Some(values) = values
+            && values.iter().all(|value| *value > 0.0)
+        {
+            let volume = values.iter().product::<f64>();
+            if volume.is_finite() && volume > 0.0 {
+                let tm = 0.25 * (volume / 100.0).powf(1.0 / 3.0);
+                if tm.is_finite() {
+                    return Some(json!({
+                        "tm": tm,
+                        "volume_m3": volume,
+                        "source": format!("volume recommendation ({} m³)", general_number(volume)),
+                    }));
                 }
             }
         }
@@ -248,10 +248,10 @@ fn itu_reference(data: &Value) -> Option<Value> {
                 .filter(|row| (200..=4_000).contains(&row.centre_hz))
                 .filter_map(|row| row.t60_s)
                 .collect();
-            if midband.len() == 5 {
-                if let Some(mean) = stable_mean(&midband) {
-                    channel_means.push(mean);
-                }
+            if midband.len() == 5
+                && let Some(mean) = stable_mean(&midband)
+            {
+                channel_means.push(mean);
             }
         }
     }

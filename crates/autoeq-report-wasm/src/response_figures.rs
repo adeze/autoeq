@@ -181,17 +181,17 @@ fn channel_figure(
 ) -> Value {
     let mut series = Vec::new();
     let initial_freq = initial.and_then(|curve| curve.get("freq"));
-    if let Some(curve) = initial {
-        if let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES) {
-            series.push(make_series(
-                "Before EQ",
-                curve.get("freq").unwrap_or(&Value::Null),
-                &smoothed,
-                "rgba(255, 100, 100, 0.8)",
-                2.0,
-                "solid",
-            ));
-        }
+    if let Some(curve) = initial
+        && let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES)
+    {
+        series.push(make_series(
+            "Before EQ",
+            curve.get("freq").unwrap_or(&Value::Null),
+            &smoothed,
+            "rgba(255, 100, 100, 0.8)",
+            2.0,
+            "solid",
+        ));
     }
     if let Some(curve) = final_curve {
         let target_freq = initial_freq.unwrap_or_else(|| curve.get("freq").unwrap_or(&Value::Null));
@@ -257,17 +257,17 @@ pub fn add_channel_response_overlays(
             "dot",
         ));
     }
-    if let Some(curve) = lfe_sum.filter(|curve| curve_is_plot_ready(curve)) {
-        if let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES) {
-            series.push(make_series(
-                format!("LFE + {channel_name}"),
-                curve.get("freq").unwrap_or(&Value::Null),
-                &smoothed,
-                "rgba(148, 103, 189, 0.95)",
-                2.5,
-                "solid",
-            ));
-        }
+    if let Some(curve) = lfe_sum.filter(|curve| curve_is_plot_ready(curve))
+        && let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES)
+    {
+        series.push(make_series(
+            format!("LFE + {channel_name}"),
+            curve.get("freq").unwrap_or(&Value::Null),
+            &smoothed,
+            "rgba(148, 103, 189, 0.95)",
+            2.5,
+            "solid",
+        ));
     }
     figure
 }
@@ -286,17 +286,17 @@ fn zoomed_figure(
         .map(|curve| average_spl(curve, min_freq, max_freq))
         .unwrap_or(0.0);
     let mut series = Vec::new();
-    if let Some(curve) = initial {
-        if let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES) {
-            series.push(make_series(
-                "Before EQ",
-                curve.get("freq").unwrap_or(&Value::Null),
-                &smoothed,
-                "rgba(255, 100, 100, 0.8)",
-                2.0,
-                "solid",
-            ));
-        }
+    if let Some(curve) = initial
+        && let Some(smoothed) = smoothed_levels(curve, CHANNEL_SMOOTHING_OCTAVES)
+    {
+        series.push(make_series(
+            "Before EQ",
+            curve.get("freq").unwrap_or(&Value::Null),
+            &smoothed,
+            "rgba(255, 100, 100, 0.8)",
+            2.0,
+            "solid",
+        ));
     }
     if let Some(curve) = final_curve {
         let plot_spl = resample_spl_onto_grid(
@@ -372,17 +372,17 @@ fn smoothed_figure(
             "rgba(100, 200, 100, 0.9)",
         ),
     ] {
-        if let Some(curve) = curve.filter(|curve| curve_is_plot_ready(curve)) {
-            if let Some(smoothed) = smoothed_levels(curve, octaves) {
-                series.push(make_series(
-                    label,
-                    curve.get("freq").unwrap_or(&Value::Null),
-                    &smoothed,
-                    color,
-                    2.0,
-                    "solid",
-                ));
-            }
+        if let Some(curve) = curve.filter(|curve| curve_is_plot_ready(curve))
+            && let Some(smoothed) = smoothed_levels(curve, octaves)
+        {
+            series.push(make_series(
+                label,
+                curve.get("freq").unwrap_or(&Value::Null),
+                &smoothed,
+                color,
+                2.0,
+                "solid",
+            ));
         }
     }
     let curves = json!([

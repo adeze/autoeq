@@ -109,7 +109,7 @@ fn single_eq_figure(request: &Value) -> Value {
         "dash",
     ));
 
-    let y_range = single_y_range(&channel_name, &frequency, &combined);
+    let y_range = single_y_range(channel_name, &frequency, &combined);
     figure(
         format!("EQ Response: {channel_name}"),
         axis("Frequency (Hz)", "log", json!(20), json!(20000)),

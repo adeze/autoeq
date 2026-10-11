@@ -438,25 +438,25 @@ fn create_t60_octaves_figure(request: &Value) -> Value {
             0,
         ));
     }
-    if let Some(window) = request.get("window").filter(|value| !value.is_null()) {
-        if let Some(window) = window.as_array() {
-            for (name, value) in ["Lower flatness limit", "Upper flatness limit"]
-                .into_iter()
-                .zip(window)
-            {
-                let Some(value) = number_like(value) else {
-                    continue;
-                };
-                traces.push(series(
-                    &format!("{name}: {value:.3} s"),
-                    &json!([20, 20000]),
-                    &json!([value, value]),
-                    Some("#60ad42"),
-                    2.0,
-                    "solid",
-                    0,
-                ));
-            }
+    if let Some(window) = request.get("window").filter(|value| !value.is_null())
+        && let Some(window) = window.as_array()
+    {
+        for (name, value) in ["Lower flatness limit", "Upper flatness limit"]
+            .into_iter()
+            .zip(window)
+        {
+            let Some(value) = number_like(value) else {
+                continue;
+            };
+            traces.push(series(
+                &format!("{name}: {value:.3} s"),
+                &json!([20, 20000]),
+                &json!([value, value]),
+                Some("#60ad42"),
+                2.0,
+                "solid",
+                0,
+            ));
         }
     }
     figure(

@@ -431,14 +431,12 @@ fn validate_json_payload(payload: &serde_json::Value) -> Result<(), CaptureQuali
             ))
         })?;
     }
-    if let Some(provenance) = object.get("provenance") {
-        if !provenance.is_null() {
-            serde_json::from_value::<ReportProvenance>(provenance.clone()).map_err(|error| {
-                CaptureQualityReportError::new(format!(
-                    "report payload provenance is invalid: {error}"
-                ))
-            })?;
-        }
+    if let Some(provenance) = object.get("provenance")
+        && !provenance.is_null()
+    {
+        serde_json::from_value::<ReportProvenance>(provenance.clone()).map_err(|error| {
+            CaptureQualityReportError::new(format!("report payload provenance is invalid: {error}"))
+        })?;
     }
     Ok(())
 }
@@ -504,12 +502,12 @@ fn validate_finding(
             "{where_} has an empty unit"
         )));
     }
-    if let CaptureQualityMetric::Other(label) = &finding.metric {
-        if label.trim().is_empty() {
-            return Err(CaptureQualityReportError::new(format!(
-                "{where_} has an empty metric label"
-            )));
-        }
+    if let CaptureQualityMetric::Other(label) = &finding.metric
+        && label.trim().is_empty()
+    {
+        return Err(CaptureQualityReportError::new(format!(
+            "{where_} has an empty metric label"
+        )));
     }
     if finding
         .policy

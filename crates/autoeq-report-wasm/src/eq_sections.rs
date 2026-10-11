@@ -216,11 +216,10 @@ fn eq_filter_table_html(value: &Value) -> String {
         for (index, filter) in filters.iter().enumerate() {
             let number = index + 1;
             if filter["topology"] == "kautz_filter" || filter["topology"] == "warped_biquad" {
-                let _ = write!(
+                let _ = writeln!(
                     output,
-                    "<tr><td>{number}</td><td colspan=\"4\">{}{}</td></tr>\n",
-                    format_eq_filter_line(filter, number),
-                    ""
+                    "<tr><td>{number}</td><td colspan=\"4\">{}</td></tr>",
+                    format_eq_filter_line(filter, number)
                 );
                 continue;
             }
