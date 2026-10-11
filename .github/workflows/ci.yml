@@ -32,7 +32,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y clang mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold python3-venv
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -66,9 +66,11 @@ jobs:
         run: python3 scripts/check_roomeq_schema_baselines.py
       - name: Test RoomEQ and recording GPUI clients
         run: |
-          python3 -m pip install --editable ui/roomeq-gui --editable ui/recording-gui
-          PYTHONPATH=ui/roomeq-gui python3 -m unittest discover ui/roomeq-gui/tests
-          PYTHONPATH=ui/recording-gui python3 -m unittest discover ui/recording-gui/tests
+          client_test_venv="${RUNNER_TEMP:-/tmp}/autoeq-client-tests"
+          python3 -m venv "$client_test_venv"
+          "$client_test_venv/bin/python" -m pip install --editable ui/roomeq-gui --editable ui/recording-gui
+          PYTHONPATH=ui/roomeq-gui "$client_test_venv/bin/python" -m unittest discover ui/roomeq-gui/tests
+          PYTHONPATH=ui/recording-gui "$client_test_venv/bin/python" -m unittest discover ui/recording-gui/tests
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
