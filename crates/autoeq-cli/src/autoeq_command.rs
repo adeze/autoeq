@@ -871,12 +871,19 @@ async fn run(args: autoeq::cli::Args) -> Result<()> {
         );
 
         // Perform additional QA analysis if threshold was provided
+        // Mirror the summary fallback below: score metrics compare upward,
+        // while the fallback minimization objectives compare downward.
+        let (qa_pre, qa_post, lower_is_better) = match (pre_score, post_score) {
+            (Some(pre), Some(post)) => (Some(pre), Some(post), false),
+            _ => (opt_result.pre_objective, opt_result.post_objective, true),
+        };
         let qa_result = qa::perform_qa_analysis(
             opt_result.converged,
             spacing_ok,
-            pre_score,
-            post_score,
+            qa_pre,
+            qa_post,
             qa_threshold,
+            lower_is_better,
         );
         if !spacing_ok {
             spacing::print_freq_spacing(&opt_result.params, &optim_params, "qa-final");

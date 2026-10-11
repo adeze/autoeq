@@ -8,6 +8,7 @@ pub(crate) struct QaAnalysisResult {
     pub(super) improvement_threshold: f64,
     pub(super) pre_value: f64,
     pub(super) post_value: f64,
+    pub(super) lower_is_better: bool,
 }
 
 impl QaAnalysisResult {
@@ -17,12 +18,16 @@ impl QaAnalysisResult {
 }
 
 /// Perform QA analysis similar to qa_check.sh
+///
+/// Score-like values improve upward (`post > pre + threshold`); loss-like
+/// values improve downward (`pre - post > threshold`).
 pub(crate) fn perform_qa_analysis(
     converged: bool,
     spacing_ok: bool,
     pre_score: Option<f64>,
     post_score: Option<f64>,
     threshold: f64,
+    lower_is_better: bool,
 ) -> QaAnalysisResult {
     let pre_value = pre_score.unwrap_or(f64::NAN);
     let post_value = post_score.unwrap_or(f64::NAN);
@@ -33,13 +38,22 @@ pub(crate) fn perform_qa_analysis(
     // Check spacing (already computed)
     let spacing_check_ok = spacing_ok;
 
-    // Check improvement: post > pre + threshold
-    let improvement_threshold = pre_value + threshold;
-    let improvement_ok = pre_value.is_finite()
-        && post_value.is_finite()
-        && threshold.is_finite()
-        && improvement_threshold.is_finite()
-        && post_value > improvement_threshold;
+    let finite_inputs = pre_value.is_finite() && post_value.is_finite() && threshold.is_finite();
+    let (improvement_threshold, improvement_ok) = if lower_is_better {
+        // Loss improvement: the drop must strictly exceed the threshold.
+        let improvement_threshold = pre_value - threshold;
+        let improvement_ok = finite_inputs
+            && improvement_threshold.is_finite()
+            && post_value < improvement_threshold;
+        (improvement_threshold, improvement_ok)
+    } else {
+        // Check improvement: post > pre + threshold
+        let improvement_threshold = pre_value + threshold;
+        let improvement_ok = finite_inputs
+            && improvement_threshold.is_finite()
+            && post_value > improvement_threshold;
+        (improvement_threshold, improvement_ok)
+    };
 
     QaAnalysisResult {
         converge_ok,
@@ -48,6 +62,7 @@ pub(crate) fn perform_qa_analysis(
         improvement_threshold,
         pre_value,
         post_value,
+        lower_is_better,
     }
 }
 
@@ -66,14 +81,25 @@ pub(super) fn display_qa_analysis(result: &QaAnalysisResult) {
     );
     println!("  Pre:      {:.3}", result.pre_value);
     println!("  Post:     {:.3}", result.post_value);
-    println!(
-        "  Improvement: {:.3} > {:.3} + {:.1} = {:.3} ({})",
-        result.post_value,
-        result.pre_value,
-        result.improvement_threshold - result.pre_value,
-        result.improvement_threshold,
-        if result.improvement_ok { "✓" } else { "✗" }
-    );
+    if result.lower_is_better {
+        println!(
+            "  Improvement: {:.3} - {:.3} = {:.3} > {:.1} ({})",
+            result.pre_value,
+            result.post_value,
+            result.pre_value - result.post_value,
+            result.pre_value - result.improvement_threshold,
+            if result.improvement_ok { "✓" } else { "✗" }
+        );
+    } else {
+        println!(
+            "  Improvement: {:.3} > {:.3} + {:.1} = {:.3} ({})",
+            result.post_value,
+            result.pre_value,
+            result.improvement_threshold - result.pre_value,
+            result.improvement_threshold,
+            if result.improvement_ok { "✓" } else { "✗" }
+        );
+    }
     println!();
 
     // Final result

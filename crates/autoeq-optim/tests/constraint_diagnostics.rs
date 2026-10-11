@@ -10,8 +10,8 @@ use autoeq_optim::loss::LossType;
 use autoeq_optim::optim::pareto::ParetoFilter;
 use autoeq_optim::optim::{
     ConstraintSpec, MockOptimizerBackend, ObjectiveDataBuilder, OptimizationOutcomeKind,
-    OptimizerBackend, OptimizerRunEvidence, OptimizerTermination, check_pareto_feasibility,
-    classify_outcome, constrain_candidate,
+    OptimizerBackend, OptimizerBackendCompletion, OptimizerRunEvidence, OptimizerTermination,
+    check_pareto_feasibility, classify_outcome, constrain_candidate,
 };
 use ndarray::Array1;
 
@@ -90,7 +90,7 @@ fn engine_adapter_reports_infeasible_despite_converged_backend() {
     let mut x_run = x.clone();
     let result = backend.optimize_filters(&mut x_run, &lower, &upper, data.clone(), &params);
     assert!(result.is_ok());
-    let evidence = OptimizerRunEvidence::from_backend_result(
+    let mut evidence = OptimizerRunEvidence::from_backend_result(
         "mock",
         result,
         &x_run,
@@ -99,6 +99,9 @@ fn engine_adapter_reports_infeasible_despite_converged_backend() {
         params.maxeval,
         params.seed,
     );
+    // Status text no longer implies convergence; the converged backend reports
+    // a structured completion.
+    evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
     assert_eq!(evidence.termination, OptimizerTermination::Converged);
 
     let candidate =
@@ -232,12 +235,23 @@ fn roadmap_correction_dispatcher_repairs_single_breach() {
     };
     let data = objective_with_envelope();
     let x0 = vec![1000.0_f64.log10(), 1.0, 10.0];
-    let lower = x0.iter().map(|v| v - 0.5).collect::<Vec<_>>();
+    let mut lower = x0.iter().map(|v| v - 0.5).collect::<Vec<_>>();
     let upper = x0.iter().map(|v| v + 0.5).collect::<Vec<_>>();
-    let params = dispatcher_params(1);
+    // The 6 dB envelope repair lands near gain 6, outside a +/-0.5 pin around
+    // the breaching start: leave room below for the repaired value while the
+    // pinned frequency/Q and short budget keep the winner breaching.
+    lower[2] = 5.0;
+    let mut params = dispatcher_params(1);
+    // One evaluation pins the winner at the breaching start: any gain change
+    // below must come from finalization repair, never the search.
+    params.maxeval = 1;
     let mut x = x0.clone();
     let (_, loss) = optimize_filters(&mut x, &lower, &upper, data.clone(), &params)
         .expect("repaired breach finalizes");
+    assert!(
+        x[2] < x0[2] - 1e-9,
+        "finalization must repair the breaching gain, got x={x:?}"
+    );
     let check = constrain_candidate("dispatched", &x, &data, &ConstraintSpec::unconstrained())
         .expect("valid re-check");
     assert!(check.feasible, "emitted params feasible");

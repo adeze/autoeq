@@ -192,6 +192,7 @@ pub(super) async fn run_one(
                 pre.pref_score,
                 metrics.pref_score,
                 threshold,
+                false,
             )
         } else {
             None
@@ -1002,6 +1003,7 @@ pub(super) fn scenario_qa_failure(
     pre: f64,
     post: f64,
     threshold: f64,
+    lower_is_better: bool,
 ) -> Option<String> {
     let analysis = crate::autoeq_command::qa::perform_qa_analysis(
         converged,
@@ -1009,6 +1011,7 @@ pub(super) fn scenario_qa_failure(
         Some(pre),
         Some(post),
         threshold,
+        lower_is_better,
     );
     crate::autoeq_command::qa::require_qa_pass(&analysis)
         .err()
@@ -1056,7 +1059,7 @@ mod qa_contract_tests {
 
     #[test]
     fn owning_qa_rejects_nonconvergence_spacing_and_nonpositive_improvement() {
-        assert!(scenario_qa_failure(true, true, 5.0, 6.0, 0.0).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 6.0, 0.0, false).is_none());
         for (converged, spacing, post, threshold) in [
             (false, true, 6.0, 0.0),
             (true, false, 6.0, 0.0),
@@ -1065,9 +1068,11 @@ mod qa_contract_tests {
             (true, true, 6.0, 1.0),
             (true, true, f64::NAN, 0.0),
         ] {
-            assert!(scenario_qa_failure(converged, spacing, 5.0, post, threshold).is_some());
+            assert!(scenario_qa_failure(converged, spacing, 5.0, post, threshold, false).is_some());
         }
-        assert!(scenario_qa_failure(true, true, 5.0, 6.01, 1.0).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 6.01, 1.0, false).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 4.0, 0.5, true).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 4.9, 0.5, true).is_some());
     }
 
     #[test]

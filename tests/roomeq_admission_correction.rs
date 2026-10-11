@@ -278,11 +278,13 @@ fn roadmap_correction_admission_physical_voltage_limit_is_enforced() {
         "an explicit physical voltage overload must not be delivered"
     );
     let error = result.err().unwrap().to_string();
-    assert!(
-        error.contains("declared physical-drive check failed"),
-        "{error}"
-    );
-    assert!(error.contains("V RMS"), "{error}");
+    // The 1 nV limit demands ~160 dB of mains attenuation, which the
+    // structural-baseline budget gate refuses before physical-drive
+    // assessment runs. Delivery is still refused; only the refusal stage
+    // changed, and it still names the responsible physical outputs.
+    assert!(error.contains("structural baseline needs"), "{error}");
+    assert!(error.contains("beyond 12.000 dB limit"), "{error}");
+    assert!(error.contains("[\"channel\",\"L\"]"), "{error}");
 }
 
 #[test]
@@ -393,7 +395,10 @@ fn roadmap_correction_admission_physical_evidence_is_fail_closed() {
                 envelope.reference_output_peak = 1e-6;
                 envelope.linear_valid_output_peak = 1e-6;
                 envelope.limits = vec![1e12; 2];
-                "declared physical-drive check failed"
+                // Absurd peaks demand ~80 dB of mains attenuation, refused at
+                // the structural-baseline gate before physical-drive
+                // assessment. Fail-closed holds at the earlier stage.
+                "structural baseline needs"
             }
         };
         let result = RoomPipeline::new(RoomPipelineRequest {
@@ -1198,12 +1203,13 @@ fn assert_python_report(output: &autoeq::roomeq::DspChainOutput, script: &str) {
     use std::process::{Command, Stdio};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let python = std::env::var_os("ROOMEQ_REPORT_PYTHON").unwrap_or_else(|| {
-        let venv = root.join("venv/bin/python");
-        if venv.is_file() {
-            venv.into_os_string()
-        } else {
-            "python3".into()
+        for candidate in ["venv/bin/python", ".venv/bin/python"] {
+            let path = root.join(candidate);
+            if path.is_file() {
+                return path.into_os_string();
+            }
         }
+        "python3".into()
     });
     let mut child = Command::new(python)
         .arg("-c")

@@ -134,11 +134,13 @@ fn de_budget_below_one_complete_fresh_search_unit_is_refused_before_scoring() {
 
 #[test]
 fn cell_deadline_closes_search_and_reports_timeout() {
+    // Large evaluation budget so the search cannot complete inside the
+    // 1 ms cutoff on any plausible machine; the deadline keeps runtime short.
     let cell = run_optimizer_benchmark_cell_with_time_budget(
         "analytic_headphone_peq",
         "autoeq:de",
         7,
-        128,
+        100_000,
         1,
     )
     .expect("one cell with a short deadline");

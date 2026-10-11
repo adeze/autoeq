@@ -23,6 +23,20 @@ fn read_json(path: &std::path::Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+fn report_python() -> std::ffi::OsString {
+    if let Some(python) = std::env::var_os("ROOMEQ_REPORT_PYTHON") {
+        return python;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for candidate in ["venv/bin/python", ".venv/bin/python"] {
+        let path = root.join(candidate);
+        if path.is_file() {
+            return path.into_os_string();
+        }
+    }
+    "python3".into()
+}
+
 fn write_impulse(path: &std::path::Path, amplitude: f32, delay: usize) {
     let mut wav = hound::WavWriter::create(
         path,
@@ -707,7 +721,7 @@ fn roadmap_correction_capture_calibrated_noise_reaches_report_without_baseline()
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let html = fixture.dir.path().join("noise.html");
-    let rendered = Command::new(root.join("venv/bin/python"))
+    let rendered = Command::new(report_python())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(root.join("ui/display-roomeq"))
         .arg("--capture-verification")
@@ -878,7 +892,7 @@ fn roadmap_correction_capture_matched_ir_step_views() {
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let html = fixture.dir.path().join("captures.html");
-    let rendered = Command::new(root.join("venv/bin/python"))
+    let rendered = Command::new(report_python())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(root.join("ui/display-roomeq"))
         .arg("--capture-verification")
@@ -894,9 +908,10 @@ fn roadmap_correction_capture_matched_ir_step_views() {
     );
     let rendered = std::fs::read_to_string(html).unwrap();
     assert!(rendered.contains("synthetic_capture_pair"));
-    assert!(rendered.contains("STEP: raw sample units"));
+    assert!(rendered.contains("&quot;STEP&quot;"));
+    assert!(rendered.contains("raw sample units"));
     assert!(!rendered.contains("binding changed"));
-    assert_eq!(rendered.matches("<svg ").count(), 4);
+    assert_eq!(rendered.matches("class=\"report-figure\"").count(), 4);
     let legacy = Fixture::new(true, 0.5, 0).expect_code(1);
     assert!(legacy["comparisons"][0]["capture_views"]["ir_step"].is_null());
     assert!(legacy["comparisons"][0]["capture_views"]["unavailable"]["ir_step"].is_string());
@@ -990,7 +1005,7 @@ fn roadmap_correction_capture_matched_etc_reaches_report() {
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let html = fixture.dir.path().join("etc.html");
-    let rendered = Command::new(root.join("venv/bin/python"))
+    let rendered = Command::new(report_python())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(root.join("ui/display-roomeq"))
         .arg("--capture-verification")
@@ -1008,7 +1023,7 @@ fn roadmap_correction_capture_matched_etc_reaches_report() {
     assert!(rendered.contains("Matched octave ETC"));
     assert!(rendered.contains("ETC 500 Hz"));
     assert!(rendered.contains("ETC 4000 Hz"));
-    assert_eq!(rendered.matches("<svg ").count(), 12);
+    assert_eq!(rendered.matches("class=\"report-figure\"").count(), 12);
 }
 
 #[test]
@@ -1093,7 +1108,7 @@ fn roadmap_correction_capture_matched_decay_reaches_report() {
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let html = fixture.dir.path().join("decay.html");
-    let rendered = Command::new(root.join("venv/bin/python"))
+    let rendered = Command::new(report_python())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(root.join("ui/display-roomeq"))
         .arg("--capture-verification")
