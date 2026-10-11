@@ -543,6 +543,7 @@ version = "0.5.0"
 dependencies = [
  "base64",
  "gpui-d3rs",
+ "rustfft",
  "serde",
  "serde_json",
 ]

@@ -20,6 +20,73 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "target_overlay_curves" => encode(&crate::target_overlay::build_target_overlay_curves(
+            &request["data"],
+            &request["reference_curves"],
+            request
+                .get("loaded_target")
+                .filter(|value| !value.is_null()),
+            request
+                .get("route_crossover_db")
+                .filter(|value| !value.is_null()),
+        )),
+        "target_overlay_helper" => encode(&crate::target_overlay::helper_response(request)?),
+        "ir_group_delay" => {
+            let samples = |key: &str| -> Vec<f64> {
+                request[key]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|value| value.as_f64().unwrap_or(f64::NAN))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let point_count = request["point_count"].as_i64().unwrap_or(512).max(8);
+            // Report display grids are bounded independently of waveform length.
+            if point_count > 65_536 {
+                return Err("IR group-delay point count exceeds 65536".into());
+            }
+            let setting = |key: &str, default: f64| {
+                request
+                    .get(key)
+                    .map(|value| value.as_f64().unwrap_or(f64::NAN))
+                    .unwrap_or(default)
+            };
+            encode(&crate::ir_group_delay::compute_group_delay_from_ir(
+                &samples("time_ms"),
+                &samples("amplitude"),
+                setting("min_freq", 20.0),
+                setting("max_freq", 20_000.0),
+                point_count as usize,
+            ))
+        }
+        "acoustic_summary_report" => encode(&crate::acoustic_summary::operational_summary_report(
+            &request["data"],
+        )),
+        "operational_summaries_by_channel" => encode(
+            &crate::acoustic_summary::operational_summaries_by_channel(&request["data"]),
+        ),
+        "operational_response_cell" => encode(&crate::acoustic_summary::operational_response_cell(
+            &request["summaries_by_channel"],
+            request["name"].as_str().unwrap_or_default(),
+        )),
+        "summary_table_html" => encode(&crate::acoustic_summary::summary_table_html(
+            &request["data"],
+        )),
+        "pending_cell" => encode(&crate::acoustic_summary::pending_cell(
+            request["field"].as_str().unwrap_or_default(),
+        )),
+        "symmetric_groups" => {
+            let names: Vec<String> = serde_json::from_value(request["names"].clone())
+                .map_err(|error| format!("invalid channel names: {error}"))?;
+            encode(&crate::symmetric_pairs::symmetric_groups(&names))
+        }
+        "pair_sum_difference" => encode(&crate::symmetric_pairs::pair_sum_difference(
+            &request["a"],
+            &request["b"],
+        )),
         "acoustic_reflections" => encode(&crate::acoustic_reflections::reflection_report(
             &request["channel"],
             request["label"].as_str().unwrap_or_default(),
@@ -85,5 +152,17 @@ mod tests {
             produce(&json!({"operation":"shared_sections","data":data})).unwrap(),
             encode(&crate::build_shared_sections(&data)).unwrap()
         );
+    }
+
+    #[test]
+    fn ir_dispatch_preserves_unavailable_bounds_and_clamps_signed_counts() {
+        let mut request = json!({"operation":"ir_group_delay","time_ms":[0.0,0.125,0.25,0.375,0.5,0.625,0.75,0.875],"amplitude":[1,0,0,0,0,0,0,0],"point_count":-1});
+        let value: Value = serde_json::from_str(&produce(&request).unwrap()).unwrap();
+        assert_eq!(value["frequency_hz"].as_array().unwrap().len(), 8);
+        request["min_freq"] = Value::Null;
+        let value: Value = serde_json::from_str(&produce(&request).unwrap()).unwrap();
+        assert!(value["frequency_hz"].as_array().unwrap().is_empty());
+        request["point_count"] = json!(65_537);
+        assert!(produce(&request).is_err());
     }
 }

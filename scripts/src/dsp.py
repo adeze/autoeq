@@ -3,7 +3,7 @@
 import math
 import sys
 
-import numpy as np
+from .native_ir_group_delay import compute_group_delay_from_ir
 
 from .data_extract import get_plottable_drivers
 
@@ -1225,59 +1225,6 @@ def unwrap_phase(phase_deg: list[float]) -> list[float]:
 def wrap_phase(phase_deg: list[float]) -> list[float]:
     """Wrap phase to the JSON/report convention ``[-180, 180)``."""
     return [((float(value) + 180.0) % 360.0) - 180.0 for value in phase_deg]
-
-
-def compute_group_delay_from_ir(
-    ir: dict | None,
-    min_freq: float = 20.0,
-    max_freq: float = 20_000.0,
-    point_count: int = 512,
-) -> tuple[list[float], list[float]]:
-    """Derive group delay from an impulse-response waveform.
-
-    The serialized curve phase is intentionally wrapped for display and a
-    sparse log-frequency phase curve cannot be unwrapped reliably when the
-    acoustic propagation delay spans multiple turns between points.  The IR
-    retains that timing, so its dense FFT phase is the authoritative source
-    for the group-delay plot.
-    """
-    if not ir:
-        return [], []
-    time_ms = np.asarray(ir.get("time_ms", []), dtype=float)
-    amplitude = np.asarray(ir.get("amplitude", []), dtype=float)
-    if time_ms.size < 4 or amplitude.size != time_ms.size:
-        return [], []
-
-    steps_ms = np.diff(time_ms)
-    finite_steps = steps_ms[np.isfinite(steps_ms) & (steps_ms > 0.0)]
-    if finite_steps.size == 0:
-        return [], []
-    sample_rate = 1000.0 / float(np.median(finite_steps))
-    nyquist = sample_rate / 2.0
-    upper = min(float(max_freq), nyquist)
-    lower = max(float(min_freq), sample_rate / amplitude.size)
-    if not math.isfinite(sample_rate) or lower >= upper:
-        return [], []
-
-    spectrum = np.fft.rfft(amplitude)
-    fft_freq = np.fft.rfftfreq(amplitude.size, d=1.0 / sample_rate)
-    magnitude = np.abs(spectrum)
-    peak_magnitude = float(np.max(magnitude))
-    if not math.isfinite(peak_magnitude) or peak_magnitude <= 1.0e-12:
-        return [], []
-
-    phase = np.unwrap(np.angle(spectrum))
-    output_freq = np.geomspace(lower, upper, max(8, int(point_count)))
-    output_phase = np.interp(output_freq, fft_freq, phase)
-    omega = 2.0 * np.pi * output_freq
-    group_delay_ms = -np.gradient(output_phase, omega) * 1000.0
-    output_magnitude = np.interp(output_freq, fft_freq, magnitude)
-    valid = (
-        np.isfinite(group_delay_ms)
-        & np.isfinite(output_magnitude)
-        & (output_magnitude >= peak_magnitude * 1.0e-8)
-    )
-    return output_freq[valid].tolist(), group_delay_ms[valid].tolist()
 
 
 def compute_group_delay(
