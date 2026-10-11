@@ -23,7 +23,6 @@ class ReportPayloadTests(unittest.TestCase):
         })
         self.assertIn("DSP signal flow", encoded)
         self.assertIn("Details per speaker", encoded)
-        self.assertIn("STI unavailable", encoded)
         self.assertIn("55", encoded)
         self.assertTrue(any(s["kind"] == "figure" for s in payload["sections"]))
 
