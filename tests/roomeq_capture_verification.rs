@@ -470,8 +470,14 @@ fn roadmap_correction_generated_prediction_binary_refuses_invalid_inputs() {
 
 impl Fixture {
     fn new(synthetic: bool, amplitude: f32, delay_samples: usize) -> Self {
+        // Honor TMPDIR first so sandboxed runs (where the shared scratch volume
+        // exists but is not writable) land in a writable directory.
         let preferred = std::path::PathBuf::from("/Volumes/home_tmp/tmp");
-        let temp_root = if preferred.is_dir() {
+        let temp_root = if let Some(tmpdir) = std::env::var_os("TMPDIR").filter(|v| !v.is_empty()) {
+            let dir = std::path::PathBuf::from(tmpdir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        } else if preferred.is_dir() {
             preferred
         } else {
             let fallback = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -18,6 +18,13 @@ use autoeq::roomeq::{
 use std::collections::HashMap;
 
 fn test_temp_root() -> std::path::PathBuf {
+    // Honor TMPDIR first so sandboxed runs (where the shared scratch volume
+    // exists but is not writable) land in a writable directory.
+    if let Some(tmpdir) = std::env::var_os("TMPDIR").filter(|v| !v.is_empty()) {
+        let dir = std::path::PathBuf::from(tmpdir);
+        std::fs::create_dir_all(&dir).unwrap();
+        return dir;
+    }
     let preferred = std::path::PathBuf::from("/Volumes/home_tmp/tmp");
     if preferred.is_dir() {
         return preferred;
