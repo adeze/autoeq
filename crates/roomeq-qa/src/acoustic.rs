@@ -363,6 +363,9 @@ fn capture_artifact_role_name(
         CaptureArtifactRole::MagnitudeResponse => "magnitude_response",
         CaptureArtifactRole::ComplexResponse => "complex_response",
         CaptureArtifactRole::Calibration => "calibration",
+        CaptureArtifactRole::ImpulseResponse => "impulse_response",
+        CaptureArtifactRole::CtcMeasurement => "ctc_measurement",
+        CaptureArtifactRole::Coherence => "coherence",
         CaptureArtifactRole::SupportingEvidence => "supporting_evidence",
     }
 }
@@ -1895,6 +1898,29 @@ fn write_report(path: &Path, json: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_artifact_role_names_cover_all_variants() {
+        use autoeq_core::capture_handoff::CaptureArtifactRole;
+        let cases = [
+            (CaptureArtifactRole::Configuration, "configuration"),
+            (CaptureArtifactRole::RawAudio, "raw_audio"),
+            (CaptureArtifactRole::ProcessedAudio, "processed_audio"),
+            (CaptureArtifactRole::MagnitudeResponse, "magnitude_response"),
+            (CaptureArtifactRole::ComplexResponse, "complex_response"),
+            (CaptureArtifactRole::Calibration, "calibration"),
+            (CaptureArtifactRole::ImpulseResponse, "impulse_response"),
+            (CaptureArtifactRole::CtcMeasurement, "ctc_measurement"),
+            (CaptureArtifactRole::Coherence, "coherence"),
+            (
+                CaptureArtifactRole::SupportingEvidence,
+                "supporting_evidence",
+            ),
+        ];
+        for (role, expected) in cases {
+            assert_eq!(super::capture_artifact_role_name(role), expected);
+        }
+    }
+
     #[test]
     fn variant_failures_retain_context_and_completed_results() {
         let scenario: super::AcousticCorpusScenario = serde_json::from_value(serde_json::json!({
