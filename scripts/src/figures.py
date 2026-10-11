@@ -37,6 +37,11 @@ from .native_bass_figures import (
     routing_figure as _native_bass_routing_figure,
 )
 from .native_eq_figures import create_eq_figure, create_multipass_eq_figure
+from .native_comparison_tables import score_comparison_figure as _native_score_comparison_figure
+from .native_comparison_figures import (
+    ComparisonFigureBatch,
+    comparison_figure_section as _native_comparison_figure_section,
+)
 from .native_combined_figures import combined_figures as _native_combined_figures
 from .native_response_figures import (
     add_channel_response_overlays as _native_add_channel_response_overlays,
@@ -59,8 +64,48 @@ from .wasm_report import (
     hline,
     vline,
     figure,
-    bar_chart,
 )
+
+
+def _comparison_figure(
+    title,
+    x,
+    y,
+    series_list=None,
+    hlines=None,
+    vlines=None,
+    xranges=None,
+    annotations=None,
+    legend=True,
+    y2=None,
+    tab=None,
+):
+    """Prepare a comparison plot descriptor for canonical schema assembly."""
+    return _native_comparison_figure_section({
+        "title": title,
+        "x": x,
+        "y": y,
+        "y2": y2,
+        "series": list(series_list or []),
+        "hlines": list(hlines or []),
+        "vlines": list(vlines or []),
+        "xranges": list(xranges or []),
+        "annotations": list(annotations or []),
+        "legend": bool(legend),
+        "tab": tab,
+    })
+
+
+def _comparison_series(name, x, y, color=None, width=2.0, dash="solid"):
+    """Prepare trace arrays without applying DSP or final schema defaults."""
+    return {
+        "name": name,
+        "x": list(x),
+        "y": list(y),
+        "color": color,
+        "width": width,
+        "dash": dash,
+    }
 
 def create_channel_figure(
     channel_name: str,
@@ -476,7 +521,7 @@ def create_comparison_overlay_figure(
         spl_smoothed = smooth_octave(
             initial_curve["freq"], initial_curve["spl"], DEFAULT_SMOOTHING
         )
-        series_list.append(series(
+        series_list.append(_comparison_series(
             "Before EQ",
             initial_curve["freq"], spl_smoothed,
             color="rgba(200, 200, 200, 0.6)", width=2,
@@ -489,14 +534,14 @@ def create_comparison_overlay_figure(
             spl_smoothed = smooth_octave(
                 final_curve["freq"], final_curve["spl"], DEFAULT_SMOOTHING
             )
-            series_list.append(series(
+            series_list.append(_comparison_series(
                 _mode_label(mode_name),
                 final_curve["freq"], spl_smoothed,
                 color=_mode_color(mode_name), width=2,
             ))
 
     if target_curve and target_curve.get("freq") and target_curve.get("spl"):
-        series_list.append(series(
+        series_list.append(_comparison_series(
             "Target",
             target_curve["freq"], target_curve["spl"],
             color="rgba(40, 40, 40, 0.9)", width=2, dash="dot",
@@ -505,7 +550,7 @@ def create_comparison_overlay_figure(
 
     y_min, y_max = compute_y_range(all_curves)
 
-    return figure(
+    return _comparison_figure(
         f"{channel_name}: Mode Comparison{title_suffix}",
         axis("Frequency (Hz)", "log", 20, 20000),
         axis("SPL (dB)", "linear", y_min, y_max),
@@ -543,7 +588,7 @@ def create_comparison_zoomed_figure(
 
     if initial_curve:
         spl_smoothed = smooth_octave(initial_curve["freq"], initial_curve["spl"], DEFAULT_SMOOTHING)
-        series_list.append(series(
+        series_list.append(_comparison_series(
             "Before EQ",
             initial_curve["freq"], spl_smoothed,
             color="rgba(200, 200, 200, 0.6)", width=2,
@@ -553,13 +598,13 @@ def create_comparison_zoomed_figure(
         final_curve = ch_data.get("final_curve")
         if final_curve:
             spl_smoothed = smooth_octave(final_curve["freq"], final_curve["spl"], DEFAULT_SMOOTHING)
-            series_list.append(series(
+            series_list.append(_comparison_series(
                 _mode_label(mode_name),
                 final_curve["freq"], spl_smoothed,
                 color=_mode_color(mode_name), width=2,
             ))
 
-    return figure(
+    return _comparison_figure(
         f"{channel_name}: Bass ({int(min_freq)}-{int(max_freq)} Hz)",
         axis("Frequency (Hz)", "log", min_freq, max_freq),
         axis("SPL (dB)", "linear",
@@ -602,7 +647,7 @@ def create_comparison_eq_overlay_figure(
 
         if eq_spl:
             has_data = True
-            series_list.append(series(
+            series_list.append(_comparison_series(
                 _mode_label(mode_name),
                 eq_freq, eq_spl,
                 color=_mode_color(mode_name), width=2,
@@ -611,13 +656,13 @@ def create_comparison_eq_overlay_figure(
     if not has_data:
         return None
 
-    series_list.append(series(
+    series_list.append(_comparison_series(
         "0 dB",
         [freq_points[0], freq_points[-1]], [0, 0],
         color="rgba(150, 150, 150, 0.5)", width=1, dash="dash",
     ))
 
-    return figure(
+    return _comparison_figure(
         f"EQ Response Comparison: {channel_name}",
         axis("Frequency (Hz)", "log", 20, 20000),
         axis("Gain (dB)", "linear", -15, 15),
@@ -654,7 +699,7 @@ def create_mode_subplots_figure(
 
         if initial_curve:
             spl_sm = smooth_octave(initial_curve["freq"], initial_curve["spl"], DEFAULT_SMOOTHING)
-            cell_series.append(series(
+            cell_series.append(_comparison_series(
                 "Before EQ",
                 initial_curve["freq"], spl_sm,
                 color="rgba(200, 200, 200, 0.6)", width=1.5,
@@ -662,20 +707,20 @@ def create_mode_subplots_figure(
 
         if final_curve:
             spl_sm = smooth_octave(final_curve["freq"], final_curve["spl"], DEFAULT_SMOOTHING)
-            cell_series.append(series(
+            cell_series.append(_comparison_series(
                 _mode_label(mode_name),
                 final_curve["freq"], spl_sm,
                 color=color, width=2,
             ))
 
         if target_curve and target_curve.get("freq") and target_curve.get("spl"):
-            cell_series.append(series(
+            cell_series.append(_comparison_series(
                 "Target",
                 target_curve["freq"], target_curve["spl"],
                 color="rgba(40, 40, 40, 0.9)", width=1.5, dash="dot",
             ))
 
-        sections.append(figure(
+        sections.append(_comparison_figure(
             f"{_mode_label(mode_name)}: {channel_name} Per-Mode Detail",
             axis("Frequency (Hz)", "log", 20, 20000),
             axis("SPL (dB)", "linear", y_min, y_max),
@@ -709,17 +754,17 @@ def create_comparison_phase_figure(
         s_list = []
         if initial_curve and initial_curve.get("phase"):
             phase_sm = wrap_phase(initial_curve["phase"])
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 "Before EQ", initial_curve["freq"], phase_sm,
                 color="rgba(200, 200, 200, 0.6)", width=1.5,
             ))
         if final_curve and final_curve.get("phase"):
             phase_sm = wrap_phase(final_curve["phase"])
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 _mode_label(mode_name), final_curve["freq"], phase_sm,
                 color=color, width=2.0,
             ))
-        sections.append(figure(
+        sections.append(_comparison_figure(
             f"{channel_name}: Phase Before / After EQ — "
             f"{_mode_label(mode_name)}",
             axis("Frequency (Hz)", "log", 20, 20000),
@@ -804,16 +849,16 @@ def create_comparison_group_delay_figure(
     for mode_name, color, before_freq, before_gd, after_freq, after_gd in per_mode:
         s_list = []
         if before_freq:
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 "Before EQ", before_freq, before_gd,
                 color="rgba(200, 200, 200, 0.6)", width=1.5,
             ))
         if after_freq:
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 _mode_label(mode_name), after_freq, after_gd,
                 color=color, width=2.0,
             ))
-        sections.append(figure(
+        sections.append(_comparison_figure(
             f"{channel_name}: Group Delay Before / After EQ — "
             f"{_mode_label(mode_name)}",
             axis("Frequency (Hz)", "log", 20, 20000),
@@ -845,16 +890,16 @@ def create_comparison_ir_figure(
         color = _mode_color(mode_name)
         s_list = []
         if pre_ir:
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 "Before EQ", pre_ir["time_ms"], pre_ir["amplitude"],
                 color="rgba(200, 200, 200, 0.6)", width=1.0,
             ))
         if post_ir:
-            s_list.append(series(
+            s_list.append(_comparison_series(
                 _mode_label(mode_name), post_ir["time_ms"],
                 post_ir["amplitude"], color=color, width=1.0,
             ))
-        sections.append(figure(
+        sections.append(_comparison_figure(
             f"{channel_name}: Impulse Response Before / After EQ — "
             f"{_mode_label(mode_name)}",
             axis("Time (ms)", "linear", 0, display_ms),
@@ -869,48 +914,12 @@ def create_score_comparison_figure(
     loss_types: list[str | None] | None = None,
     tab=None,
 ) -> dict:
-    """Bar section comparing pre/post flat-loss values across modes.
-
-    Note: even when a mode minimized a non-flat loss (e.g. EPA), the
-    `pre_score` / `post_score` numbers in the JSON metadata are *always*
-    computed via the flat-loss helper in
-    `crate::roomeq::workflows::compute_flat_loss`. That makes every bar
-    directly comparable on a single shared y-axis regardless of which
-    objective each mode was actually optimizing.
-
-    The bar values therefore answer the question "did this mode flatten
-    the response well?", not "how well did this mode minimize its own
-    objective?". For perceptual comparison across loss functions, look
-    at the EPA Pref columns of the summary table instead.
-    """
-    mode_names = [_mode_label(n) for n, _, _ in mode_scores]
-    pre_scores = [pre for _, pre, _ in mode_scores]
-    post_scores = [post for _, _, post in mode_scores]
-
-    # If multiple loss functions were used, readers need to know the bars
-    # still measure the same underlying flat loss (otherwise they might
-    # assume the EPA bars are EPA-loss values). The bar schema has no
-    # annotation slot, so the note is folded into the title.
-    distinct_losses = (
-        sorted({lt for lt in loss_types if lt}) if loss_types else []
-    )
-    title_text = "Flat-loss before / after EQ (lower is better)"
-    if len(distinct_losses) >= 2:
-        title_text += (
-            " — Note: bars show the flat-loss metric for every run, "
-            "even ones that optimized EPA — this is so all modes "
-            "stay on a single comparable scale. For perceptual "
-            "comparison see the EPA Pref columns above."
-        )
-
-    return bar_chart(
-        title_text,
-        mode_names,
-        [("Before EQ", pre_scores, "rgba(200, 200, 200, 0.7)"),
-         ("After EQ", post_scores, None)],
-        ylabel="Flat loss (lower is better)",
-        tab=tab,
-    )
+    """Render saved flat-loss score values in the shared comparison chart."""
+    prepared_scores = [
+        {"label": _mode_label(name), "pre": pre, "post": post}
+        for name, pre, post in mode_scores
+    ]
+    return _native_score_comparison_figure(prepared_scores, loss_types, tab)
 
 
 def create_smoothed_figure(

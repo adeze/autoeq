@@ -337,7 +337,7 @@ fn mixed_phase(metadata: &Value, channels: &Value) -> String {
 }
 
 // Labels and precision are the existing EPA display contract, not scoring rules.
-const EPA_FIELDS: &[(&str, &str, usize)] = &[
+pub(crate) const EPA_FIELDS: &[(&str, &str, usize)] = &[
     ("preference", "Preference", 2),
     ("evaluation", "Evaluation", 2),
     ("potency", "Potency", 2),

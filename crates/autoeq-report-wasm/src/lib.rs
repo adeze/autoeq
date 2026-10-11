@@ -17,6 +17,8 @@ pub mod bass_figures;
 pub mod bass_management;
 pub mod capture_quality;
 pub mod combined_figures;
+pub mod comparison_figures;
+pub mod comparison_tables;
 pub mod crossover_config;
 pub mod dashboard_payload;
 pub mod draw;

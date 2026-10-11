@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import tempfile
 import threading
@@ -10,7 +11,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from scripts.src.host_report_transport import file_producer
+from scripts.src.host_report_transport import (
+    build_host_report_payload_from_data,
+    file_producer,
+)
 
 
 class HostReportTransportTests(unittest.TestCase):
@@ -178,6 +182,40 @@ class HostReportTransportTests(unittest.TestCase):
         self.assertEqual(observed, [1, 2])
         self.assertEqual(len(outputs), 2)
         self.assertEqual(errors, [])
+
+    def test_supplied_room_eq_data_path_does_not_reopen_source_loader(self):
+        from unittest.mock import patch
+
+        data = object()
+        output_path = self.directory / "payload.json"
+        sections_path = self.directory / "sections.json"
+        input_path = self.directory / "native-input.json"
+        sections_path.write_text("{}", encoding="utf-8")
+        expected_payload = {"title": "snapshot", "sections": []}
+
+        with (
+            patch(
+                "scripts.src.loaders.load_roomeq_json",
+                side_effect=AssertionError("supplied-data path must not load from files"),
+            ),
+            patch("scripts.src.native_report.using_producer", return_value=nullcontext()),
+            patch(
+                "scripts.src.report.build_report_payload",
+                side_effect=lambda actual, output_json_path, shared_sections: (
+                    expected_payload
+                    if actual is data
+                    and output_json_path == input_path.resolve()
+                    and shared_sections == {}
+                    else None
+                ),
+            ),
+        ):
+            payload = build_host_report_payload_from_data(
+                data, output_path, sections_path, self.directory, input_path=input_path
+            )
+
+        self.assertIs(payload, expected_payload)
+        self.assertEqual(json.loads(output_path.read_text(encoding="utf-8")), expected_payload)
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ from .dsp import (
     symmetric_complex_sum,
 )
 from .figures import (
+    ComparisonFigureBatch,
     _mode_color,
     _mode_label,
     add_channel_response_overlays,
@@ -84,6 +85,7 @@ from .native_eq_sections import render_eq_section as _render_eq_section
 from .payload_binding import verify_payload_binding
 from .native_evidence_sections import evidence_section as _evidence_section
 from .native_dashboard_payload import dashboard_payload as _dashboard_payload
+from .native_comparison_tables import epa_comparison_tables as _epa_comparison_tables
 from .signal_flow import signal_flow_sections
 from .target_overlay import (
     TARGET_LEVEL_MATCH_BAND_HZ,
@@ -399,28 +401,6 @@ def _crossover_config_html(data: dict) -> str:
     }))
 
 
-# Ordered EPA fields with their display labels and formatting rules.
-# Used by the pre/post tables in both single-mode and comparison reports.
-_EPA_FIELDS: list[tuple[str, str, str]] = [
-    ("preference", "Preference", "{:+.2f}"),
-    ("evaluation", "Evaluation", "{:+.2f}"),
-    ("potency", "Potency", "{:+.2f}"),
-    ("activity", "Activity", "{:+.2f}"),
-    ("sharpness_acum", "Sharpness (acum)", "{:+.2f}"),
-    ("roughness", "Roughness", "{:+.3f}"),
-    ("total_loudness_sone", "Total loudness (sone)", "{:+.2f}"),
-    ("loudness_balance", "Loudness balance", "{:+.3f}"),
-]
-
-# Fields where a larger value is the desired outcome (pre → post).
-# Used to colour the delta column green/red.
-
-
-def _format_delta(field: str, pre: float | None, post: float | None) -> str:
-    """Render the saved EPA change with canonical direction and formatting."""
-    return _evidence_section("delta", field=field, pre=pre, post=post)
-
-
 def _epa_channel_table_html(channel_epa: dict | None) -> str:
     """Render saved before/after EPA evidence through the shared producer."""
     return _evidence_section("epa_channel", epa=channel_epa)
@@ -430,15 +410,18 @@ def _epa_comparison_table_html(
     ch_name: str,
     mode_datasets: list[tuple[str, dict]],
 ) -> str:
-    """Render a multi-mode EPA comparison table for a single channel.
+    """Render one prepared comparison table through the canonical producer."""
+    return _epa_comparison_tables({ch_name: _epa_comparison_entries(ch_name, mode_datasets)}).get(
+        ch_name, ""
+    )
 
-    Shows one column per processing mode with its post-EQ EPA values, plus
-    a single "Before EQ" column taken from the first mode that has pre
-    data (the input measurement is the same across modes in a typical
-    comparison run).
-    """
-    # Collect (mode_name, pre_dict, post_dict) triples; skip modes without data.
-    entries: list[tuple[str, dict, dict]] = []
+
+def _epa_comparison_entries(
+    ch_name: str,
+    mode_datasets: list[tuple[str, dict]],
+) -> list[dict]:
+    """Prepare saved EPA values and display labels without formatting HTML."""
+    entries: list[dict] = []
     for mode_name, data in mode_datasets:
         ch_epa = (data.get("metadata") or {}).get("epa_per_channel", {}).get(ch_name)
         if not ch_epa:
@@ -447,55 +430,8 @@ def _epa_comparison_table_html(
         post = ch_epa.get("post") or {}
         if not pre and not post:
             continue
-        entries.append((mode_name, pre, post))
-
-    if not entries:
-        return ""
-
-    # Use the first mode's pre-EQ values as the "Before EQ" baseline.
-    _, baseline_pre, _ = entries[0]
-
-    mode_header_cells = "".join(
-        f"<th>{_mode_label(name)} (post)</th>" for name, _, _ in entries
-    )
-    header_row = f"<tr><th>Metric</th><th>Before EQ</th>{mode_header_cells}</tr>"
-
-    body_rows: list[str] = []
-    for field, label, fmt in _EPA_FIELDS:
-        pre_val = baseline_pre.get(field)
-        pre_str = fmt.format(pre_val) if isinstance(pre_val, (int, float)) else "-"
-        mode_cells: list[str] = []
-        for _, _, post in entries:
-            post_val = post.get(field)
-            if isinstance(post_val, (int, float)):
-                post_str = fmt.format(post_val)
-                if isinstance(pre_val, (int, float)):
-                    delta_span = _format_delta(field, pre_val, post_val)
-                    cell = f'<td>{post_str} <span style="font-size:0.85em">{delta_span}</span></td>'
-                else:
-                    cell = f"<td>{post_str}</td>"
-            else:
-                cell = '<td style="color:#999">-</td>'
-            mode_cells.append(cell)
-        body_rows.append(
-            f"<tr><td>{label}</td><td>{pre_str}</td>{''.join(mode_cells)}</tr>"
-        )
-
-    return (
-        '<div class="epa-section">\n'
-        '    <h3>EPA Psychoacoustic Scores (by mode)</h3>\n'
-        '    <table class="epa-table">\n'
-        f"        <thead>{header_row}</thead>\n"
-        "        <tbody>\n            "
-        + "\n            ".join(body_rows)
-        + "\n        </tbody>\n"
-        "    </table>\n"
-        '    <p class="epa-footer">Higher is better for Preference / '
-        "Evaluation / Total loudness / Loudness balance; lower is better "
-        "for Activity / Sharpness deviation / Roughness. Δ colours show "
-        "whether each mode improved the metric versus the pre-EQ baseline.</p>\n"
-        "</div>\n"
-    )
+        entries.append({"mode_label": _mode_label(mode_name), "pre": pre, "post": post})
+    return entries
 
 
 def _epa_summary_pref(metadata: dict) -> tuple[float | None, float | None]:
@@ -1359,6 +1295,10 @@ def create_comparison_html_report(
 
     # --- Per-channel tabs ---
     # Per-channel sections in shell tabs (tab bar built by the shell).
+    epa_tables = _epa_comparison_tables({
+        channel_name: _epa_comparison_entries(channel_name, mode_datasets)
+        for channel_name in sorted_channels
+    })
     for i, ch_name in enumerate(sorted_channels):
         is_lr = (ch_name == LR_SUM_CHANNEL)
         includes_redirected_bass = not is_lr and any(
@@ -1453,44 +1393,39 @@ def create_comparison_html_report(
             }
 
         # 1. Overlay plot (full range) + Zoomed (bass)
-        _emit_fig(sections, create_comparison_overlay_figure(
-            source_label, mode_data, target_curve=comparison_target,
-            tab=ch_name,
-        ))
-        _emit_fig(sections, create_comparison_zoomed_figure(
-            source_label, mode_data, tab=ch_name
-        ))
-
-        # 2. Phase before/after per mode
-        _emit_fig(sections, create_comparison_phase_figure(
-            ch_name, mode_data, tab=ch_name
-        ))
-
-        # 3. Group delay before/after per mode
-        _emit_fig(sections, create_comparison_group_delay_figure(
-            ch_name, mode_data, tab=ch_name
-        ))
-
-        # 4. Impulse response before/after per mode
-        _emit_fig(sections, create_comparison_ir_figure(
-            ch_name, mode_data, tab=ch_name
-        ))
-
-        # 5. Per-mode detail (one section per mode; was a subplot grid)
-        _emit_fig(sections, create_mode_subplots_figure(
-            ch_name, mode_data, target_curve=comparison_target, tab=ch_name
-        ))
-
-        # 6. EQ response overlay
-        _emit_fig(sections, create_comparison_eq_overlay_figure(
-            ch_name, mode_data,
-            sample_rates={name: float(output.get("sample_rate", 48_000.0))
-                          for name, output in mode_datasets},
-            tab=ch_name,
-        ))
+        with ComparisonFigureBatch() as figure_batch:
+            comparison_figures = [
+                create_comparison_overlay_figure(
+                    source_label, mode_data, target_curve=comparison_target,
+                    tab=ch_name,
+                ),
+                create_comparison_zoomed_figure(
+                    source_label, mode_data, tab=ch_name
+                ),
+                # Phase, delay, and impulse response data are prepared by
+                # their existing numeric routines before schema assembly.
+                create_comparison_phase_figure(ch_name, mode_data, tab=ch_name),
+                create_comparison_group_delay_figure(ch_name, mode_data, tab=ch_name),
+                create_comparison_ir_figure(ch_name, mode_data, tab=ch_name),
+                create_mode_subplots_figure(
+                    ch_name, mode_data, target_curve=comparison_target, tab=ch_name
+                ),
+                create_comparison_eq_overlay_figure(
+                    ch_name,
+                    mode_data,
+                    sample_rates={
+                        name: float(output.get("sample_rate", 48_000.0))
+                        for name, output in mode_datasets
+                    },
+                    tab=ch_name,
+                ),
+            ]
+        comparison_figures = figure_batch.resolve(comparison_figures)
+        for comparison_figure in comparison_figures:
+            _emit_fig(sections, comparison_figure)
 
         # 7. EPA psychoacoustic scores per mode
-        epa_html = _epa_comparison_table_html(ch_name, mode_datasets)
+        epa_html = epa_tables.get(ch_name, "")
         if epa_html:
             _emit_html(sections, epa_html, tab=ch_name)
 

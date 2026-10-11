@@ -20,6 +20,15 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "comparison_figure_sections" => encode(
+            &crate::comparison_figures::comparison_figure_sections(&request["prepared"]),
+        ),
+        "comparison_score_figure" => encode(&crate::comparison_tables::score_comparison_figure(
+            &request["prepared"],
+        )),
+        "epa_comparison_tables" => encode(&crate::comparison_tables::epa_comparison_tables(
+            &request["prepared"],
+        )?),
         "dashboard_payload" => encode(&crate::dashboard_payload::dashboard_payload(request)?),
         "eq_section_html" => encode(
             &crate::eq_sections::eq_section_html(

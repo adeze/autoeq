@@ -17,6 +17,20 @@ _POLL_INTERVAL_SECONDS = 0.01
 def build_host_report_payload(input_path, output_path, sections_path, directory):
     """Retain the canonical loaded object while the host computes shared sections."""
     from .loaders import load_roomeq_json
+
+    data = load_roomeq_json(Path(input_path))
+    try:
+        return build_host_report_payload_from_data(
+            data, output_path, sections_path, directory, input_path=Path(input_path)
+        )
+    finally:
+        data.close()
+
+
+def build_host_report_payload_from_data(
+    data, output_path, sections_path, directory, input_path=None
+):
+    """Build a report from an already loaded RoomEqData without reopening inputs."""
     from .native_report import using_producer
     from .report import build_report_payload
 
@@ -36,18 +50,16 @@ def build_host_report_payload(input_path, output_path, sections_path, directory)
             cache_bytes += size
         return output
 
-    data = load_roomeq_json(Path(input_path))
-    try:
-        with using_producer(cached_producer):
-            payload = build_report_payload(
-                data,
-                shared_sections=json.loads(Path(sections_path).read_text(encoding="utf-8")),
-            )
-        Path(output_path).write_text(
-            json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"
+    with using_producer(cached_producer):
+        payload = build_report_payload(
+            data,
+            output_json_path=Path(input_path).resolve() if input_path is not None else None,
+            shared_sections=json.loads(Path(sections_path).read_text(encoding="utf-8")),
         )
-    finally:
-        data.close()
+    Path(output_path).write_text(
+        json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"
+    )
+    return payload
 
 
 def file_producer(directory: Path, timeout_s: float = 60.0):
