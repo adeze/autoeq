@@ -13,6 +13,7 @@ pub mod acoustic_reflections;
 pub mod acoustic_summary;
 pub mod acoustic_t60;
 pub mod assemble;
+pub mod bass_figures;
 pub mod bass_management;
 pub mod capture_quality;
 pub mod crossover_config;
@@ -21,12 +22,15 @@ pub mod gain_summary;
 pub mod grid;
 pub mod ir_group_delay;
 pub mod producer;
+pub mod report_data;
 pub(crate) mod report_helpers;
 pub mod report_sections;
+pub mod response_figures;
 pub mod schema;
 pub mod signal_flow;
 pub mod symmetric_pairs;
 pub mod target_overlay;
+pub mod temporal_figures;
 pub mod time_of_flight;
 
 pub use bass_management::{

@@ -20,6 +20,42 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "temporal_figure" => encode(&crate::temporal_figures::build_temporal_figure(
+            request["builder"]
+                .as_str()
+                .ok_or("missing temporal figure builder")?,
+            request,
+        )?),
+        "response_figures" => encode(&crate::response_figures::response_figure_report(
+            &request["data"],
+        )),
+        "add_response_overlays" => encode(&crate::response_figures::add_channel_response_overlays(
+            request["figure"].clone(),
+            request["channel_name"]
+                .as_str()
+                .ok_or("missing channel name")?,
+            request.get("target_curve").filter(|value| !value.is_null()),
+            request
+                .get("lfe_plus_channel_curve")
+                .filter(|value| !value.is_null()),
+        )),
+        "resample_spl_onto_grid" => encode(&crate::response_figures::resample_spl_onto_grid(
+            &request["source_freq"],
+            &request["source_spl"],
+            &request["target_freq"],
+        )),
+        "bass_figure" => match request["builder"].as_str() {
+            Some("routing") => encode(&crate::bass_figures::routing_figure(
+                &request["data"],
+                request["tab"].as_str(),
+            )),
+            Some("headroom") => encode(&crate::bass_figures::headroom_figure(
+                &request["data"],
+                request["tab"].as_str(),
+            )),
+            _ => Err("unsupported bass figure builder".into()),
+        },
+        "report_data" => encode(&crate::report_data::helper_response(request)?),
         "target_overlay_curves" => encode(&crate::target_overlay::build_target_overlay_curves(
             &request["data"],
             &request["reference_curves"],

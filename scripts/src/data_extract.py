@@ -1,6 +1,6 @@
 """Functions for extracting data from roomeq output JSON."""
 
-import math
+from .native_report_data import helper as _native_helper
 
 
 # Channel order mapping for sorting (classical order)
@@ -36,119 +36,25 @@ def get_channel_sort_key(channel_name: str) -> tuple[int, str]:
     return (1000, channel_name)
 
 
-def compute_y_range(curves: list[dict | None]) -> tuple[float, float]:
-    """Compute y-axis range from curve data: 50 dB span, max rounded up to next multiple of 5."""
-    all_spl = []
-    for curve in curves:
-        if curve and "spl" in curve:
-            all_spl.extend(curve["spl"])
-
-    if not all_spl:
-        return (-20, 30)
-
-    upper = math.ceil(max(all_spl) / 5) * 5
-    return (upper - 50, upper)
+def compute_y_range(curves):
+    """Return the canonical fifty-decibel display range."""
+    return tuple(_native_helper("compute_y_range", curves=curves))
 
 
-def compute_average_spl_in_range(
-    curve: dict, min_freq: float = 20.0, max_freq: float = 1200.0
-) -> float:
-    """Compute average SPL in a frequency range."""
-    if not curve or "freq" not in curve or "spl" not in curve:
-        return 0.0
-
-    freq = curve["freq"]
-    spl = curve["spl"]
-
-    values_in_range = [
-        s for f, s in zip(freq, spl) if min_freq <= f <= max_freq
-    ]
-
-    if not values_in_range:
-        return 0.0
-
-    return sum(values_in_range) / len(values_in_range)
+def compute_average_spl_in_range(curve, min_freq=20.0, max_freq=1200.0):
+    """Delegate display-band averaging to the shared report producer."""
+    return _native_helper("average_spl", curve=curve, min_hz=min_freq, max_hz=max_freq)
 
 
-def extract_crossover_frequencies(channel_data: dict) -> list[float]:
-    """
-    Extract crossover frequencies from a channel's plugin configuration.
-
-    Looks for:
-    - "crossover" plugins in driver chains (active crossovers)
-    - "band_split" plugins in main chain (mixed mode crossovers)
-
-    Returns:
-        Sorted list of unique crossover frequencies in Hz
-    """
-    crossover_freqs = set()
-
-    # Check main plugins for band_split and crossover
-    plugins = channel_data.get("plugins", [])
-    for plugin in plugins:
-        if plugin.get("plugin_type") == "band_split":
-            freq = plugin.get("parameters", {}).get("frequency")
-            if freq:
-                crossover_freqs.add(float(freq))
-        elif plugin.get("plugin_type") == "crossover":
-            freq = plugin.get("parameters", {}).get("frequency")
-            if freq:
-                crossover_freqs.add(float(freq))
-
-    # Check driver chains for crossover plugins
-    drivers = channel_data.get("drivers", [])
-    for driver in drivers:
-        driver_plugins = driver.get("plugins", [])
-        for plugin in driver_plugins:
-            if plugin.get("plugin_type") == "crossover":
-                freq = plugin.get("parameters", {}).get("frequency")
-                if freq:
-                    crossover_freqs.add(float(freq))
-
-    return sorted(crossover_freqs)
+def extract_crossover_frequencies(channel_data):
+    """Return sorted configured crossover and main band-split frequencies."""
+    return _native_helper("crossover_frequencies", channel=channel_data)
 
 
-def clip_curve_to_measured_band(curve: dict | None, driver: dict | None) -> dict | None:
-    """Clip a driver measurement trace to its measured frequency span.
-
-    The stored driver curve is extended past the capture for full-range DSP
-    replay; points outside ``driver["measured_band_hz"]`` are trend
-    continuation, not data, so measurement plots must not draw them. Curves
-    without a recorded band (older outputs, same-band arrays) pass through
-    unchanged, as do pure-DSP transfers, which callers keep full-range.
-    """
-    if not isinstance(curve, dict) or not isinstance(driver, dict):
-        return curve
-    band = driver.get("measured_band_hz")
-    if (
-        not isinstance(band, (list, tuple))
-        or len(band) != 2
-        or not all(isinstance(edge, (int, float)) for edge in band)
-    ):
-        return curve
-    low, high = float(band[0]), float(band[1])
-    if not (low < high):
-        return curve
-    freq = curve.get("freq") or []
-    if len(freq) < 2:
-        return curve
-    keep = [
-        index
-        for index, value in enumerate(freq)
-        if isinstance(value, (int, float))
-        and value >= low * (1.0 - 1e-9)
-        and value <= high * (1.0 + 1e-9)
-    ]
-    if len(keep) == len(freq):
-        return curve
-    if len(keep) < 2:
-        return curve
-    keep_set = set(keep)
-    clipped = dict(curve)
-    for key, values in curve.items():
-        if isinstance(values, list) and len(values) == len(freq):
-            clipped[key] = [value for index, value in enumerate(values) if index in keep_set]
-    return clipped
+def clip_curve_to_measured_band(curve, driver):
+    """Clip matching arrays to the serialized measured band through shared code."""
+    clipped = _native_helper("clip_curve", curve=curve, driver=driver)
+    return curve if clipped == curve else clipped
 
 
 def get_plottable_drivers(channel_data: dict | None) -> list[dict]:
@@ -214,32 +120,9 @@ def driver_display_names(data: dict, channel_name: str) -> list[str]:
     return names
 
 
-def channel_has_eq(channel_data: dict | None) -> bool:
-    """Return whether a channel carries any EQ (channel or driver level).
-
-    Covers stored ``eq_response`` curves as well as EQ filter plugins on
-    the channel chain or any driver chain. The overview EQ row only
-    expands multi-driver channels per sub when this holds, so runs
-    without EQ keep their legacy (empty) EQ row instead of showing
-    crossover-only shaping labeled as EQ.
-    """
-    if not isinstance(channel_data, dict):
-        return False
-    if (channel_data.get("eq_response") or {}).get("spl"):
-        return True
-    chains = [channel_data.get("plugins") or []]
-    for driver in channel_data.get("drivers") or []:
-        if isinstance(driver, dict):
-            chains.append(driver.get("plugins") or [])
-    for plugins in chains:
-        for plugin in plugins:
-            if not isinstance(plugin, dict):
-                continue
-            if plugin.get("plugin_type") != "eq":
-                continue
-            if (plugin.get("parameters") or {}).get("filters"):
-                return True
-    return False
+def channel_has_eq(channel_data):
+    """Detect serialized channel/driver EQ through the canonical report helper."""
+    return _native_helper("channel_has_eq", channel=channel_data)
 
 
 def display_channel_entries(data: dict) -> list[dict]:

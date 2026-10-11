@@ -13,7 +13,6 @@ import math
 from . import DEFAULT_SMOOTHING
 from .dsp import (
     smooth_octave,
-    resample_spl_onto_grid,
     compute_eq_response,
     compute_group_delay,
     compute_group_delay_from_ir,
@@ -34,6 +33,25 @@ from .data_extract import (
     get_plottable_drivers,
 )
 from .target_overlay import build_target_overlay_curves
+from .native_bass_figures import (
+    headroom_figure as _native_bass_headroom_figure,
+    routing_figure as _native_bass_routing_figure,
+)
+from .native_response_figures import (
+    add_channel_response_overlays as _native_add_channel_response_overlays,
+    create_channel_figure as _native_create_channel_figure,
+    create_smoothed_figure as _native_create_smoothed_figure,
+    create_zoomed_figure as _native_create_zoomed_figure,
+)
+from .native_temporal_figures import (
+    create_early_late_figure,
+    create_ir_figure,
+    create_symmetric_pair_figure,
+    create_t60_octaves_figure,
+    create_tof_figure,
+    finite_or_gap as _finite_or_gap,
+    to_db as _to_db,
+)
 from .wasm_report import (
     axis,
     series,
@@ -41,27 +59,7 @@ from .wasm_report import (
     vline,
     figure,
     bar_chart,
-    sankey_chart,
 )
-
-def _align_final_to_initial_grid(
-    final_curve: dict | None, freq_data: list[float] | None
-) -> tuple[list[float] | None, list[float] | None]:
-    """Return ``(plot_freq, spl)`` for an After-EQ trace sharing ``freq_data``.
-
-    Routed outputs legitimately mix grids (driver-measurement baselines vs.
-    deployed replay grids); resampling keeps the trace and the smoothing
-    dropdown on one x-axis instead of failing on length mismatches.
-    """
-    if not final_curve:
-        return None, None
-    if freq_data is None:
-        freq_data = final_curve["freq"]
-    spl_raw = resample_spl_onto_grid(
-        final_curve["freq"], final_curve["spl"], freq_data
-    )
-    return freq_data, spl_raw
-
 
 def create_channel_figure(
     channel_name: str,
@@ -71,49 +69,8 @@ def create_channel_figure(
     tab=None,
 ):
     """Build a channel Before/After EQ section (default smoothing only)."""
-    freq_data = None
-    series_list = []
-
-    # Add initial curve (before EQ)
-    if initial_curve:
-        freq_data = initial_curve["freq"]
-        spl_raw = initial_curve["spl"]
-        spl_smoothed = smooth_octave(freq_data, spl_raw, DEFAULT_SMOOTHING)
-        series_list.append(
-            series(
-                "Before EQ",
-                freq_data,
-                spl_smoothed,
-                color="rgba(255, 100, 100, 0.8)",
-                width=2,
-            )
-        )
-
-    # Add final curve (after EQ)
-    plot_freq, spl_raw = _align_final_to_initial_grid(final_curve, freq_data)
-    if final_curve:
-        if freq_data is None:
-            freq_data = plot_freq
-        spl_smoothed = smooth_octave(freq_data, spl_raw, DEFAULT_SMOOTHING)
-        series_list.append(
-            series(
-                "After EQ",
-                freq_data,
-                spl_smoothed,
-                color="rgba(100, 200, 100, 0.9)",
-                width=2,
-            )
-        )
-
-    # Compute dynamic y-range
-    y_min, y_max = compute_y_range([initial_curve, final_curve])
-
-    return figure(
-        f"Channel: {channel_name}{title_suffix}",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("SPL (dB)", "linear", y_min, y_max),
-        series_list=series_list,
-        tab=tab,
+    return _native_create_channel_figure(
+        channel_name, initial_curve, final_curve, title_suffix, tab
     )
 
 
@@ -124,40 +81,9 @@ def add_channel_response_overlays(
     lfe_plus_channel_curve: dict | None,
 ):
     """Append Target/LFE series to a channel figure section dict."""
-    if target_curve and target_curve.get("freq") and target_curve.get("spl"):
-        fig["figure"]["series"].append(
-            series(
-                "Target",
-                target_curve["freq"],
-                target_curve["spl"],
-                color="rgba(40, 40, 40, 0.9)",
-                width=2,
-                dash="dot",
-            )
-        )
-
-    if (
-        lfe_plus_channel_curve
-        and lfe_plus_channel_curve.get("freq")
-        and lfe_plus_channel_curve.get("spl")
-    ):
-        frequencies = lfe_plus_channel_curve["freq"]
-        spl = smooth_octave(
-            frequencies,
-            lfe_plus_channel_curve["spl"],
-            DEFAULT_SMOOTHING,
-        )
-        fig["figure"]["series"].append(
-            series(
-                f"LFE + {channel_name}",
-                frequencies,
-                spl,
-                color="rgba(148, 103, 189, 0.95)",
-                width=2.5,
-            )
-        )
-
-    return fig
+    return _native_add_channel_response_overlays(
+        fig, channel_name, target_curve, lfe_plus_channel_curve
+    )
 
 
 def create_zoomed_figure(
@@ -170,66 +96,8 @@ def create_zoomed_figure(
     tab=None,
 ):
     """Build a zoomed channel section (20-1200Hz, 50 dB centered y-axis)."""
-    # Compute average SPL for centering (use final curve if available, else initial)
-    ref_curve = final_curve if final_curve else initial_curve
-    avg_spl = (
-        compute_average_spl_in_range(ref_curve, min_freq, max_freq)
-        if ref_curve
-        else 0.0
-    )
-
-    freq_data = None
-    series_list = []
-
-    # Add initial curve (before EQ)
-    if initial_curve:
-        freq_data = initial_curve["freq"]
-        spl_raw = initial_curve["spl"]
-        spl_smoothed = smooth_octave(freq_data, spl_raw, DEFAULT_SMOOTHING)
-        series_list.append(
-            series(
-                "Before EQ",
-                freq_data,
-                spl_smoothed,
-                color="rgba(255, 100, 100, 0.8)",
-                width=2,
-            )
-        )
-
-    # Add final curve (after EQ)
-    plot_freq, spl_raw = _align_final_to_initial_grid(final_curve, freq_data)
-    if final_curve:
-        if freq_data is None:
-            freq_data = plot_freq
-        spl_smoothed = smooth_octave(freq_data, spl_raw, DEFAULT_SMOOTHING)
-        series_list.append(
-            series(
-                "After EQ",
-                freq_data,
-                spl_smoothed,
-                color="rgba(100, 200, 100, 0.9)",
-                width=2,
-            )
-        )
-
-    # Add target line at average
-    series_list.append(
-        series(
-            f"Average ({avg_spl:.1f} dB)",
-            [min_freq, max_freq],
-            [avg_spl, avg_spl],
-            color="rgba(150, 150, 150, 0.5)",
-            width=1,
-            dash="dash",
-        )
-    )
-
-    return figure(
-        f"Channel: {channel_name} (Zoom {int(min_freq)}-{int(max_freq)} Hz)",
-        axis("Frequency (Hz)", "log", min_freq, max_freq),
-        axis("SPL (dB)", "linear", avg_spl - y_range, avg_spl + y_range),
-        series_list=series_list,
-        tab=tab,
+    return _native_create_zoomed_figure(
+        channel_name, initial_curve, final_curve, min_freq, max_freq, y_range, tab
     )
 
 
@@ -469,70 +337,6 @@ def create_multipass_eq_figure(
     )
 
 
-_IR_FLOOR_DB = -80.0
-
-
-def _to_db(amplitude: list[float]) -> list[float]:
-    """Convert linear amplitude to dB, floored at _IR_FLOOR_DB."""
-    return [
-        max(20.0 * math.log10(abs(a)), _IR_FLOOR_DB) if abs(a) > 1e-10 else _IR_FLOOR_DB
-        for a in amplitude
-    ]
-
-
-def create_ir_figure(
-    channel_name: str,
-    pre_ir: dict | None,
-    post_ir: dict | None,
-    display_ms: float = 100.0,
-    tab=None,
-):
-    """Build a pre-/post-correction impulse-response section (Linear default).
-
-    Args:
-        channel_name: Name of the channel.
-        pre_ir: Dict with 'time_ms' and 'amplitude' keys (before correction).
-        post_ir: Dict with 'time_ms' and 'amplitude' keys (after correction).
-        display_ms: Initial x-axis range in milliseconds (default 100 ms).
-    """
-    if not pre_ir and not post_ir:
-        return None
-
-    series_list = []
-
-    if pre_ir:
-        series_list.append(
-            series(
-                "Before EQ",
-                pre_ir["time_ms"],
-                pre_ir["amplitude"],
-                color="rgba(255, 100, 100, 0.8)",
-                width=1,
-            )
-        )
-
-    if post_ir:
-        series_list.append(
-            series(
-                "After EQ",
-                post_ir["time_ms"],
-                post_ir["amplitude"],
-                color="rgba(100, 200, 100, 0.9)",
-                width=1,
-            )
-        )
-
-    # 0 reference line
-    ref_lines = [hline(0, "rgba(150, 150, 150, 0.4)", width=1, dash="dash")]
-
-    return figure(
-        f"Impulse Response: {channel_name}",
-        axis("Time (ms)", "linear", 0, display_ms),
-        axis("Amplitude (normalized)", "linear", -1.1, 1.1),
-        series_list=series_list,
-        hlines=ref_lines,
-        tab=tab,
-    )
 def _get_driver_initial_curves(channel_data: dict) -> list[tuple[str, dict]] | None:
     """Extract per-driver initial curves from a channel's driver chains.
 
@@ -928,57 +732,6 @@ def create_combined_figure(data: dict, json_path=None, tab=None) -> list:
     ]
 
 
-def _bass_management_report(data: dict) -> dict:
-    metadata = data.get("metadata") or {}
-    return metadata.get("bass_management") or {}
-
-
-def _route_display_name(route_kind: str) -> str:
-    names = {
-        "main_highpass_to_self": "Main HP",
-        "redirected_bass_lowpass_to_sub": "Redirected LP",
-        "lfe_lowpass_to_sub": "LFE LP",
-    }
-    return names.get(route_kind, route_kind.replace("_", " ").title())
-
-
-def _route_color(route_kind: str, alpha: float = 0.58) -> str:
-    colors = {
-        "main_highpass_to_self": f"rgba(74, 144, 217, {alpha})",
-        "redirected_bass_lowpass_to_sub": f"rgba(46, 204, 113, {alpha})",
-        "lfe_lowpass_to_sub": f"rgba(231, 126, 34, {alpha})",
-    }
-    return colors.get(route_kind, f"rgba(127, 140, 141, {alpha})")
-
-
-def _driver_link_color(alpha: float = 0.58) -> str:
-    return f"rgba(148, 103, 189, {alpha})"
-
-
-def _driver_alignment(driver: dict) -> tuple[float, float, bool]:
-    """Extract the (gain_db, delay_ms, inverted) alignment of a sub driver."""
-    gain_db = 0.0
-    delay_ms = 0.0
-    inverted = False
-    for plugin in driver.get("plugins", []) or []:
-        if not isinstance(plugin, dict):
-            continue
-        params = plugin.get("parameters", {}) or {}
-        plugin_type = str(plugin.get("plugin_type", "")).lower()
-        if plugin_type == "gain":
-            try:
-                gain_db += float(params.get("gain_db", 0.0))
-            except (TypeError, ValueError):
-                pass
-            inverted = inverted or bool(params.get("invert", False))
-        elif plugin_type == "delay":
-            try:
-                delay_ms += float(params.get("delay_ms", 0.0))
-            except (TypeError, ValueError):
-                pass
-    return gain_db, delay_ms, inverted
-
-
 def _driver_low_pass(driver: dict) -> tuple[float | None, str | None]:
     """Extract the deployed per-driver low-pass (LP_i) of a sub driver, if any.
 
@@ -1009,143 +762,13 @@ def _driver_low_pass(driver: dict) -> tuple[float | None, str | None]:
 
 
 def create_bass_management_routing_figure(data: dict, tab=None):
-    """Create a Sankey section from route-level bass-management metadata.
-
-    The #14 routed schema may emit several branches per source channel:
-    a high-passed self-route plus one low-passed route per physical bass
-    output.
-
-    A physical bass output may itself fan out to several sub drivers (e.g.
-    a 2.2 rig with two drivers under ``out: LFE``). One link per driver is
-    drawn from the bus node so the split and each driver's alignment
-    gain/delay stay visible instead of collapsing into a single output.
-
-    Sankey customdata hover text is dropped (nodes/links only).
-    Returns None when there are no routes.
-    """
-    report = _bass_management_report(data)
-    routing_graph = report.get("routing_graph") or {}
-    routes = routing_graph.get("routes") or []
-    if not routes:
-        return None
-
-    node_index: dict[str, int] = {}
-    labels: list[str] = []
-
-    def add_node(prefix: str, name: str) -> int:
-        key = f"{prefix}:{name}"
-        if key not in node_index:
-            node_index[key] = len(labels)
-            labels.append(f"{prefix}: {name}")
-        return node_index[key]
-
-    sources: list[int] = []
-    targets: list[int] = []
-    values: list[float] = []
-    colors: list[str] = []
-
-    for route in routes:
-        source = str(route.get("source_channel", "?"))
-        destination = str(route.get("destination", "?"))
-        route_kind = str(route.get("route_kind", "route"))
-        gain_linear = route.get("gain_linear") or route.get("matrix_gain") or 1.0
-        try:
-            value = max(abs(float(gain_linear)), 0.05)
-        except (TypeError, ValueError):
-            value = 1.0
-
-        sources.append(add_node("in", source))
-        targets.append(add_node("out", destination))
-        values.append(value)
-        colors.append(_route_color(route_kind))
-
-    # Multi-driver fan-out from each physical bass output bus.
-    channels_dict = data.get("channels", {}) or {}
-    for channel_name in sorted(channels_dict, key=get_channel_sort_key):
-        channel_data = channels_dict[channel_name] or {}
-        drivers = channel_data.get("drivers") or []
-        if not drivers or f"out:{channel_name}" not in node_index:
-            continue
-        bus_node = node_index[f"out:{channel_name}"]
-        for index, driver in enumerate(drivers):
-            if not isinstance(driver, dict):
-                continue
-            driver_name = str(driver.get("name", f"driver_{index}"))
-            gain_db, _delay_ms, _inverted = _driver_alignment(driver)
-            try:
-                value = max(10.0 ** (float(gain_db) / 20.0), 0.05)
-            except (TypeError, ValueError):
-                value = 1.0
-            sources.append(bus_node)
-            targets.append(add_node("sub", driver_name))
-            values.append(value)
-            colors.append(_driver_link_color())
-
-    links = [
-        (source, target, value, color)
-        for source, target, value, color in zip(sources, targets, values, colors)
-    ]
-    return sankey_chart(
-        "Bass Management Routing Graph", labels, links, tab=tab
-    )
-
-
-def _coerce_bar_values(entries) -> list[float]:
-    """Coerce per-output bar values to floats (missing -> 0.0)."""
-    coerced = []
-    for entry in entries:
-        if entry is None:
-            coerced.append(0.0)
-            continue
-        try:
-            coerced.append(float(entry))
-        except (TypeError, ValueError):
-            coerced.append(0.0)
-    return coerced
+    """Build the shared renderer-neutral bass-management routing graph."""
+    return _native_bass_routing_figure(data, tab)
 
 
 def create_bass_management_headroom_figure(data: dict, tab=None):
-    """Create a per-physical-output bass-bus headroom bar-chart section.
-
-    Returns None when there is no per-output headroom simulation.
-    """
-    report = _bass_management_report(data)
-    simulation = report.get("headroom_simulation") or {}
-    per_output = simulation.get("per_output") or []
-    if not per_output:
-        return None
-
-    outputs = [entry.get("output_role", f"out {i + 1}") for i, entry in enumerate(per_output)]
-    rms = _coerce_bar_values([entry.get("rms_bus_gain_db") for entry in per_output])
-    peak = _coerce_bar_values([entry.get("coherent_peak_gain_db") for entry in per_output])
-    lfe = _coerce_bar_values([entry.get("lfe_contribution_db") for entry in per_output])
-    headroom_margin = simulation.get("headroom_margin_db")
-
-    hlines = []
-    if isinstance(headroom_margin, (int, float)):
-        hlines.append(
-            hline(
-                headroom_margin,
-                "rgba(40, 40, 40, 0.7)",
-                dash="dash",
-                width=2.0,
-                label=f"headroom limit {headroom_margin:+.1f} dB",
-            )
-        )
-
-    groups = [
-        ("RMS programme gain", rms, "rgba(74, 144, 217, 0.75)"),
-        ("Coherent peak gain", peak, "rgba(231, 76, 60, 0.78)"),
-        ("LFE contribution", lfe, "rgba(230, 126, 34, 0.72)"),
-    ]
-    return bar_chart(
-        "Bass Bus Headroom Simulation",
-        outputs,
-        groups,
-        ylabel="Gain vs programme reference (dB)",
-        hlines=hlines,
-        tab=tab,
-    )
+    """Build the shared renderer-neutral bass-bus headroom chart."""
+    return _native_bass_headroom_figure(data, tab)
 # ============================================================================
 # Mode color/label tables (copied verbatim from figures.py)
 # ============================================================================
@@ -1676,217 +1299,6 @@ def create_smoothed_figure(
     tab=None,
 ) -> dict | None:
     """Per-speaker 1-octave smoothed Before/After overlay (feat-report 2b)."""
-    if not initial_curve and not final_curve:
-        return None
-    s_list = []
-    curves = (("Before EQ (1-oct smoothed)", initial_curve, "rgba(255, 100, 100, 0.8)"),
-              ("After EQ (1-oct smoothed)", final_curve, "rgba(100, 200, 100, 0.9)"))
-    for label, curve, color in curves:
-        if not curve or not curve.get("freq") or not curve.get("spl"):
-            continue
-        s_list.append(series(
-            label, curve["freq"],
-            smooth_octave(curve["freq"], curve["spl"], octaves),
-            color=color, width=2.0,
-        ))
-    y_min, y_max = compute_y_range([initial_curve, final_curve])
-    return figure(
-        f"Smoothed response (1 oct): {channel_name}",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("SPL (dB)", "linear", y_min, y_max),
-        series_list=s_list, tab=tab,
-    )
-
-
-def create_tof_figure(
-    tof_rows: list[dict],
-    after: bool = False,
-    tab=None,
-) -> dict | None:
-    """Time-of-flight bar section before (measured) or after (calculated) DSP."""
-    key = "after_ms" if after else "before_ms"
-    kept = []
-    for row in tof_rows:
-        value = row.get(key)
-        if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                and math.isfinite(value)):
-            kept.append((row["name"], float(value)))
-    if not kept:
-        return None
-    title = ("Calculated arrival after DSP" if after
-             else "Measured arrival before DSP")
-    # The bar schema has no null values: rows without a measurement are
-    # dropped (Plotly drew a gap there, i.e. no bar either).
-    names = [name for name, _ in kept]
-    plot_values = [value for _, value in kept]
-    return bar_chart(
-        title,
-        names,
-        [(title, plot_values,
-          "rgba(100, 200, 100, 0.8)" if after else "rgba(255, 100, 100, 0.8)")],
-        ylabel="Arrival (ms)",
-        legend=False,
-        tab=tab,
-    )
-
-
-def _finite_or_gap(values: list) -> list:
-    """Replace non-finite samples with gaps (the renderer breaks the line)."""
-    return [
-        v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
-        for v in values
-    ]
-
-
-def create_symmetric_pair_figure(
-    label: str,
-    freq: list[float],
-    abs_spl: list[float],
-    complex_spl: list[float] | None = None,
-    tab=None,
-) -> dict:
-    """Symmetric-pair absolute sum, complex sum and their difference.
-
-    The absolute sum adds magnitudes (equal-phase upper bound). The complex
-    sum is the coherent pressure sum from measured phase; their difference
-    (absolute minus complex, always >= 0 dB by the triangle inequality) is
-    the cancellation loss and reads on the secondary axis, whose display
-    ceiling is 40 dB (deeper nulls pin to the top edge rather than
-    stretching the axis). Without a complex sum the figure shows the
-    absolute sum alone.
-    """
-    abs_clean = _finite_or_gap(abs_spl)
-    has_complex = (
-        complex_spl is not None
-        and len(freq) > 0
-        and len(complex_spl) == len(freq)
-        and len(abs_spl) == len(freq)
-    )
-    s_list = [
-        series(f"{label} absolute sum", freq, abs_clean,
-               color="rgba(74, 144, 217, 0.9)", width=2.0),
-    ]
-    y2 = None
-    sum_traces = [abs_clean]
-    if has_complex:
-        assert complex_spl is not None
-        cx_clean = _finite_or_gap(complex_spl)
-        diff = []
-        for a, c in zip(abs_clean, cx_clean):
-            if a is None or c is None:
-                diff.append(None)
-            else:
-                # Display ceiling: total cancellations pin to the top edge.
-                diff.append(min(a - c, 40.0))
-        s_list.append(series(f"{label} complex sum", freq, cx_clean,
-                             color="rgba(46, 160, 67, 0.9)", width=2.0))
-        s_list.append(series(f"{label} sum difference", freq, diff,
-                             color="rgba(214, 69, 65, 0.9)", width=2.0,
-                             dash="dash", y_axis=1))
-        y2 = axis("Sum difference (dB)", "linear", None, 40.0)
-        sum_traces.append(cx_clean)
-        subtitle = "absolute and complex sums with their difference"
-    else:
-        subtitle = "absolute sum only; complex sum needs measured phase"
-    finite = [v for trace in sum_traces for v in trace if v is not None]
-    ymax = math.ceil((max(finite) + 3.0) / 5.0) * 5.0 if finite else 0.0
-    y_range = (ymax - 50.0, ymax)
-    return figure(
-        f"Symmetric pair: {label} ({subtitle})",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("SPL (dB)", "linear", y_range[0], y_range[1]),
-        series_list=s_list, y2=y2, tab=tab,
-    )
-
-
-def create_early_late_figure(
-    label: str,
-    report: dict | None,
-    tab=None,
-) -> dict | None:
-    """Render emitted third-octave energy contributions on a shared reference."""
-    if not isinstance(report, dict) or report.get("method") != "incoherent_band_energy":
-        return None
-    if report.get("reference") != "full_peak_band":
-        return None
-    if report.get("smoothing") != "third_octave" or report.get("split_ms") != 20.0:
-        return None
-    curves = [report.get(key) for key in ("full", "early", "late")]
-    if not all(isinstance(curve, dict) for curve in curves):
-        return None
-    frequency = curves[0].get("freq")
-    if not isinstance(frequency, list) or not frequency:
-        return None
-    if not all(isinstance(f, (int, float)) and math.isfinite(f) and f > 0 for f in frequency):
-        return None
-    for curve in curves:
-        spl = curve.get("spl")
-        if (curve.get("freq") != frequency or not isinstance(spl, list)
-                or len(spl) != len(frequency)
-                or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in spl)):
-            return None
-    # Fail closed on foreign data: Full is the incoherent Early+Late energy
-    # sum on a shared reference, so it can never sit below either part. The
-    # exporter constructs this exactly; the epsilon only absorbs JSON dust.
-    full, early, late = (curve["spl"] for curve in curves)
-    if any(f + 1e-6 < e or f + 1e-6 < l for f, e, l in zip(full, early, late)):
-        return None
-    s_list = []
-    # Full keeps a slight halo: it is the physical envelope, so it should
-    # stay readable where the parts converge onto it.
-    for name, curve, color, width in zip(("Full", "Early", "Late"), curves,
-                                         ("#333333", "#3089c5", "#e38836"),
-                                         (2.5, 2.0, 2.0)):
-        s_list.append(series(name, frequency, curve["spl"],
-                             color=color, width=width))
-    return figure(
-        f"{label}: early vs late band energy (20 ms split)",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("Level vs full peak band (dB)", "linear", None, None),
-        series_list=s_list, tab=tab,
-    )
-
-
-def create_t60_octaves_figure(
-    label: str,
-    rows: list[dict] | None,
-    tab=None,
-    window=None,
-    itu_reference=None,
-) -> dict | None:
-    """Section with only valid measured-room octave T60 estimates."""
-    if not rows or not any(row["t60_s"] is not None for row in rows):
-        return None
-    # Shared geometric boundaries prevent interpolation between octave estimates.
-    centers = [row["centre_hz"] for row in rows]
-    edges = [centers[0] / math.sqrt(2)]
-    edges.extend(math.sqrt(a * b) for a, b in zip(centers, centers[1:]))
-    edges.append(centers[-1] * math.sqrt(2))
-    xs, ys = [], []
-    for i, row in enumerate(rows):
-        xs.extend([edges[i], edges[i + 1]])
-        ys.extend([row["t60_s"], row["t60_s"]])
-    curves = [series("T60 (octave bands)", xs, ys, color="#3089c5", width=2.0)]
-    if itu_reference is not None:
-        tm = itu_reference["tm"]
-        # BS.1116-3 §8.2.3.1 Figure 1. Duplicate 4 kHz vertices preserve
-        # the tolerance step and prevent display smoothing of either limit.
-        curves.extend([
-            series("ITU-R BS.1116-3 upper limit", [63, 200, 4000, 4000, 8000],
-                   [tm + 0.30, tm + 0.05, tm + 0.05, tm + 0.10, tm + 0.10],
-                   color="#60ad42", width=2.0),
-            series("ITU-R BS.1116-3 lower limit", [100, 4000, 4000, 8000],
-                   [tm - 0.05, tm - 0.05, tm - 0.10, tm - 0.10],
-                   color="#60ad42", width=2.0),
-        ])
-    if window is not None:
-        for name, value in zip(("Lower flatness limit", "Upper flatness limit"), window):
-            curves.append(series(f"{name}: {value:.3f} s", [20, 20000], [value, value],
-                                 color="#60ad42", width=2.0))
-    return figure(
-        f"{label}: measured octave-band T60",
-        axis("Frequency (Hz)", "log", 20, 20000),
-        axis("T60 (s)", "linear", 0, None),
-        series_list=curves,
-        tab=tab,
+    return _native_create_smoothed_figure(
+        channel_name, initial_curve, final_curve, octaves, tab
     )

@@ -509,47 +509,9 @@ def resample_spl_onto_grid(
     different stages (driver measurements vs. deployed replay grids) share one
     x-axis instead of crashing on length mismatches.
     """
-    if (
-        not source_freq
-        or not target_freq
-        or len(source_freq) != len(source_spl)
-        or len(target_freq) == 0
-    ):
-        return list(source_spl)
-    if len(source_freq) == len(target_freq) and all(
-        a == b for a, b in zip(source_freq, target_freq)
-    ):
-        return list(source_spl)
-    pairs = sorted(
-        (float(f), float(s))
-        for f, s in zip(source_freq, source_spl)
-        if isinstance(f, (int, float))
-        and isinstance(s, (int, float))
-        and math.isfinite(f)
-        and math.isfinite(s)
-        and f > 0.0
-    )
-    if not pairs:
-        return list(source_spl)
-    if len(pairs) == 1:
-        return [pairs[0][1]] * len(target_freq)
-    log_src = [math.log10(f) for f, _ in pairs]
-    spl_src = [s for _, s in pairs]
+    from .native_response_figures import resample_spl_onto_grid as _native_resample
 
-    def interp(log_f: float) -> float:
-        if log_f <= log_src[0]:
-            return spl_src[0]
-        if log_f >= log_src[-1]:
-            return spl_src[-1]
-        upper = 1
-        while upper < len(log_src) - 1 and log_src[upper] < log_f:
-            upper += 1
-        lower = upper - 1
-        span = log_src[upper] - log_src[lower]
-        position = (log_f - log_src[lower]) / span if span > 0.0 else 0.0
-        return spl_src[lower] + position * (spl_src[upper] - spl_src[lower])
-
-    return [interp(math.log10(float(f))) if f > 0.0 else spl_src[0] for f in target_freq]
+    return _native_resample(source_freq, source_spl, target_freq)
 
 
 def _resample_curve_onto_grid(curve: dict | None, target_freq: list[float]) -> dict | None:

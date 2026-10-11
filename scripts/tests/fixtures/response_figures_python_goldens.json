@@ -1,0 +1,614 @@
+{
+  "schema": "autoeq-response-figures-python-golden-v1",
+  "cases": {
+    "mixed_grids": {
+      "input": {
+        "channel_name": "L & R <Main>",
+        "initial_curve": {
+          "freq": [
+            20,
+            40,
+            80,
+            100,
+            200,
+            400,
+            1000,
+            2000
+          ],
+          "spl": [
+            51,
+            58,
+            65,
+            62,
+            67,
+            60,
+            55,
+            49
+          ]
+        },
+        "final_curve": {
+          "freq": [
+            10,
+            20,
+            40,
+            80,
+            160,
+            320,
+            640,
+            1000,
+            2000,
+            4000
+          ],
+          "spl": [
+            47,
+            50,
+            56,
+            62,
+            65,
+            58,
+            57,
+            54,
+            48,
+            44
+          ]
+        },
+        "target_curve": {
+          "freq": [
+            20,
+            80,
+            250,
+            1000,
+            20000
+          ],
+          "spl": [
+            55,
+            58,
+            57,
+            56,
+            53
+          ]
+        },
+        "lfe_plus_channel_curve": {
+          "freq": [
+            20,
+            40,
+            80,
+            100,
+            200,
+            400,
+            1000,
+            2000
+          ],
+          "spl": [
+            53,
+            59,
+            66,
+            64,
+            68,
+            61,
+            56,
+            50
+          ]
+        },
+        "min_freq": 30.0,
+        "max_freq": 500.0,
+        "y_range": 30.0,
+        "smoothed_octaves": 1.0,
+        "tab": "L & R",
+        "title_suffix": " (Full Range)"
+      },
+      "channel_figure": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: L & R <Main> (Full Range)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 20.0,
+            "max": 70.0
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Before EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                51.0,
+                58.0,
+                65.0,
+                62.0,
+                67.0,
+                60.0,
+                55.0,
+                49.0
+              ],
+              "color": "rgba(255, 100, 100, 0.8)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "After EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                50.0,
+                56.0,
+                62.0,
+                62.965784284662085,
+                62.74650333578846,
+                57.67807190511264,
+                54.0,
+                48.0
+              ],
+              "color": "rgba(100, 200, 100, 0.9)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": "L & R"
+      },
+      "channel_figure_with_overlays": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: L & R <Main> (Full Range)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 20.0,
+            "max": 70.0
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Before EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                51.0,
+                58.0,
+                65.0,
+                62.0,
+                67.0,
+                60.0,
+                55.0,
+                49.0
+              ],
+              "color": "rgba(255, 100, 100, 0.8)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "After EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                50.0,
+                56.0,
+                62.0,
+                62.965784284662085,
+                62.74650333578846,
+                57.67807190511264,
+                54.0,
+                48.0
+              ],
+              "color": "rgba(100, 200, 100, 0.9)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Target",
+              "x": [
+                20.0,
+                80.0,
+                250.0,
+                1000.0,
+                20000.0
+              ],
+              "y": [
+                55.0,
+                58.0,
+                57.0,
+                56.0,
+                53.0
+              ],
+              "color": "rgba(40, 40, 40, 0.9)",
+              "width": 2.0,
+              "dash": "dot",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "LFE + L & R <Main>",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                53.0,
+                59.0,
+                66.0,
+                64.0,
+                68.0,
+                61.0,
+                56.0,
+                50.0
+              ],
+              "color": "rgba(148, 103, 189, 0.95)",
+              "width": 2.5,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": "L & R"
+      },
+      "zoomed_figure": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: L & R <Main> (Zoom 30-500 Hz)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 30.0,
+            "max": 500.0
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 30.25,
+            "max": 90.25
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Before EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                51.0,
+                58.0,
+                65.0,
+                62.0,
+                67.0,
+                60.0,
+                55.0,
+                49.0
+              ],
+              "color": "rgba(255, 100, 100, 0.8)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "After EQ",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                50.0,
+                56.0,
+                62.0,
+                62.965784284662085,
+                62.74650333578846,
+                57.67807190511264,
+                54.0,
+                48.0
+              ],
+              "color": "rgba(100, 200, 100, 0.9)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Average (60.2 dB)",
+              "x": [
+                30.0,
+                500.0
+              ],
+              "y": [
+                60.25,
+                60.25
+              ],
+              "color": "rgba(150, 150, 150, 0.5)",
+              "width": 1.0,
+              "dash": "dash",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": "L & R"
+      },
+      "smoothed_figure": {
+        "kind": "figure",
+        "figure": {
+          "title": "Smoothed response (1 oct): L & R <Main>",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 20.0,
+            "max": 70.0
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Before EQ (1-oct smoothed)",
+              "x": [
+                20.0,
+                40.0,
+                80.0,
+                100.0,
+                200.0,
+                400.0,
+                1000.0,
+                2000.0
+              ],
+              "y": [
+                51.0,
+                58.0,
+                64.21215477103542,
+                62.78784522896457,
+                67.0,
+                60.0,
+                55.0,
+                49.0
+              ],
+              "color": "rgba(255, 100, 100, 0.8)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "After EQ (1-oct smoothed)",
+              "x": [
+                10.0,
+                20.0,
+                40.0,
+                80.0,
+                160.0,
+                320.0,
+                640.0,
+                1000.0,
+                2000.0,
+                4000.0
+              ],
+              "y": [
+                47.0,
+                50.0,
+                56.0,
+                62.0,
+                65.0,
+                58.0,
+                57.0,
+                54.0,
+                48.0,
+                44.0
+              ],
+              "color": "rgba(100, 200, 100, 0.9)",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": "L & R"
+      }
+    },
+    "missing_curves": {
+      "input": {
+        "channel_name": "Unknown",
+        "initial_curve": null,
+        "final_curve": null,
+        "target_curve": null,
+        "lfe_plus_channel_curve": null,
+        "min_freq": 20.0,
+        "max_freq": 1200.0,
+        "y_range": 25.0,
+        "smoothed_octaves": 1.0,
+        "tab": null
+      },
+      "channel_figure": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: Unknown",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": -20,
+            "max": 30
+          },
+          "y2": null,
+          "series": [],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": null
+      },
+      "channel_figure_with_overlays": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: Unknown",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": -20,
+            "max": 30
+          },
+          "y2": null,
+          "series": [],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": null
+      },
+      "zoomed_figure": {
+        "kind": "figure",
+        "figure": {
+          "title": "Channel: Unknown (Zoom 20-1200 Hz)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20.0,
+            "max": 1200.0
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": -25.0,
+            "max": 25.0
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Average (0.0 dB)",
+              "x": [
+                20.0,
+                1200.0
+              ],
+              "y": [
+                0.0,
+                0.0
+              ],
+              "color": "rgba(150, 150, 150, 0.5)",
+              "width": 1.0,
+              "dash": "dash",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": null
+      },
+      "smoothed_figure": null
+    }
+  }
+}

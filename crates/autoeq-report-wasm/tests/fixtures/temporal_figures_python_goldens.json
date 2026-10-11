@@ -1,0 +1,722 @@
+{
+  "source": "scripts.src.figures pre-port Python output",
+  "inputs": {
+    "ir_pre": {
+      "time_ms": [
+        0.0,
+        0.1,
+        0.2,
+        0.3
+      ],
+      "amplitude": [
+        0.0,
+        1.0,
+        -0.25,
+        0.0
+      ]
+    },
+    "ir_post": {
+      "time_ms": [
+        0.0,
+        0.1,
+        0.2
+      ],
+      "amplitude": [
+        0.0,
+        0.75,
+        0.0
+      ]
+    },
+    "tof_rows": [
+      {
+        "name": "L",
+        "before_ms": 0.0,
+        "after_ms": 0.0
+      },
+      {
+        "name": "R",
+        "before_ms": 0.42,
+        "after_ms": 0.18
+      },
+      {
+        "name": "Sub",
+        "before_ms": null,
+        "after_ms": 1.25
+      },
+      {
+        "name": "Invalid",
+        "before_ms": true,
+        "after_ms": null
+      }
+    ],
+    "early_late": {
+      "method": "incoherent_band_energy",
+      "reference": "full_peak_band",
+      "smoothing": "third_octave",
+      "split_ms": 20.0,
+      "full": {
+        "freq": [
+          125.0,
+          250.0,
+          500.0
+        ],
+        "spl": [
+          0.0,
+          -3.0,
+          -6.0
+        ]
+      },
+      "early": {
+        "freq": [
+          125.0,
+          250.0,
+          500.0
+        ],
+        "spl": [
+          -2.0,
+          -7.0,
+          -12.0
+        ]
+      },
+      "late": {
+        "freq": [
+          125.0,
+          250.0,
+          500.0
+        ],
+        "spl": [
+          -4.0,
+          -8.0,
+          -10.0
+        ]
+      }
+    },
+    "t60_rows": [
+      {
+        "centre_hz": 63,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 125,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 250,
+        "t60_s": null
+      },
+      {
+        "centre_hz": 500,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 1000,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 2000,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 4000,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 8000,
+        "t60_s": 0.61
+      },
+      {
+        "centre_hz": 16000,
+        "t60_s": 0.61
+      }
+    ],
+    "itu_reference": {
+      "tm": 0.32
+    },
+    "window": [
+      0.25,
+      0.4
+    ],
+    "symmetric_pair": {
+      "label": "L+R",
+      "freq": [
+        20.0,
+        40.0,
+        80.0,
+        160.0
+      ],
+      "abs_spl": [
+        0.0,
+        -3.0,
+        null,
+        1.0
+      ],
+      "complex_spl": [
+        -2.0,
+        -4.0,
+        -5.0,
+        null
+      ]
+    }
+  },
+  "expected": {
+    "ir_before_after": {
+      "kind": "figure",
+      "figure": {
+        "title": "Impulse Response: L",
+        "x": {
+          "label": "Time (ms)",
+          "scale": "linear",
+          "min": 0,
+          "max": 80.0
+        },
+        "y": {
+          "label": "Amplitude (normalized)",
+          "scale": "linear",
+          "min": -1.1,
+          "max": 1.1
+        },
+        "y2": null,
+        "series": [
+          {
+            "name": "Before EQ",
+            "x": [
+              0.0,
+              0.1,
+              0.2,
+              0.3
+            ],
+            "y": [
+              0.0,
+              1.0,
+              -0.25,
+              0.0
+            ],
+            "color": "rgba(255, 100, 100, 0.8)",
+            "width": 1.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "After EQ",
+            "x": [
+              0.0,
+              0.1,
+              0.2
+            ],
+            "y": [
+              0.0,
+              0.75,
+              0.0
+            ],
+            "color": "rgba(100, 200, 100, 0.9)",
+            "width": 1.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          }
+        ],
+        "hlines": [
+          {
+            "at": 0.0,
+            "color": "rgba(150, 150, 150, 0.4)",
+            "dash": "dash",
+            "width": 1.0,
+            "label": null
+          }
+        ],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "time-ir"
+    },
+    "ir_unavailable": null,
+    "tof_before": {
+      "kind": "bar",
+      "chart": {
+        "title": "Measured arrival before DSP",
+        "categories": [
+          "L",
+          "R"
+        ],
+        "groups": [
+          {
+            "name": "Measured arrival before DSP",
+            "values": [
+              0.0,
+              0.42
+            ],
+            "color": "rgba(255, 100, 100, 0.8)"
+          }
+        ],
+        "ylabel": "Arrival (ms)",
+        "ymin": null,
+        "ymax": null,
+        "legend": false,
+        "hlines": []
+      },
+      "tab": "timing"
+    },
+    "tof_after": {
+      "kind": "bar",
+      "chart": {
+        "title": "Calculated arrival after DSP",
+        "categories": [
+          "L",
+          "R",
+          "Sub"
+        ],
+        "groups": [
+          {
+            "name": "Calculated arrival after DSP",
+            "values": [
+              0.0,
+              0.18,
+              1.25
+            ],
+            "color": "rgba(100, 200, 100, 0.8)"
+          }
+        ],
+        "ylabel": "Arrival (ms)",
+        "ymin": null,
+        "ymax": null,
+        "legend": false,
+        "hlines": []
+      },
+      "tab": "timing"
+    },
+    "tof_unavailable": null,
+    "early_late_valid": {
+      "kind": "figure",
+      "figure": {
+        "title": "L: early vs late band energy (20 ms split)",
+        "x": {
+          "label": "Frequency (Hz)",
+          "scale": "log",
+          "min": 20,
+          "max": 20000
+        },
+        "y": {
+          "label": "Level vs full peak band (dB)",
+          "scale": "linear",
+          "min": null,
+          "max": null
+        },
+        "y2": null,
+        "series": [
+          {
+            "name": "Full",
+            "x": [
+              125.0,
+              250.0,
+              500.0
+            ],
+            "y": [
+              0.0,
+              -3.0,
+              -6.0
+            ],
+            "color": "#333333",
+            "width": 2.5,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "Early",
+            "x": [
+              125.0,
+              250.0,
+              500.0
+            ],
+            "y": [
+              -2.0,
+              -7.0,
+              -12.0
+            ],
+            "color": "#3089c5",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "Late",
+            "x": [
+              125.0,
+              250.0,
+              500.0
+            ],
+            "y": [
+              -4.0,
+              -8.0,
+              -10.0
+            ],
+            "color": "#e38836",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          }
+        ],
+        "hlines": [],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "energy"
+    },
+    "early_late_unavailable": null,
+    "t60_valid": {
+      "kind": "figure",
+      "figure": {
+        "title": "Room: measured octave-band T60",
+        "x": {
+          "label": "Frequency (Hz)",
+          "scale": "log",
+          "min": 20,
+          "max": 20000
+        },
+        "y": {
+          "label": "T60 (s)",
+          "scale": "linear",
+          "min": 0,
+          "max": null
+        },
+        "y2": null,
+        "series": [
+          {
+            "name": "T60 (octave bands)",
+            "x": [
+              44.54772721475249,
+              88.74119674649424,
+              88.74119674649424,
+              176.7766952966369,
+              176.7766952966369,
+              353.5533905932738,
+              353.5533905932738,
+              707.1067811865476,
+              707.1067811865476,
+              1414.213562373095,
+              1414.213562373095,
+              2828.42712474619,
+              2828.42712474619,
+              5656.85424949238,
+              5656.85424949238,
+              11313.70849898476,
+              11313.70849898476,
+              22627.41699796952
+            ],
+            "y": [
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              null,
+              null,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61,
+              0.61
+            ],
+            "color": "#3089c5",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "ITU-R BS.1116-3 upper limit",
+            "x": [
+              63.0,
+              200.0,
+              4000.0,
+              4000.0,
+              8000.0
+            ],
+            "y": [
+              0.62,
+              0.37,
+              0.37,
+              0.42000000000000004,
+              0.42000000000000004
+            ],
+            "color": "#60ad42",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "ITU-R BS.1116-3 lower limit",
+            "x": [
+              100.0,
+              4000.0,
+              4000.0,
+              8000.0
+            ],
+            "y": [
+              0.27,
+              0.27,
+              0.22,
+              0.22
+            ],
+            "color": "#60ad42",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "Lower flatness limit: 0.250 s",
+            "x": [
+              20.0,
+              20000.0
+            ],
+            "y": [
+              0.25,
+              0.25
+            ],
+            "color": "#60ad42",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "Upper flatness limit: 0.400 s",
+            "x": [
+              20.0,
+              20000.0
+            ],
+            "y": [
+              0.4,
+              0.4
+            ],
+            "color": "#60ad42",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          }
+        ],
+        "hlines": [],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "decay"
+    },
+    "t60_unavailable": null,
+    "symmetric_pair_complex": {
+      "kind": "figure",
+      "figure": {
+        "title": "Symmetric pair: L+R (absolute and complex sums with their difference)",
+        "x": {
+          "label": "Frequency (Hz)",
+          "scale": "log",
+          "min": 20,
+          "max": 20000
+        },
+        "y": {
+          "label": "SPL (dB)",
+          "scale": "linear",
+          "min": -45.0,
+          "max": 5.0
+        },
+        "y2": {
+          "label": "Sum difference (dB)",
+          "scale": "linear",
+          "min": null,
+          "max": 40.0
+        },
+        "series": [
+          {
+            "name": "L+R absolute sum",
+            "x": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "y": [
+              0.0,
+              -3.0,
+              null,
+              1.0
+            ],
+            "color": "rgba(74, 144, 217, 0.9)",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "L+R complex sum",
+            "x": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "y": [
+              -2.0,
+              -4.0,
+              -5.0,
+              null
+            ],
+            "color": "rgba(46, 160, 67, 0.9)",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          },
+          {
+            "name": "L+R sum difference",
+            "x": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "y": [
+              2.0,
+              1.0,
+              null,
+              null
+            ],
+            "color": "rgba(214, 69, 65, 0.9)",
+            "width": 2.0,
+            "dash": "dash",
+            "visible": true,
+            "y_axis": 1
+          }
+        ],
+        "hlines": [],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "symmetric"
+    },
+    "symmetric_pair_no_phase": {
+      "kind": "figure",
+      "figure": {
+        "title": "Symmetric pair: L+R (absolute sum only; complex sum needs measured phase)",
+        "x": {
+          "label": "Frequency (Hz)",
+          "scale": "log",
+          "min": 20,
+          "max": 20000
+        },
+        "y": {
+          "label": "SPL (dB)",
+          "scale": "linear",
+          "min": -45.0,
+          "max": 5.0
+        },
+        "y2": null,
+        "series": [
+          {
+            "name": "L+R absolute sum",
+            "x": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "y": [
+              0.0,
+              -3.0,
+              null,
+              1.0
+            ],
+            "color": "rgba(74, 144, 217, 0.9)",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          }
+        ],
+        "hlines": [],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "symmetric"
+    },
+    "symmetric_pair_mismatched": {
+      "kind": "figure",
+      "figure": {
+        "title": "Symmetric pair: L+R (absolute sum only; complex sum needs measured phase)",
+        "x": {
+          "label": "Frequency (Hz)",
+          "scale": "log",
+          "min": 20,
+          "max": 20000
+        },
+        "y": {
+          "label": "SPL (dB)",
+          "scale": "linear",
+          "min": -45.0,
+          "max": 5.0
+        },
+        "y2": null,
+        "series": [
+          {
+            "name": "L+R absolute sum",
+            "x": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "y": [
+              0.0,
+              -3.0,
+              null,
+              1.0
+            ],
+            "color": "rgba(74, 144, 217, 0.9)",
+            "width": 2.0,
+            "dash": "solid",
+            "visible": true,
+            "y_axis": 0
+          }
+        ],
+        "hlines": [],
+        "vlines": [],
+        "xranges": [],
+        "annotations": [],
+        "legend": true
+      },
+      "tab": "symmetric"
+    },
+    "helper_to_db": [
+      0.0,
+      -6.020599913279624,
+      -80.0,
+      -80.0
+    ],
+    "helper_finite_or_gap": [
+      1.0,
+      null,
+      null,
+      null
+    ]
+  }
+}
