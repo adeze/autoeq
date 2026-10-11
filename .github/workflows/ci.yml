@@ -32,7 +32,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -97,7 +97,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -125,7 +125,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -182,7 +182,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -254,7 +254,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
       - uses: dtolnay/rust-toolchain@stable
       - name: Install pinned Just
         run: |
@@ -285,7 +285,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
       - uses: dtolnay/rust-toolchain@stable
       - name: Install pinned Just
         run: |
@@ -323,7 +323,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -382,7 +382,7 @@ jobs:
         run: bash scripts/checkout_ci_siblings.sh
 
       - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
