@@ -1,0 +1,187 @@
+[
+  {
+    "kind": "html",
+    "html": "<p>Read left to right. Each numbered node is a saved processing stage; expand its row below for parameters. Branches join at Σ before output processing. Link widths show connections, not signal level. Select All channels for the complete graph, or an output for its inputs.</p>",
+    "tab": null
+  },
+  {
+    "kind": "sankey",
+    "chart": {
+      "title": "Saved DSP: All channels",
+      "nodes": [
+        "1: Input L",
+        "2: EQ",
+        "3: Gain",
+        "4: Crossover",
+        "5: Input R",
+        "6: Gain",
+        "7: Crossover",
+        "8: Σ Sub",
+        "9: EQ",
+        "10: Limiter",
+        "11: Output Sub"
+      ],
+      "links": [
+        {
+          "source": 0,
+          "target": 1,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 1,
+          "target": 2,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 2,
+          "target": 3,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 4,
+          "target": 5,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 5,
+          "target": 6,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 3,
+          "target": 7,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 6,
+          "target": 7,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 7,
+          "target": 8,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 8,
+          "target": 9,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 9,
+          "target": 10,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        }
+      ],
+      "node_boxes": true
+    },
+    "tab": "All channels",
+    "min_width": 1520,
+    "min_height": 320
+  },
+  {
+    "kind": "html",
+    "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input L</td><td><details><summary>Input L</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>EQ</td><td><details><summary>EQ</summary><pre>{\n  &quot;plugin_type&quot;: &quot;eq&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;pre_route&quot;\n  }\n}</pre></details></td></tr><tr><td>3</td><td>Gain</td><td><details><summary>Route L → Sub</summary><pre>{\n  &quot;plugin_type&quot;: &quot;gain&quot;,\n  &quot;parameters&quot;: {\n    &quot;gain_db&quot;: -3,\n    &quot;invert&quot;: false,\n    &quot;label&quot;: &quot;Route L → Sub&quot;\n  }\n}</pre></details></td></tr><tr><td>4</td><td>Crossover</td><td><details><summary>Crossover</summary><pre>{\n  &quot;plugin_type&quot;: &quot;crossover&quot;,\n  &quot;parameters&quot;: {\n    &quot;type&quot;: null,\n    &quot;frequency&quot;: 80,\n    &quot;output&quot;: &quot;low&quot;\n  }\n}</pre></details></td></tr><tr><td>5</td><td>Input R</td><td><details><summary>Input R</summary><pre>{}</pre></details></td></tr><tr><td>6</td><td>Gain</td><td><details><summary>Route R → Sub</summary><pre>{\n  &quot;plugin_type&quot;: &quot;gain&quot;,\n  &quot;parameters&quot;: {\n    &quot;gain_db&quot;: -3,\n    &quot;invert&quot;: false,\n    &quot;label&quot;: &quot;Route R → Sub&quot;\n  }\n}</pre></details></td></tr><tr><td>7</td><td>Crossover</td><td><details><summary>Crossover</summary><pre>{\n  &quot;plugin_type&quot;: &quot;crossover&quot;,\n  &quot;parameters&quot;: {\n    &quot;type&quot;: null,\n    &quot;frequency&quot;: 80,\n    &quot;output&quot;: &quot;low&quot;\n  }\n}</pre></details></td></tr><tr><td>8</td><td>Σ Sub</td><td><details><summary>Σ Sub</summary><pre>{}</pre></details></td></tr><tr><td>9</td><td>EQ</td><td><details><summary>EQ</summary><pre>{\n  &quot;plugin_type&quot;: &quot;eq&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;post_route&quot;\n  }\n}</pre></details></td></tr><tr><td>10</td><td>Limiter</td><td><details><summary>Limiter</summary><pre>{\n  &quot;plugin_type&quot;: &quot;limiter&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;post_route&quot;\n  }\n}</pre></details></td></tr><tr><td>11</td><td>Output Sub</td><td><details><summary>Output Sub</summary><pre>{}</pre></details></td></tr></tbody></table>",
+    "tab": "All channels"
+  },
+  {
+    "kind": "sankey",
+    "chart": {
+      "title": "Saved DSP: Sub",
+      "nodes": [
+        "1: Input L",
+        "2: EQ",
+        "3: Gain",
+        "4: Crossover",
+        "5: Input R",
+        "6: Gain",
+        "7: Crossover",
+        "8: Σ Sub",
+        "9: EQ",
+        "10: Limiter",
+        "11: Output Sub"
+      ],
+      "links": [
+        {
+          "source": 0,
+          "target": 1,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 1,
+          "target": 2,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 2,
+          "target": 3,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 4,
+          "target": 5,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 5,
+          "target": 6,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 3,
+          "target": 7,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 6,
+          "target": 7,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 7,
+          "target": 8,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 8,
+          "target": 9,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        },
+        {
+          "source": 9,
+          "target": 10,
+          "value": 1.0,
+          "color": "rgba(74,144,217,0.25)"
+        }
+      ],
+      "node_boxes": true
+    },
+    "tab": "Sub",
+    "min_width": 1520,
+    "min_height": 320
+  },
+  {
+    "kind": "html",
+    "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input L</td><td><details><summary>Input L</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>EQ</td><td><details><summary>EQ</summary><pre>{\n  &quot;plugin_type&quot;: &quot;eq&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;pre_route&quot;\n  }\n}</pre></details></td></tr><tr><td>3</td><td>Gain</td><td><details><summary>Route L → Sub</summary><pre>{\n  &quot;plugin_type&quot;: &quot;gain&quot;,\n  &quot;parameters&quot;: {\n    &quot;gain_db&quot;: -3,\n    &quot;invert&quot;: false,\n    &quot;label&quot;: &quot;Route L → Sub&quot;\n  }\n}</pre></details></td></tr><tr><td>4</td><td>Crossover</td><td><details><summary>Crossover</summary><pre>{\n  &quot;plugin_type&quot;: &quot;crossover&quot;,\n  &quot;parameters&quot;: {\n    &quot;type&quot;: null,\n    &quot;frequency&quot;: 80,\n    &quot;output&quot;: &quot;low&quot;\n  }\n}</pre></details></td></tr><tr><td>5</td><td>Input R</td><td><details><summary>Input R</summary><pre>{}</pre></details></td></tr><tr><td>6</td><td>Gain</td><td><details><summary>Route R → Sub</summary><pre>{\n  &quot;plugin_type&quot;: &quot;gain&quot;,\n  &quot;parameters&quot;: {\n    &quot;gain_db&quot;: -3,\n    &quot;invert&quot;: false,\n    &quot;label&quot;: &quot;Route R → Sub&quot;\n  }\n}</pre></details></td></tr><tr><td>7</td><td>Crossover</td><td><details><summary>Crossover</summary><pre>{\n  &quot;plugin_type&quot;: &quot;crossover&quot;,\n  &quot;parameters&quot;: {\n    &quot;type&quot;: null,\n    &quot;frequency&quot;: 80,\n    &quot;output&quot;: &quot;low&quot;\n  }\n}</pre></details></td></tr><tr><td>8</td><td>Σ Sub</td><td><details><summary>Σ Sub</summary><pre>{}</pre></details></td></tr><tr><td>9</td><td>EQ</td><td><details><summary>EQ</summary><pre>{\n  &quot;plugin_type&quot;: &quot;eq&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;post_route&quot;\n  }\n}</pre></details></td></tr><tr><td>10</td><td>Limiter</td><td><details><summary>Limiter</summary><pre>{\n  &quot;plugin_type&quot;: &quot;limiter&quot;,\n  &quot;parameters&quot;: {\n    &quot;room_eq_stage&quot;: &quot;post_route&quot;\n  }\n}</pre></details></td></tr><tr><td>11</td><td>Output Sub</td><td><details><summary>Output Sub</summary><pre>{}</pre></details></td></tr></tbody></table>",
+    "tab": "Sub"
+  }
+]

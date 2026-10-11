@@ -1,9 +1,8 @@
 //! Native command-line adapter for the shared report producer APIs.
 //!
-//! Input is one JSON object on stdin. The `time_of_flight` operation returns
-//! a JSON string; `crossover_config_html` returns a JSON string; `assemble`
-//! returns raw HTML. Errors are printed to stderr and produce a nonzero exit
-//! status.
+//! Input is one JSON object on stdin. Section operations return JSON strings,
+//! objects, or arrays as documented by their operation; `assemble` returns raw
+//! HTML. Errors are printed to stderr and produce a nonzero exit status.
 
 // Rust guideline compliant 2026-02-21
 
@@ -11,7 +10,10 @@ use std::io::{self, Read};
 use std::process::ExitCode;
 
 use autoeq_report_wasm::assemble::{ShellAssets, assemble_html, checked_in_assets};
-use autoeq_report_wasm::{crossover_config_html, time_of_flight_html, time_of_flight_rows};
+use autoeq_report_wasm::{
+    bass_management_sections, build_shared_sections, crossover_config_html, gain_summary_html,
+    signal_flow_sections, time_of_flight_html, time_of_flight_rows,
+};
 use serde_json::Value;
 
 fn main() -> ExitCode {
@@ -56,6 +58,30 @@ fn run() -> Result<(), String> {
             let encoded = serde_json::to_string(&html).map_err(|error| {
                 format!("could not encode crossover configuration response: {error}")
             })?;
+            println!("{encoded}");
+        }
+        "gain_summary_html" => {
+            let data = request.get("data").unwrap_or(&Value::Null);
+            let encoded = serde_json::to_string(&gain_summary_html(data))
+                .map_err(|error| format!("could not encode gain summary: {error}"))?;
+            println!("{encoded}");
+        }
+        "bass_management_sections" => {
+            let report = request.get("report").unwrap_or(&Value::Null);
+            let encoded = serde_json::to_string(&bass_management_sections(report))
+                .map_err(|error| format!("could not encode bass-management sections: {error}"))?;
+            println!("{encoded}");
+        }
+        "signal_flow_sections" => {
+            let data = request.get("data").unwrap_or(&Value::Null);
+            let encoded = serde_json::to_string(&signal_flow_sections(data))
+                .map_err(|error| format!("could not encode signal-flow sections: {error}"))?;
+            println!("{encoded}");
+        }
+        "shared_sections" => {
+            let data = request.get("data").unwrap_or(&Value::Null);
+            let encoded = serde_json::to_string(&build_shared_sections(data))
+                .map_err(|error| format!("could not encode shared report sections: {error}"))?;
             println!("{encoded}");
         }
         "assemble" => {

@@ -137,6 +137,39 @@ export function selection_domain_json(canvas_id, x0, y0, x1, y1) {
 }
 
 /**
+ * Builds the canonical report fragments as one JSON object in WebAssembly.
+ *
+ * The input is a serialized RoomEQ result document. HTML fragments are
+ * strings; signal-flow sections are ordinary report section objects.
+ *
+ * # Errors
+ *
+ * Returns a JavaScript error when `data_json` is not valid JSON.
+ * @param {string} data_json
+ * @returns {string}
+ */
+export function shared_sections_json(data_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(data_json, wasm.__wbindgen_malloc_command_export, wasm.__wbindgen_realloc_command_export);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.shared_sections_json(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free_command_export(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Flip one series' visibility and re-render. Returns 1 when re-rendered,
  * 0 when the canvas or series is unknown, -99 on an internal panic
  * (see [`last_error`]).

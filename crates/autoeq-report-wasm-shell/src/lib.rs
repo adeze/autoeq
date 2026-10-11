@@ -2,8 +2,8 @@
 //!
 //! The HTML shell inlines the generated glue plus the base64 `.wasm` and
 //! drives these functions: [`render_section`], [`legend_json`],
-//! [`toggle_series`], and [`crossover_config_html`], plus [`last_error`] and
-//! [`schema_version`]. All layout math lives in the shared
+//! [`toggle_series`], [`crossover_config_html`], and [`shared_sections_json`],
+//! plus [`last_error`] and [`schema_version`]. All layout math lives in the shared
 //! [`autoeq_report_wasm::draw`] core (d3rs scales/geometry).
 //!
 //! This crate is `cdylib`-only on purpose: the release profile sets
@@ -20,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use autoeq_report_wasm::build_shared_sections as render_shared_sections;
 use autoeq_report_wasm::crossover_config_html as render_crossover_config_html;
 use autoeq_report_wasm::draw::{
     Ctx, DrawMeta, LegendEntry, PaintTriangle, PlotGeometry, TextAlign, draw_bar, draw_figure,
@@ -192,6 +193,22 @@ pub fn crossover_config_html(data_json: &str) -> Result<String, JsValue> {
     let data: serde_json::Value = serde_json::from_str(data_json)
         .map_err(|error| JsValue::from_str(&format!("invalid crossover section JSON: {error}")))?;
     Ok(render_crossover_config_html(&data))
+}
+
+/// Builds the canonical report fragments as one JSON object in WebAssembly.
+///
+/// The input is a serialized RoomEQ result document. HTML fragments are
+/// strings; signal-flow sections are ordinary report section objects.
+///
+/// # Errors
+///
+/// Returns a JavaScript error when `data_json` is not valid JSON.
+#[wasm_bindgen]
+pub fn shared_sections_json(data_json: &str) -> Result<String, JsValue> {
+    let data: serde_json::Value = serde_json::from_str(data_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid shared sections JSON: {error}")))?;
+    serde_json::to_string(&render_shared_sections(&data))
+        .map_err(|error| JsValue::from_str(&format!("could not encode shared sections: {error}")))
 }
 
 /// Render one payload section into a canvas.

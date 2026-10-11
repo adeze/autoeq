@@ -6,6 +6,7 @@ import math
 import re
 from html import escape
 from pathlib import Path
+from typing import Any
 
 from . import wasm_report
 from .acceptance_views import acceptance_views_html, waveform_status_html
@@ -401,39 +402,11 @@ def _eq_filter_table_html(passes: list[dict]) -> str:
 
 
 def _gain_plugins_html(data: dict) -> str:
-    """Expose level trims that are not visible in the EQ-only overview."""
-    owners = [("Global", data.get("global_plugins") or [])]
-    channels = data.get("channels") or {}
-    for name in sorted(channels, key=get_channel_sort_key):
-        channel = channels[name] or {}
-        owners.append((f"Channel {name}", channel.get("plugins") or []))
-        for index, driver in enumerate(channel.get("drivers") or []):
-            label = driver.get("name") or str(index)
-            owners.append((f"Channel {name} / driver {label}", driver.get("plugins") or []))
-    rows = []
-    for owner, plugins in owners:
-        for index, plugin in enumerate(plugins):
-            if plugin.get("plugin_type") != "gain":
-                continue
-            params = plugin.get("parameters") or {}
-            gain = params.get("gain_db", 0.0)
-            gain_label = f"{gain:+.3f} dB" if isinstance(gain, (int, float)) else "invalid"
-            values = [owner, str(index + 1), str(params.get("room_eq_stage", "unspecified")),
-                      str(params.get("label", "unlabelled gain")), gain_label]
-            rows.append("<tr>" + "".join(f"<td>{escape(value)}</td>" for value in values) + "</tr>")
-    if not rows:
-        return ""
-    return (
-        '<div class="plot-container"><h2>Level Gains and Safety Attenuation</h2>'
-        '<p class="epa-footer">The EQ-only overview does not show these gain plugins. '
-        'They affect the post-DSP response even when the EQ trace is flat. '
-        'Entries are listed in plugin order within each owner; they are not a summed '
-        'input-to-output gain. Routing gains and crossover responses also affect playback. '
-        'Route-owned entries describe routing and must not be counted twice.</p>'
-        '<table class="bm-table"><thead><tr><th>Owner</th><th>Plugin #</th>'
-        '<th>Stage</th><th>Purpose</th><th>Gain</th></tr></thead><tbody>'
-        + "".join(rows) + '</tbody></table></div>'
-    )
+    """Compatibility adapter for the canonical Rust gain summary."""
+    return json.loads(wasm_report.produce({
+        "operation": "gain_summary_html",
+        "data": data,
+    }))
 
 
 def _all_eq_filters_html(data: dict) -> str:
@@ -917,124 +890,33 @@ def _mixed_phase_summary_html(metadata: dict, channels: dict | list) -> str:
 
 
 def _bass_management_summary_html(report: dict) -> str:
-    if not report:
-        return ""
-
-    routing = report.get("routing_graph") or {}
-    routes = routing.get("routes") or []
-    route_count = len(routes)
-    physical_outputs = sorted(
-        {
-            str(route.get("destination"))
-            for route in routes
-            if route.get("route_kind")
-            in {"redirected_bass_lowpass_to_sub", "lfe_lowpass_to_sub"}
-            and route.get("destination")
-        }
-    )
-    advisories: list[str] = []
-    advisory = report.get("advisory")
-    if advisory:
-        advisories.append(str(advisory))
-    advisories.extend(str(item) for item in routing.get("advisories") or [])
-    advisories = sorted({item for item in advisories if item and item != "ok"})
-    advisory_html = (
-        f"<br><span style=\"color:#b36b00\">{escape('; '.join(advisories))}</span>"
-        if advisories
-        else ""
-    )
-
-    items = [
-        ("Enabled", "yes" if report.get("enabled") else "no"),
-        ("Crossover", f"{escape(str(report.get('crossover_type', '-')))} @ {_fmt_hz(report.get('crossover_frequency_hz'))}"),
-        ("LFE gain", _fmt_db(report.get("lfe_playback_gain_db"))),
-        ("Shared sub gain", _fmt_db(report.get("applied_sub_gain_db"))),
-        ("Physical bass outputs", ", ".join(escape(name) for name in physical_outputs) or escape(str(report.get("physical_sub_output", "-")))),
-        ("Route count", str(route_count)),
-        ("Graph mode", "route branches" if route_count else "linear / none"),
-    ]
-    cells = "".join(
-        f'<div class="metadata-item"><span class="metadata-label">{label}:</span> '
-        f'<span class="metadata-value">{value}</span></div>\n'
-        for label, value in items
-    )
-    return (
-        '<div class="metadata bass-management-section">\n'
-        "<h2>Bass Management</h2>\n"
-        f'<div class="metadata-grid">{cells}</div>\n'
-        f"{advisory_html}\n"
-        "</div>\n"
-    )
+    """Compatibility adapter for the canonical Rust bass summary."""
+    return _rust_bass_management_sections(report)["summary_html"]
 
 
 def _bass_management_groups_table_html(report: dict) -> str:
-    groups = report.get("groups") or []
-    if not groups:
-        groups = ((report.get("optimization") or {}).get("group_results") or [])
-    if not groups:
-        return ""
-
-    rows = []
-    for group in groups:
-        advisories = ", ".join(
-            str(item) for item in group.get("advisories", []) if item != "ok"
-        )
-        rows.append(
-            "<tr>"
-            f"<td>{escape(str(group.get('group_id', '-')))}</td>"
-            f"<td>{escape(', '.join(str(role) for role in group.get('roles', [])))}</td>"
-            f"<td>{escape(str(group.get('crossover_type', '-')))}</td>"
-            f"<td>{_fmt_hz(group.get('selected_crossover_hz'))}</td>"
-            f"<td>{_fmt_ms(group.get('main_delay_ms'))}</td>"
-            f"<td>{_fmt_ms(group.get('bass_route_delay_ms'))}</td>"
-            f"<td>{'yes' if group.get('polarity_inverted') else 'no'}</td>"
-            f"<td>{_fmt_db(group.get('trim_db'))}</td>"
-            f"<td>{escape(advisories) if advisories else '-'}</td>"
-            "</tr>\n"
-        )
-
-    return (
-        '<div class="filters-section bass-management-section">\n'
-        "<h3>Per-Speaker-Group Crossovers</h3>\n"
-        '<table class="bm-table">\n'
-        "<thead><tr><th>Group</th><th>Roles</th><th>Type</th><th>Selected XO</th>"
-        "<th>Main delay</th><th>Bass delay</th><th>Invert bass</th><th>Trim</th><th>Advisories</th></tr></thead>\n"
-        f"<tbody>{''.join(rows)}</tbody>\n"
-        "</table>\n"
-        "</div>\n"
-    )
+    """Compatibility adapter for the canonical Rust group table."""
+    return _rust_bass_management_sections(report)["groups_table_html"]
 
 
 def _bass_management_sub_outputs_table_html(report: dict) -> str:
-    outputs = report.get("sub_outputs") or []
-    if not outputs:
-        outputs = ((report.get("optimization") or {}).get("sub_output_results") or [])
-    if not outputs:
-        return ""
+    """Compatibility adapter for the canonical Rust output table."""
+    return _rust_bass_management_sections(report)["sub_outputs_table_html"]
 
-    rows = []
-    for output in outputs:
-        rows.append(
-            "<tr>"
-            f"<td>{escape(str(output.get('output_role', '-')))}</td>"
-            f"<td>{escape(str(output.get('strategy_source', '-')))}</td>"
-            f"<td>{_fmt_db(output.get('gain_db'))}</td>"
-            f"<td>{_fmt_ms(output.get('delay_ms'))}</td>"
-            f"<td>{'yes' if output.get('polarity_inverted') else 'no'}</td>"
-            f"<td>{_fmt_db(output.get('headroom_contribution_db'))}</td>"
-            "</tr>\n"
-        )
 
-    return (
-        '<div class="filters-section bass-management-section">\n'
-        "<h3>Physical Bass Outputs</h3>\n"
-        '<table class="bm-table">\n'
-        "<thead><tr><th>Output</th><th>Strategy</th><th>Gain</th><th>Delay</th>"
-        "<th>Invert</th><th>Headroom contribution</th></tr></thead>\n"
-        f"<tbody>{''.join(rows)}</tbody>\n"
-        "</table>\n"
-        "</div>\n"
-    )
+def _rust_bass_management_sections(report: dict) -> dict[str, str]:
+    return json.loads(wasm_report.produce({
+        "operation": "bass_management_sections",
+        "report": report,
+    }))
+
+
+def _rust_shared_sections(data: dict) -> dict[str, Any]:
+    """Run all shared producer sections once for a standalone report."""
+    return json.loads(wasm_report.produce({
+        "operation": "shared_sections",
+        "data": data,
+    }))
 
 
 # Verdict severities shared by the three playback-status boxes.
@@ -1211,7 +1093,7 @@ def build_report_payload(
     smoothed_octaves: float = 1.0,
     capture_verification: dict | None = None,
     shared_tof_html: str | None = None,
-    shared_sections: dict[str, str] | None = None,
+    shared_sections: dict[str, Any] | None = None,
 ) -> dict:
     """Build every RoomEQ dashboard without loading HTML or WASM assets.
 
@@ -1224,14 +1106,23 @@ def build_report_payload(
             identity must match the verified saved optimization payload.
         shared_tof_html: Optional snapshot already produced by the shared Rust
             time-of-flight API, used by native hosts without a subprocess.
-        shared_sections: Optional section HTML snapshots produced by the
-            shared Rust renderer. Present keys, including empty values,
-            override standalone fallback generation.
+        shared_sections: Optional section values produced by the shared Rust
+            renderer. Present keys, including empty values or arrays, override
+            standalone fallback generation.
     """
     if output_json_path is not None and not isinstance(data, RoomEqData):
         data = RoomEqData(data, output_json_path.resolve().parent)
     channels_dict = data.get("channels", {})
     metadata = data.get("metadata", {})
+    generated_sections: dict[str, Any] | None = None
+
+    def shared_section(name: str) -> Any:
+        nonlocal generated_sections
+        if shared_sections is not None and name in shared_sections:
+            return shared_sections[name]
+        if generated_sections is None:
+            generated_sections = _rust_shared_sections(data)
+        return generated_sections.get(name)
 
     # Sort channels by classical order
     sorted_channel_names = sorted(channels_dict.keys(), key=get_channel_sort_key)
@@ -1280,13 +1171,8 @@ def build_report_payload(
 
     # Single-screen summaries: the full PEQ listing and the crossover
     # configuration, so nothing requires switching per-channel tabs.
-    _emit_html(sections, _gain_plugins_html(data))
-    crossover_html = (
-        shared_sections["crossover_config_html"]
-        if shared_sections is not None and "crossover_config_html" in shared_sections
-        else _crossover_config_html(data)
-    )
-    _emit_html(sections, crossover_html)
+    _emit_html(sections, shared_section("gain_summary_html"))
+    _emit_html(sections, shared_section("crossover_config_html"))
     sections = time_domain
     room_decay = room_t60_rows(data)
     decay_reference = t60_itu_reference(data)
@@ -1310,11 +1196,9 @@ def build_report_payload(
     # Time of flight (feat-report Section 3): table only. The before/after
     # bar charts were removed; the table carries both arrival columns.
     sections = timing
-    tof_snapshot = (
-        shared_sections["time_of_flight_html"]
-        if shared_sections is not None and "time_of_flight_html" in shared_sections
-        else shared_tof_html
-    )
+    tof_snapshot = shared_section("time_of_flight_html")
+    if tof_snapshot is None:
+        tof_snapshot = shared_tof_html
     _emit_html(sections, tof_html(metadata) if tof_snapshot is None else tof_snapshot)
 
     # Symmetric-monitor summing, magnitude domain (feat-report Section 2).
@@ -1376,13 +1260,13 @@ def build_report_payload(
     bass_management = metadata.get("bass_management") or {}
     sections = overview
     if bass_management:
-        _emit_html(sections, _bass_management_summary_html(bass_management))
+        _emit_html(sections, shared_section("bass_management_summary_html"))
         routing_fig = create_bass_management_routing_figure(data)
         headroom_fig = create_bass_management_headroom_figure(data)
         _emit_fig(sections, routing_fig)
         _emit_fig(sections, headroom_fig)
-        _emit_html(sections, _bass_management_groups_table_html(bass_management))
-        _emit_html(sections, _bass_management_sub_outputs_table_html(bass_management))
+        _emit_html(sections, shared_section("bass_management_groups_table_html"))
+        _emit_html(sections, shared_section("bass_management_sub_outputs_table_html"))
 
     # Reconstruct each logical input after bass management once. For a main
     # channel this is the crossover-aware complex sum of its high-passed main
@@ -1681,6 +1565,9 @@ def build_report_payload(
         speakers.insert(0, wasm_report.html_section(_relative_levels))
 
     sections = list(status_sections)
+    flow_snapshot = shared_section("signal_flow_sections")
+    if flow_snapshot is None:
+        flow_snapshot = signal_flow_sections(data)
     for bucket, subhead, contents in (
         (BUCKET_DSP, "Why this correction?", why),
         (BUCKET_ACOUSTICS, "Summary", overview),
@@ -1689,7 +1576,7 @@ def build_report_payload(
         (BUCKET_ACOUSTICS, "Symmetric monitors", symmetric),
         (BUCKET_ACOUSTICS, "Time domain analysis", time_domain),
         (BUCKET_PSYCHOACOUSTIC, "Section 6: EPA scores", epa),
-        (BUCKET_DSP, "DSP signal flow", signal_flow_sections(data)),
+        (BUCKET_DSP, "DSP signal flow", flow_snapshot),
     ):
         if not contents:
             contents.append(wasm_report.html_section("<p>No data available in this output.</p>"))

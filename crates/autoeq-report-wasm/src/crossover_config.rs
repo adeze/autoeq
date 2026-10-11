@@ -14,6 +14,8 @@
 
 use serde_json::Value;
 
+use crate::report_helpers::{channel_sort_key, escape_html, python_string};
+
 const SECTION_START: &str =
     "        <div class=\"plot-container\">\n            <h2>Crossover Configuration</h2>\n";
 
@@ -207,15 +209,6 @@ fn truthy(value: &Value) -> Option<&Value> {
     }
 }
 
-fn python_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_string(),
-        Value::Bool(value) => if *value { "True" } else { "False" }.to_string(),
-        Value::String(value) => value.clone(),
-        _ => value.to_string(),
-    }
-}
-
 fn format_frequency(value: Option<&Value>) -> String {
     value
         .and_then(|value| {
@@ -227,77 +220,6 @@ fn format_frequency(value: Option<&Value>) -> String {
         })
         .map(|frequency| format!("{frequency:.1} Hz"))
         .unwrap_or_else(|| "-".to_string())
-}
-
-fn escape_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#x27;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
-fn channel_sort_key(name: &str) -> (u16, &str) {
-    const CHANNELS: &[(&str, u16)] = &[
-        ("L", 10),
-        ("LEFT", 10),
-        ("R", 20),
-        ("RIGHT", 20),
-        ("C", 30),
-        ("CENTER", 30),
-        ("LFE", 40),
-        ("SUB", 40),
-        ("SUBWOOFER", 40),
-        ("LFE1", 41),
-        ("LFE2", 42),
-        ("SL", 50),
-        ("SURROUND LEFT", 50),
-        ("LS", 50),
-        ("SR", 60),
-        ("SURROUND RIGHT", 60),
-        ("RS", 60),
-        ("SBL", 70),
-        ("SURROUND BACK LEFT", 70),
-        ("LBS", 70),
-        ("LB", 70),
-        ("SBR", 80),
-        ("SURROUND BACK RIGHT", 80),
-        ("RBS", 80),
-        ("RB", 80),
-        ("FHL", 90),
-        ("FRONT HEIGHT LEFT", 90),
-        ("FHR", 100),
-        ("FRONT HEIGHT RIGHT", 100),
-        ("BHL", 110),
-        ("BACK HEIGHT LEFT", 110),
-        ("BHR", 120),
-        ("BACK HEIGHT RIGHT", 120),
-    ];
-    let uppercase = name.to_uppercase();
-    let order = CHANNELS
-        .iter()
-        .find_map(|(alias, order)| {
-            if uppercase == *alias
-                || (uppercase.starts_with(alias)
-                    && uppercase[alias.len()..]
-                        .chars()
-                        .next()
-                        .is_some_and(|character| !character.is_alphanumeric()))
-            {
-                Some(*order)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(1000);
-    (order, name)
 }
 
 fn object_drivers(drivers: Option<&Value>) -> Vec<(usize, &Value)> {
