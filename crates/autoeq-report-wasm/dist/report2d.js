@@ -72,6 +72,37 @@ export function legend_json(canvas_id) {
 }
 
 /**
+ * Dispatches one canonical report producer request in WebAssembly.
+ *
+ * Section results are serialized JSON; the assembly operation returns HTML.
+ *
+ * # Errors
+ * Returns an error for invalid JSON, unsupported operations, or invalid request fields.
+ * @param {string} request_json
+ * @returns {string}
+ */
+export function produce_json(request_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(request_json, wasm.__wbindgen_malloc_command_export, wasm.__wbindgen_realloc_command_export);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.produce_json(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free_command_export(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Render one payload section into a canvas.
  *
  * Returns 0 on success, 1 when the canvas is missing, 2 on bad JSON.

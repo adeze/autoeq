@@ -1,0 +1,134 @@
+{
+  "channel": {
+    "early_reflections": {
+      "basis": "measured_room_ir",
+      "method": "bandlimited_early_reflection_table_v1",
+      "band_hz": [
+        1000.0,
+        8000.0
+      ],
+      "threshold_dbfs": -15.0,
+      "direct_reference": "filtered direct peak",
+      "pre": [
+        {
+          "gain_dbfs": -12.0,
+          "time_ms": 5.0,
+          "distance_cm": 171.5,
+          "first_dip_hz": 100.0,
+          "ripple_db": 4.0
+        },
+        {
+          "gain_dbfs": -7.0,
+          "time_ms": 9.0,
+          "distance_cm": 308.7,
+          "first_dip_hz": 55.55555555555556,
+          "ripple_db": null
+        }
+      ],
+      "post": [
+        {
+          "gain_dbfs": -8.0,
+          "time_ms": 3.0,
+          "distance_cm": 150.0,
+          "first_dip_hz": 166.66666666666666,
+          "ripple_db": 7.3
+        }
+      ]
+    },
+    "initial_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        61.0,
+        70.0,
+        68.0,
+        66.0,
+        64.0,
+        60.0
+      ]
+    },
+    "final_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        60.0,
+        69.0,
+        67.0,
+        65.0,
+        63.0,
+        59.0
+      ]
+    },
+    "early_late_curves": {
+      "method": "incoherent_band_energy",
+      "reference": "full_peak_band",
+      "smoothing": "third_octave",
+      "split_ms": 20.0,
+      "full": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "early": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -1.0,
+          -2.0,
+          -3.0,
+          -4.0
+        ]
+      },
+      "late": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -7.0,
+          -7.0,
+          -7.0,
+          -7.0
+        ]
+      }
+    }
+  },
+  "label": "L",
+  "tab": "L",
+  "expected": {
+    "validated_report": null,
+    "early_reflection_level_db": null,
+    "early_reflection_level_cell": "<td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td>",
+    "early_late_ratio_db": 4.5,
+    "early_late_ratio_cell": "<td style=\"background:#2ecc7133\" title=\"arithmetic mean of early minus late dB at emitted 1–8 kHz third-octave centers\">+4.5</td>",
+    "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+    "figures": []
+  }
+}

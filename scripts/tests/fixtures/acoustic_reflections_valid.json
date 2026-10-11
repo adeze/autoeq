@@ -1,0 +1,481 @@
+{
+  "channel": {
+    "early_reflections": {
+      "basis": "measured_room_ir",
+      "method": "bandlimited_early_reflection_table_v1",
+      "band_hz": [
+        1000.0,
+        8000.0
+      ],
+      "threshold_dbfs": -15.0,
+      "direct_reference": "filtered direct peak",
+      "pre": [
+        {
+          "gain_dbfs": -12.0,
+          "time_ms": 5.0,
+          "distance_cm": 171.5,
+          "first_dip_hz": 100.0,
+          "ripple_db": 4.0
+        },
+        {
+          "gain_dbfs": -7.0,
+          "time_ms": 9.0,
+          "distance_cm": 308.7,
+          "first_dip_hz": 55.55555555555556,
+          "ripple_db": null
+        }
+      ],
+      "post": [
+        {
+          "gain_dbfs": -8.0,
+          "time_ms": 3.0,
+          "distance_cm": 102.9,
+          "first_dip_hz": 166.66666666666666,
+          "ripple_db": 7.3
+        },
+        {
+          "gain_dbfs": -11.0,
+          "time_ms": 6.0,
+          "distance_cm": 205.8,
+          "first_dip_hz": 83.33333333333333,
+          "ripple_db": 5.0
+        }
+      ]
+    },
+    "initial_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        61.0,
+        70.0,
+        68.0,
+        66.0,
+        64.0,
+        60.0
+      ]
+    },
+    "final_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        60.0,
+        69.0,
+        67.0,
+        65.0,
+        63.0,
+        59.0
+      ]
+    },
+    "early_late_curves": {
+      "method": "incoherent_band_energy",
+      "reference": "full_peak_band",
+      "smoothing": "third_octave",
+      "split_ms": 20.0,
+      "full": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "early": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -1.0,
+          -2.0,
+          -3.0,
+          -4.0
+        ]
+      },
+      "late": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -7.0,
+          -7.0,
+          -7.0,
+          -7.0
+        ]
+      }
+    }
+  },
+  "label": "<Left>",
+  "tab": "L",
+  "expected": {
+    "validated_report": {
+      "basis": "measured_room_ir",
+      "method": "bandlimited_early_reflection_table_v1",
+      "band_hz": [
+        1000.0,
+        8000.0
+      ],
+      "threshold_dbfs": -15.0,
+      "direct_reference": "filtered direct peak",
+      "pre": [
+        {
+          "gain_dbfs": -12.0,
+          "time_ms": 5.0,
+          "distance_cm": 171.5,
+          "first_dip_hz": 100.0,
+          "ripple_db": 4.0
+        },
+        {
+          "gain_dbfs": -7.0,
+          "time_ms": 9.0,
+          "distance_cm": 308.7,
+          "first_dip_hz": 55.55555555555556,
+          "ripple_db": null
+        }
+      ],
+      "post": [
+        {
+          "gain_dbfs": -8.0,
+          "time_ms": 3.0,
+          "distance_cm": 102.9,
+          "first_dip_hz": 166.66666666666666,
+          "ripple_db": 7.3
+        },
+        {
+          "gain_dbfs": -11.0,
+          "time_ms": 6.0,
+          "distance_cm": 205.8,
+          "first_dip_hz": 83.33333333333333,
+          "ripple_db": 5.0
+        }
+      ]
+    },
+    "early_reflection_level_db": {
+      "level_db": -8.0,
+      "upper_bound": false
+    },
+    "early_reflection_level_cell": "<td style=\"background:#f1c40f33\" title=\"strongest emitted post-correction 1–8 kHz reflection, dB relative to direct\">-8.0</td>",
+    "early_late_ratio_db": 4.5,
+    "early_late_ratio_cell": "<td style=\"background:#2ecc7133\" title=\"arithmetic mean of early minus late dB at emitted 1–8 kHz third-octave centers\">+4.5</td>",
+    "html": "<div class=\"filters-section\"><h3>1–8 kHz early reflections: &lt;Left&gt;</h3><p>Candidate search: first 15 ms after the filtered direct peak, at or above −15 dB relative to direct sound. Before uses the measured room IR; after is predicted through the saved DSP chain, not a new measurement. Reference: filtered direct peak.</p><p>The exported data contains candidate peaks, not a continuous 1–8 kHz energy-time curve. Two-path first-dip and ripple values are estimates, not confirmed acoustic nulls.</p><h4>Before (2 candidates)</h4><table class=\"epa-table\"><thead><tr><th>Reflection</th><th>Gain (dB re direct)</th><th>Time (ms)</th><th>Extra path (cm)</th><th>First dip (Hz)</th><th>Comb ripple (dB p-p)</th></tr></thead><tbody><tr><td>1</td><td>-12.00</td><td>5.00</td><td>171.5</td><td>100.0</td><td>4.00</td></tr><tr><td>2</td><td>-7.00</td><td>9.00</td><td>308.7</td><td>55.6</td><td>unbounded</td></tr></tbody></table><h4>Predicted after EQ (2 candidates)</h4><table class=\"epa-table\"><thead><tr><th>Reflection</th><th>Gain (dB re direct)</th><th>Time (ms)</th><th>Extra path (cm)</th><th>First dip (Hz)</th><th>Comb ripple (dB p-p)</th></tr></thead><tbody><tr><td>1</td><td>-8.00</td><td>3.00</td><td>102.9</td><td>166.7</td><td>7.30</td></tr><tr><td>2</td><td>-11.00</td><td>6.00</td><td>205.8</td><td>83.3</td><td>5.00</td></tr></tbody></table></div>",
+    "figures": [
+      {
+        "kind": "figure",
+        "figure": {
+          "title": "<Left>: Before — early-reflection candidates (not a continuous ETC)",
+          "x": {
+            "label": "Time after direct peak (ms)",
+            "scale": "linear",
+            "min": 0,
+            "max": 15
+          },
+          "y": {
+            "label": "Level relative to direct sound (dB)",
+            "scale": "linear",
+            "min": -40,
+            "max": 3
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Before",
+              "x": [
+                5.0,
+                5.0,
+                5.0,
+                9.0,
+                9.0,
+                9.0
+              ],
+              "y": [
+                -40.0,
+                -12.0,
+                null,
+                -40.0,
+                -7.0,
+                null
+              ],
+              "color": "#2864b4",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Direct reference",
+              "x": [
+                0.0,
+                0.0
+              ],
+              "y": [
+                -40.0,
+                0.0
+              ],
+              "color": "#555555",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Detection threshold (−15 dB)",
+              "x": [
+                0.0,
+                15.0
+              ],
+              "y": [
+                -15.0,
+                -15.0
+              ],
+              "color": "#888888",
+              "width": 2.0,
+              "dash": "dash",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [
+            {
+              "x": 5.0,
+              "y": -11.0,
+              "text": "1"
+            },
+            {
+              "x": 9.0,
+              "y": -6.0,
+              "text": "2"
+            }
+          ],
+          "legend": true
+        },
+        "tab": "L"
+      },
+      {
+        "kind": "figure",
+        "figure": {
+          "title": "<Left>: Predicted after EQ — early-reflection candidates (not a continuous ETC)",
+          "x": {
+            "label": "Time after direct peak (ms)",
+            "scale": "linear",
+            "min": 0,
+            "max": 15
+          },
+          "y": {
+            "label": "Level relative to direct sound (dB)",
+            "scale": "linear",
+            "min": -40,
+            "max": 3
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Predicted after EQ",
+              "x": [
+                3.0,
+                3.0,
+                3.0,
+                6.0,
+                6.0,
+                6.0
+              ],
+              "y": [
+                -40.0,
+                -8.0,
+                null,
+                -40.0,
+                -11.0,
+                null
+              ],
+              "color": "#c56816",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Direct reference",
+              "x": [
+                0.0,
+                0.0
+              ],
+              "y": [
+                -40.0,
+                0.0
+              ],
+              "color": "#555555",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Detection threshold (−15 dB)",
+              "x": [
+                0.0,
+                15.0
+              ],
+              "y": [
+                -15.0,
+                -15.0
+              ],
+              "color": "#888888",
+              "width": 2.0,
+              "dash": "dash",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [
+            {
+              "x": 3.0,
+              "y": -7.0,
+              "text": "1"
+            },
+            {
+              "x": 6.0,
+              "y": -10.0,
+              "text": "2"
+            }
+          ],
+          "legend": true
+        },
+        "tab": "L"
+      },
+      {
+        "kind": "figure",
+        "figure": {
+          "title": "<Left>: response and estimated reflection dips (not measured nulls)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 20.0,
+            "max": 70
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Measured before EQ",
+              "x": [
+                500.0,
+                1000.0,
+                2000.0,
+                4000.0,
+                8000.0,
+                12000.0
+              ],
+              "y": [
+                61.0,
+                70.0,
+                68.0,
+                66.0,
+                64.0,
+                60.0
+              ],
+              "color": "#2864b4",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Predicted after EQ",
+              "x": [
+                500.0,
+                1000.0,
+                2000.0,
+                4000.0,
+                8000.0,
+                12000.0
+              ],
+              "y": [
+                60.0,
+                69.0,
+                67.0,
+                65.0,
+                63.0,
+                59.0
+              ],
+              "color": "#c56816",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Candidate 1: 166.7 Hz (estimated dip)",
+              "x": [
+                166.66666666666666,
+                166.66666666666666
+              ],
+              "y": [
+                20.0,
+                70.0
+              ],
+              "color": "#888888",
+              "width": 2.0,
+              "dash": "dot",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Candidate 2: 83.3 Hz (estimated dip)",
+              "x": [
+                83.33333333333333,
+                83.33333333333333
+              ],
+              "y": [
+                20.0,
+                70.0
+              ],
+              "color": "#888888",
+              "width": 2.0,
+              "dash": "dot",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": "L"
+      }
+    ]
+  }
+}

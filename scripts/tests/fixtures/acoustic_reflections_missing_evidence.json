@@ -1,0 +1,33 @@
+{
+  "channel": {
+    "initial_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        61.0,
+        70.0,
+        68.0,
+        66.0,
+        64.0,
+        60.0
+      ]
+    }
+  },
+  "label": "L",
+  "tab": null,
+  "expected": {
+    "validated_report": null,
+    "early_reflection_level_db": null,
+    "early_reflection_level_cell": "<td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td>",
+    "early_late_ratio_db": null,
+    "early_late_ratio_cell": "<td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td>",
+    "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+    "figures": []
+  }
+}

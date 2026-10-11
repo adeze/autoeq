@@ -8,6 +8,9 @@
 //! projected surface triangles with WebGPU in the same plots. Layout, axes,
 //! colors, and interaction remain shared with the Canvas fallback.
 
+pub mod acoustic_curves;
+pub mod acoustic_reflections;
+pub mod acoustic_t60;
 pub mod assemble;
 pub mod bass_management;
 pub mod capture_quality;
@@ -15,6 +18,7 @@ pub mod crossover_config;
 pub mod draw;
 pub mod gain_summary;
 pub mod grid;
+pub mod producer;
 pub(crate) mod report_helpers;
 pub mod report_sections;
 pub mod schema;

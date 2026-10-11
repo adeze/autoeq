@@ -1,0 +1,201 @@
+{
+  "channel": {
+    "early_reflections": {
+      "basis": "measured_room_ir",
+      "method": "bandlimited_early_reflection_table_v1",
+      "band_hz": [
+        1000.0,
+        8000.0
+      ],
+      "threshold_dbfs": -15.0,
+      "direct_reference": "filtered direct peak",
+      "pre": [],
+      "post": []
+    },
+    "initial_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        61.0,
+        70.0,
+        68.0,
+        66.0,
+        64.0,
+        60.0
+      ]
+    },
+    "final_curve": {
+      "freq": [
+        500.0,
+        1000.0,
+        2000.0,
+        4000.0,
+        8000.0,
+        12000.0
+      ],
+      "spl": [
+        60.0,
+        69.0,
+        67.0,
+        65.0,
+        63.0,
+        59.0
+      ]
+    },
+    "early_late_curves": {
+      "method": "incoherent_band_energy",
+      "reference": "full_peak_band",
+      "smoothing": "third_octave",
+      "split_ms": 20.0,
+      "full": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "early": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -1.0,
+          -2.0,
+          -3.0,
+          -4.0
+        ]
+      },
+      "late": {
+        "freq": [
+          1000.0,
+          2000.0,
+          4000.0,
+          8000.0
+        ],
+        "spl": [
+          -7.0,
+          -7.0,
+          -7.0,
+          -7.0
+        ]
+      }
+    }
+  },
+  "label": "L",
+  "tab": null,
+  "expected": {
+    "validated_report": {
+      "basis": "measured_room_ir",
+      "method": "bandlimited_early_reflection_table_v1",
+      "band_hz": [
+        1000.0,
+        8000.0
+      ],
+      "threshold_dbfs": -15.0,
+      "direct_reference": "filtered direct peak",
+      "pre": [],
+      "post": []
+    },
+    "early_reflection_level_db": {
+      "level_db": -15.0,
+      "upper_bound": true
+    },
+    "early_reflection_level_cell": "<td style=\"background:#2ecc7133\" title=\"strongest emitted post-correction 1–8 kHz reflection, dB relative to direct\">≤ -15.0</td>",
+    "early_late_ratio_db": 4.5,
+    "early_late_ratio_cell": "<td style=\"background:#2ecc7133\" title=\"arithmetic mean of early minus late dB at emitted 1–8 kHz third-octave centers\">+4.5</td>",
+    "html": "<div class=\"filters-section\"><h3>1–8 kHz early reflections: L</h3><p>Candidate search: first 15 ms after the filtered direct peak, at or above −15 dB relative to direct sound. Before uses the measured room IR; after is predicted through the saved DSP chain, not a new measurement. Reference: filtered direct peak.</p><p>The exported data contains candidate peaks, not a continuous 1–8 kHz energy-time curve. Two-path first-dip and ripple values are estimates, not confirmed acoustic nulls.</p><h4>Before (0 candidates)</h4><p>No candidates were emitted at or above −15 dB within the 15 ms search window. This does not mean the room has no reflections.</p><h4>Predicted after EQ (0 candidates)</h4><p>No candidates were emitted at or above −15 dB within the 15 ms search window. This does not mean the room has no reflections.</p></div>",
+    "figures": [
+      {
+        "kind": "figure",
+        "figure": {
+          "title": "L: response and estimated reflection dips (not measured nulls)",
+          "x": {
+            "label": "Frequency (Hz)",
+            "scale": "log",
+            "min": 20,
+            "max": 20000
+          },
+          "y": {
+            "label": "SPL (dB)",
+            "scale": "linear",
+            "min": 20.0,
+            "max": 70
+          },
+          "y2": null,
+          "series": [
+            {
+              "name": "Measured before EQ",
+              "x": [
+                500.0,
+                1000.0,
+                2000.0,
+                4000.0,
+                8000.0,
+                12000.0
+              ],
+              "y": [
+                61.0,
+                70.0,
+                68.0,
+                66.0,
+                64.0,
+                60.0
+              ],
+              "color": "#2864b4",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            },
+            {
+              "name": "Predicted after EQ",
+              "x": [
+                500.0,
+                1000.0,
+                2000.0,
+                4000.0,
+                8000.0,
+                12000.0
+              ],
+              "y": [
+                60.0,
+                69.0,
+                67.0,
+                65.0,
+                63.0,
+                59.0
+              ],
+              "color": "#c56816",
+              "width": 2.0,
+              "dash": "solid",
+              "visible": true,
+              "y_axis": 0
+            }
+          ],
+          "hlines": [],
+          "vlines": [],
+          "xranges": [],
+          "annotations": [],
+          "legend": true
+        },
+        "tab": null
+      }
+    ]
+  }
+}

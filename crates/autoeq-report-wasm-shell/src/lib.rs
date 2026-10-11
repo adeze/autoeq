@@ -211,6 +211,19 @@ pub fn shared_sections_json(data_json: &str) -> Result<String, JsValue> {
         .map_err(|error| JsValue::from_str(&format!("could not encode shared sections: {error}")))
 }
 
+/// Dispatches one canonical report producer request in WebAssembly.
+///
+/// Section results are serialized JSON; the assembly operation returns HTML.
+///
+/// # Errors
+/// Returns an error for invalid JSON, unsupported operations, or invalid request fields.
+#[wasm_bindgen]
+pub fn produce_json(request_json: &str) -> Result<String, JsValue> {
+    let request: serde_json::Value = serde_json::from_str(request_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid report request JSON: {error}")))?;
+    autoeq_report_wasm::producer::produce(&request).map_err(|error| JsValue::from_str(&error))
+}
+
 /// Render one payload section into a canvas.
 ///
 /// Returns 0 on success, 1 when the canvas is missing, 2 on bad JSON.
