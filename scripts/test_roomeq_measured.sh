@@ -38,11 +38,6 @@ if [[ -z ${PYTHON:-} ]]; then
         PYTHON=python3
     fi
 fi
-"$PYTHON" -c 'import numpy' || {
-    echo 'RoomEQ plots require numpy; set PYTHON to an interpreter with it.' >&2
-    exit 1
-}
-
 # Validate the entire requested subset before expensive optimization.
 for scenario in "${scenarios[@]}"; do
     [[ "$scenario" =~ ^[a-zA-Z0-9_.-]+$ ]] && [[ "$scenario" != .* ]] || {

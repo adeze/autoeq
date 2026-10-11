@@ -19,10 +19,12 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from loaders import load_roomeq_json
-from report import create_html_report, create_comparison_html_report
+from scripts.src.loaders import load_roomeq_json
+from scripts.src.report import create_html_report, create_comparison_html_report
 
 
 def config_diff_paths(base, effective, prefix=""):
@@ -141,7 +143,7 @@ Examples:
     if args.capture_verification and args.output_json is None:
         if args.html_output or args.base_config:
             parser.error("standalone --capture-verification uses -o and no base config")
-        from capture_views import create_capture_report
+        from scripts.src.capture_views import create_capture_report
         destination = args.output or args.capture_verification.with_name(args.capture_verification.stem + "_captures.html")
         create_capture_report(args.capture_verification, destination)
         print(f"Capture diagnostics written to: {destination}")

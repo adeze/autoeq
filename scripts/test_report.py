@@ -132,7 +132,14 @@ class BoundCaptureReportTests(unittest.TestCase):
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("Capture acceptance diagnostics", html)
             self.assertIn("Matched IR evidence: synthetic_capture_pair", html)
-            self.assertIn("&lt;source&gt; / seat", html)
+            embedded = re.search(r'<script id="report-payload" type="application/json">(.*?)</script>', html, re.S)
+            self.assertIsNotNone(embedded, "report omitted its embedded payload")
+            payload = json.loads(embedded.group(1))
+            capture_sections = [section.get("html", "") for section in payload["sections"]
+                                if "Capture acceptance diagnostics" in section.get("html", "")]
+            self.assertTrue(capture_sections, "report omitted capture diagnostics")
+            self.assertIn("&lt;source&gt; / seat", "".join(capture_sections))
+            self.assertNotIn("<source> / seat", "".join(capture_sections))
 
     def test_mismatched_or_tampered_graph_cannot_display_capture_views(self):
         data = self._bound_output()
