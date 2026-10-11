@@ -1297,6 +1297,7 @@ def build_report_payload(
     output_json_path: Path | None = None,
     smoothed_octaves: float = 1.0,
     capture_verification: dict | None = None,
+    shared_tof_html: str | None = None,
 ) -> dict:
     """Build every RoomEQ dashboard without loading HTML or WASM assets.
 
@@ -1307,6 +1308,8 @@ def build_report_payload(
             smoothed-response overlays (feat-report asks for 1 octave).
         capture_verification: Optional matched verification report. Its graph
             identity must match the verified saved optimization payload.
+        shared_tof_html: Optional snapshot already produced by the shared Rust
+            time-of-flight API, used by native hosts without a subprocess.
     """
     if output_json_path is not None and not isinstance(data, RoomEqData):
         data = RoomEqData(data, output_json_path.resolve().parent)
@@ -1385,7 +1388,7 @@ def build_report_payload(
     # Time of flight (feat-report Section 3): table only. The before/after
     # bar charts were removed; the table carries both arrival columns.
     sections = timing
-    _emit_html(sections, tof_html(metadata))
+    _emit_html(sections, tof_html(metadata) if shared_tof_html is None else shared_tof_html)
 
     # Symmetric-monitor summing, magnitude domain (feat-report Section 2).
     sections = symmetric

@@ -14,6 +14,8 @@ import json
 from html import escape
 from pathlib import Path
 
+from .native_report import produce
+
 SCHEMA_VERSION = "autoeq-report-data-v1"
 
 # Repo root resolved from this file (scripts/src/wasm_report.py).
@@ -198,22 +200,11 @@ def load_assets(dist_dir=None, template_path=None):
 def assemble_html(title, payload_dict, dist_dir=None, template_path=None):
     """Assemble a self-contained HTML report string."""
     template, assets = load_assets(dist_dir, template_path)
-    # Raw UTF-8 (like the Rust serde output): escaped \uXXXX sequences would
-    # break plain-text searches and diverge from the old inline-HTML reports.
-    payload_json = json.dumps(payload_dict, ensure_ascii=False)
-    safe_title = (
-        title.replace("&", "&amp;").replace("<", "&lt;")
-        .replace(">", "&gt;").replace('"', "&quot;")
-    )
-    return (
-        template
-        .replace("{{PAGE_TITLE}}", safe_title)
-        .replace("{{PAYLOAD_JSON}}", payload_json)
-        .replace("{{WASM_2D_B64}}", assets["wasm_2d"])
-        .replace("{{GLUE_2D_B64}}", assets["glue_2d"])
-        .replace("{{WASM_GPUI_B64}}", assets["wasm_gpui"])
-        .replace("{{GLUE_GPUI_B64}}", assets["glue_gpui"])
-    )
+    return produce({
+        "operation": "assemble", "title": title, "payload": payload_dict,
+        "shell_assets": {"template": template,
+                         **{key + "_b64": value for key, value in assets.items()}},
+    })
 
 
 def write_report(output_path, title, payload_dict, dist_dir=None,

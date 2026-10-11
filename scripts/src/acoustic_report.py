@@ -12,6 +12,8 @@ from html import escape
 from itertools import pairwise
 
 from .dsp import smooth_octave
+from .native_report import produce
+import json
 
 SPEED_OF_SOUND_M_S = 343.0
 
@@ -373,20 +375,8 @@ def pair_sum_difference(curve_a, curve_b):
 
 
 def tof_table(metadata):
-    """Extract time-of-flight rows from metadata.timing_diagnostics."""
-    timing = (metadata or {}).get("timing_diagnostics") or {}
-    rows = []
-    for ch in timing.get("channels") or []:
-        if not isinstance(ch, dict):
-            continue
-        rows.append({
-            "name": str(ch.get("name", "?")),
-            "before_ms": ch.get("measured_arrival_ms"),
-            "applied_ms": ch.get("applied_delay_ms"),
-            "after_ms": ch.get("final_arrival_ms"),
-            "offset_ms": ch.get("final_offset_from_reference_ms"),
-        })
-    return rows
+    """Read canonical shared time-of-flight rows, retaining missing values."""
+    return json.loads(produce({"operation": "time_of_flight_rows", "metadata": metadata or {}}))
 
 
 def t60_rows(channel_data):
@@ -1040,29 +1030,5 @@ def level_compensation_html(data):
 
 
 def tof_html(metadata):
-    """Section 3 time-of-flight table (measured input and calculated output)."""
-    rows = tof_table(metadata)
-    if not rows:
-        return ""
-    parts = [
-        '<div class="filters-section">\n<h3>Time of flight</h3>\n',
-        ('<p class="epa-footer">After-DSP arrival adds the deployed chain delay '
-        'to the measured input arrival; it is not a post-playback capture.</p>'),
-        ('<table class="epa-table"><thead><tr><th>Monitor</th>'
-        "<th>Measured arrival before DSP (ms)</th>"
-        "<th>Applied delay (ms)</th>"
-        "<th>Calculated arrival after DSP (ms)</th>"
-        "<th>Offset vs reference (ms)</th>"
-        "</tr></thead><tbody>\n"),
-    ]
-    for r in rows:
-        def _f(v):
-            return (f"{v:.3f}" if isinstance(v, (int, float))
-                    and not isinstance(v, bool) and math.isfinite(v) else "n/a")
-        parts.append(
-            f"<tr><td>{escape(r['name'])}</td><td>{_f(r['before_ms'])}</td>"
-            f"<td>{_f(r['applied_ms'])}</td><td>{_f(r['after_ms'])}</td>"
-            f"<td>{_f(r['offset_ms'])}</td></tr>\n"
-        )
-    parts.append("</tbody></table></div>\n")
-    return "".join(parts)
+    """Render time-of-flight evidence using the shared native/WASM producer."""
+    return json.loads(produce({"operation": "time_of_flight", "metadata": metadata or {}}))

@@ -359,7 +359,7 @@ class SubDriverTabTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
 
         # Per-channel tabs are shell tabs now (no tab buttons in the file):
         # sections carry the tab label in the payload.
@@ -502,7 +502,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "comparison.html"
             create_comparison_html_report([("strict", rejected), ("conditional", conditional)], output)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertIn("strict — Saved DSP playback eligibility: rejected", html)
         self.assertIn("conditional — Saved DSP playback eligibility: accepted", html)
         self.assertIn("Not approved for playback", html)
@@ -703,7 +703,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertIn("Recorded final correction decisions", html)
         self.assertLess(html.index("Recorded final correction decisions"),
                         html.index('"subhead": "Summary"'))
@@ -712,7 +712,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "comparison.html"
             create_comparison_html_report([("iir", data), ("fir", data)], output)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertEqual(html.count("Recorded final correction decisions"), 2)
         self.assertLess(html.index("Recorded final correction decisions"),
                         html.index("<h2>Summary</h2>"))
@@ -722,7 +722,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
 
         self.assertIn("EQ Filters", html)
         self.assertNotIn("<h2>All EQ Filters</h2>", html)
@@ -1684,3 +1684,10 @@ class ReportBucketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def decoded_report_contents(html):
+    """Read the report data independently of JSON whitespace/script escaping."""
+    marker = '<script id="report-payload" type="application/json">'
+    payload = json.loads(html.split(marker, 1)[1].split('</script>', 1)[0])
+    return json.dumps(payload, ensure_ascii=False)

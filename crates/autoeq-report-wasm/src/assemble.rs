@@ -9,6 +9,7 @@ use base64::Engine as _;
 /// Filled shell pieces: base64 `.wasm` binaries plus base64 wasm-pack glue.
 /// Glue travels base64 so an inline `<script>` can never be broken by a
 /// `</script>` sequence inside generated code.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShellAssets {
     /// Contents of `shell/template.html`.
     pub template: String,
@@ -34,14 +35,36 @@ pub fn assemble_html(title: &str, payload_json: &str, assets: &ShellAssets) -> S
         .replace('>', "\\u003e")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    assets
-        .template
-        .replace("{{WASM_2D_B64}}", &assets.wasm_2d_b64)
-        .replace("{{GLUE_2D_B64}}", &assets.glue_2d_b64)
-        .replace("{{WASM_GPUI_B64}}", &assets.wasm_gpui_b64)
-        .replace("{{GLUE_GPUI_B64}}", &assets.glue_gpui_b64)
-        .replace("{{PAGE_TITLE}}", &escape_html(title))
-        .replace("{{PAYLOAD_JSON}}", &payload_json)
+    let title = escape_html(title);
+    let replacements = [
+        ("{{WASM_2D_B64}}", assets.wasm_2d_b64.as_str()),
+        ("{{GLUE_2D_B64}}", assets.glue_2d_b64.as_str()),
+        ("{{WASM_GPUI_B64}}", assets.wasm_gpui_b64.as_str()),
+        ("{{GLUE_GPUI_B64}}", assets.glue_gpui_b64.as_str()),
+        ("{{PAGE_TITLE}}", title.as_str()),
+        ("{{PAYLOAD_JSON}}", payload_json.as_str()),
+    ];
+    // Only template tokens are interpreted. Inserted values may themselves
+    // contain token-shaped text and must survive without another substitution.
+    let mut remaining = assets.template.as_str();
+    let mut output = String::with_capacity(remaining.len() + payload_json.len());
+    while let Some(start) = remaining.find("{{") {
+        output.push_str(&remaining[..start]);
+        remaining = &remaining[start..];
+        let Some(end) = remaining.find("}}") else {
+            break;
+        };
+        let token = &remaining[..end + 2];
+        output.push_str(
+            replacements
+                .iter()
+                .find(|(key, _)| *key == token)
+                .map_or(token, |(_, value)| *value),
+        );
+        remaining = &remaining[end + 2..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 /// Base64-encode raw bytes (standard alphabet, no line breaks).
@@ -95,6 +118,25 @@ mod tests {
         let html = assemble_html("a<b", "{\"x\":1}", &assets);
         assert!(html.contains("<title>a&lt;b</title>"));
         assert!(html.contains("<p>{\"x\":1}</p>"));
+    }
+
+    #[test]
+    fn inserted_tokens_are_never_reinterpreted() {
+        let assets = ShellAssets {
+            template: "{{PAGE_TITLE}}|{{WASM_2D_B64}}|{{PAYLOAD_JSON}}|{{UNKNOWN}}|{{tail".into(),
+            wasm_2d_b64: "{{PAGE_TITLE}}".into(),
+            glue_2d_b64: String::new(),
+            wasm_gpui_b64: String::new(),
+            glue_gpui_b64: String::new(),
+        };
+        assert_eq!(
+            assemble_html(
+                "{{PAYLOAD_JSON}}",
+                r#"{"label":"{{WASM_2D_B64}}"}"#,
+                &assets
+            ),
+            r#"{{PAYLOAD_JSON}}|{{PAGE_TITLE}}|{"label":"{{WASM_2D_B64}}"}|{{UNKNOWN}}|{{tail"#,
+        );
     }
 
     #[test]

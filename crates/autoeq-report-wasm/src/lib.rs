@@ -13,6 +13,7 @@ pub mod capture_quality;
 pub mod draw;
 pub mod grid;
 pub mod schema;
+pub mod time_of_flight;
 
 pub use capture_quality::{
     CAPTURE_QUALITY_INPUT_VERSION, CaptureQualityBand, CaptureQualityFinding, CaptureQualityMetric,
@@ -21,3 +22,5 @@ pub use capture_quality::{
     append_capture_quality_section, append_capture_quality_section_to_value,
 };
 pub use schema::*;
+#[doc(inline)]
+pub use time_of_flight::{time_of_flight_html, time_of_flight_rows};

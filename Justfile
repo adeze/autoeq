@@ -42,6 +42,11 @@ demo-px-spinorama:
 roomeq:
 	{{cargo}} build --release --features cli --bin roomeq
 
+# Build the canonical native producer used by standalone Python report commands.
+[group('build')]
+report-producer:
+	{{cargo}} build --release -p autoeq-report-wasm --bin report-producer
+
 # Rebuild the report-shell WASM bundles into crates/autoeq-report-wasm/dist/.
 # 2D canvas bundle builds on stable; the GPUI viewer needs nightly
 # (gpui-web's wasm_thread/parking_lot-nightly deps). Requires wasm-bindgen

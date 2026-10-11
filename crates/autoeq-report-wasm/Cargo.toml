@@ -2,8 +2,13 @@
 name = "autoeq-report-wasm"
 version = "0.5.0"
 edition = "2024"
+autobins = false
 description = "HTML+WASM report renderer for AutoEQ (Plotly replacement, gpui-toolkit based)"
 license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "report-producer"
+path = "src/bin/report_producer.rs"
 
 # Plain rlib: the cdylib shell lives in autoeq-report-wasm-shell. A
 # cdylib+rlib crate linked by host code is built twice under
