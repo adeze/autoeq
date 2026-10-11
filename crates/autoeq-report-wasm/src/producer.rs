@@ -20,6 +20,26 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .as_str()
         .ok_or("request must contain a string `operation`")?;
     match operation {
+        "serialized_filter_response" => {
+            let frequencies = request["frequencies"]
+                .as_array()
+                .ok_or("missing EQ response frequency array")?;
+            if frequencies.len() > crate::serialized_dsp::MAX_RESPONSE_FREQUENCIES {
+                return Err("EQ response frequency array exceeds the report limit".to_owned());
+            }
+            let frequencies = frequencies
+                .iter()
+                .map(|frequency| frequency.as_f64().ok_or("EQ frequency must be numeric"))
+                .collect::<Result<Vec<_>, _>>()?;
+            let sample_rate = request["sample_rate"]
+                .as_f64()
+                .ok_or("missing numeric EQ sample rate")?;
+            encode(&crate::serialized_dsp::serialized_filter_response(
+                &request["filter"],
+                &frequencies,
+                sample_rate,
+            )?)
+        }
         "target_csv_shape" => {
             let csv = request["csv"].as_str().ok_or("missing target CSV text")?;
             let result = match crate::target_csv::parse_target_csv(csv) {

@@ -6,10 +6,6 @@
 
 use crate::error::{AutoeqError, Result};
 use crate::response::{MIN_REALIZATION_RESPONSE_DB, apply_complex_response_with_min_db};
-use math_audio_dsp::biquad_complex_response;
-use math_audio_iir_fir::{
-    Biquad, BiquadFilterType, KautzFilter, KautzSection, bark_lambda, warp_frequency,
-};
 use ndarray::Array1;
 use num_complex::Complex64;
 use roomeq_model::{ChannelDspChain, PluginConfigWrapper};
@@ -356,119 +352,7 @@ fn serialized_filter_response(
     frequency_hz: f64,
     sample_rate: f64,
 ) -> Result<Complex64> {
-    let topology = optional_string(filter, "topology", "serialized RoomEQ filter")?;
-    match topology {
-        Some("kautz_filter") => return kautz_response(filter, frequency_hz, sample_rate),
-        None | Some("biquad" | "warped_biquad") => {}
-        Some(other) => {
-            return Err(AutoeqError::InvalidConfiguration {
-                message: format!("unsupported serialized RoomEQ filter topology '{other}'"),
-            });
-        }
-    }
-
-    let filter_type = filter
-        .get("filter_type")
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_biquad_filter_type)
-        .ok_or_else(|| AutoeqError::InvalidConfiguration {
-            message: format!("unsupported serialized RoomEQ biquad filter {filter}"),
-        })?;
-    let center_hz = required_frequency(filter, "freq", "serialized RoomEQ biquad", sample_rate)?;
-    let q = required_positive_number(filter, "q", "serialized RoomEQ biquad")?;
-    let gain_db = required_finite_number(filter, "db_gain", "serialized RoomEQ biquad")?;
-
-    let (design_hz, evaluation_hz) = if topology == Some("warped_biquad") {
-        let lambda = optional_finite_number(
-            filter,
-            "lambda",
-            bark_lambda(sample_rate),
-            "serialized warped biquad",
-        )?;
-        if !(-1.0..1.0).contains(&lambda) {
-            return Err(AutoeqError::InvalidConfiguration {
-                message: format!(
-                    "serialized warped biquad lambda must be between -1 and 1, got {lambda}"
-                ),
-            });
-        }
-        (
-            warp_frequency(center_hz, sample_rate, lambda),
-            warp_frequency(frequency_hz, sample_rate, lambda),
-        )
-    } else {
-        (center_hz, frequency_hz)
-    };
-
-    Ok(biquad_complex_response(
-        &Biquad::new(filter_type, design_hz, sample_rate, q, gain_db),
-        evaluation_hz,
-    ))
-}
-
-fn kautz_response(
-    filter: &serde_json::Value,
-    frequency_hz: f64,
-    sample_rate: f64,
-) -> Result<Complex64> {
-    // Match the EQ consumer's canonical field, legacy alias, and single-section
-    // fallback. A malformed explicit value is not an absent/default section.
-    let values = match (filter.get("kautz_sections"), filter.get("sections")) {
-        (Some(_), Some(_)) => {
-            return Err(malformed(
-                "Kautz filter",
-                "duplicate section fields",
-                filter,
-            ));
-        }
-        (Some(value), None) | (None, Some(value)) => Some(
-            value
-                .as_array()
-                .ok_or_else(|| malformed("Kautz filter", "kautz_sections", filter))?,
-        ),
-        (None, None) => None,
-    };
-    let sections = if let Some(values) = values.filter(|values| !values.is_empty()) {
-        values
-            .iter()
-            .map(|section| {
-                let fields: Vec<_> = ["pole_freq", "freq", "frequency", "pole_freq_hz"]
-                    .into_iter()
-                    .filter(|key| section.get(*key).is_some())
-                    .collect();
-                if fields.len() != 1 {
-                    return Err(malformed("Kautz section", "unique pole frequency", section));
-                }
-                let pole_hz = required_frequency(
-                    section,
-                    fields[0],
-                    "serialized Kautz section",
-                    sample_rate,
-                )?;
-                let q = required_positive_number(section, "q", "serialized Kautz section")?;
-                let gain =
-                    optional_finite_number(section, "gain", 0.0, "serialized Kautz section")?;
-                Ok(KautzSection::new(pole_hz, q, gain, sample_rate))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        vec![KautzSection::new(
-            required_frequency(filter, "freq", "serialized Kautz fallback", sample_rate)?,
-            required_positive_number(filter, "q", "serialized Kautz fallback")?,
-            optional_finite_number(filter, "db_gain", 0.0, "serialized Kautz fallback")?,
-            sample_rate,
-        )]
-    };
-    // KautzFilter is the correction bank only. The playback EQ consumer's
-    // KautzRuntime processes x + bank(x), so its transfer includes unity.
-    // Section gain is a linear basis weight even in the legacy db_gain field;
-    // neither a PEQ dB conversion nor a magnitude-only sum matches playback.
-    Ok(Complex64::new(1.0, 0.0)
-        + KautzFilter {
-            sections,
-            srate: sample_rate,
-        }
-        .complex_response(frequency_hz))
+    autoeq_core::serialized_dsp::serialized_filter_response(filter, frequency_hz, sample_rate)
 }
 
 fn mixed_band_response<P: ConvolutionIrProvider>(
@@ -654,21 +538,6 @@ fn required_string<'a>(object: &'a serde_json::Value, field: &str, owner: &str) 
         })
 }
 
-fn optional_string<'a>(
-    object: &'a serde_json::Value,
-    field: &str,
-    owner: &str,
-) -> Result<Option<&'a str>> {
-    match object.get(field) {
-        None => Ok(None),
-        Some(value) => value
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(Some)
-            .ok_or_else(|| malformed(owner, field, value)),
-    }
-}
-
 fn optional_bool(
     object: &serde_json::Value,
     field: &str,
@@ -691,24 +560,6 @@ fn required_crossover_type<'a>(plugin: &'a PluginConfigWrapper, owner: &str) -> 
     Ok(crossover_type)
 }
 
-fn parse_biquad_filter_type(value: &str) -> Option<BiquadFilterType> {
-    match value {
-        "lowpass" => Some(BiquadFilterType::Lowpass),
-        "highpass" => Some(BiquadFilterType::Highpass),
-        "highpassvariableq" => Some(BiquadFilterType::HighpassVariableQ),
-        "bandpass" => Some(BiquadFilterType::Bandpass),
-        "peak" => Some(BiquadFilterType::Peak),
-        "notch" => Some(BiquadFilterType::Notch),
-        "lowshelf" => Some(BiquadFilterType::Lowshelf),
-        "highshelf" => Some(BiquadFilterType::Highshelf),
-        "allpass" => Some(BiquadFilterType::AllPass),
-        "lowshelforf" => Some(BiquadFilterType::LowshelfOrf),
-        "highshelforf" => Some(BiquadFilterType::HighshelfOrf),
-        "peakmatched" => Some(BiquadFilterType::PeakMatched),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +568,7 @@ mod tests {
         create_delay_plugin, create_gain_plugin, create_gain_plugin_with_invert,
         create_warped_eq_plugin,
     };
+    use math_audio_iir_fir::{Biquad, BiquadFilterType};
     use roomeq_model::DriverDspChain;
 
     fn chain(plugins: Vec<PluginConfigWrapper>) -> ChannelDspChain {

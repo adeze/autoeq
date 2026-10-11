@@ -112,13 +112,16 @@ pub fn parse_target_csv(csv_text: &str) -> Result<Value, TargetCsvError> {
     if csv_text.len() > MAX_TARGET_CSV_BYTES {
         return Err(TargetCsvError::TooLarge);
     }
-    let csv_text = csv_text.strip_prefix('\u{feff}').unwrap_or(csv_text);
+    // The csv reader itself strips one leading UTF-8 BOM. Use a once-stripped
+    // view only for detecting a physical blank first record; the reader must
+    // receive the original text so double-BOM inputs keep legacy semantics.
+    let blank_record_check = csv_text.strip_prefix('\u{feff}').unwrap_or(csv_text);
 
     // Python's DictReader consumes the first physical blank record as its
     // header instead of skipping it. Subsequent nonempty rows consequently
     // lack our selected columns; preserve that distinction before the Rust
     // CSV reader's empty-line handling.
-    if let Some(rest) = after_initial_blank_record(csv_text) {
+    if let Some(rest) = after_initial_blank_record(blank_record_check) {
         let mut reader = csv::ReaderBuilder::new()
             .flexible(true)
             .has_headers(false)

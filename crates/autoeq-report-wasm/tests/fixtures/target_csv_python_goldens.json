@@ -5,6 +5,16 @@
     "target": {"freq": [100.0], "spl": [71.0]}
   },
   {
+    "name": "double_bom_prefix_does_not_match_first_frequency_alias",
+    "csv": "\uFEFF\uFEFFfrequency,spl\n100,80\n",
+    "error": {"kind": "value", "message": "target CSV needs frequency/freq and spl/spl_db columns"}
+  },
+  {
+    "name": "double_bom_does_not_hide_later_frequency_alias",
+    "csv": "\uFEFF\uFEFFlegacy,freq,spl\nignored,100,80\n",
+    "target": {"freq": [100.0], "spl": [80.0]}
+  },
+  {
     "name": "alias_priority",
     "csv": "freq, frequency, spl_db, SPL\n100,200,10,20\n",
     "target": {"freq": [200.0], "spl": [20.0]}

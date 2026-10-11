@@ -35,6 +35,7 @@ pub(crate) mod report_helpers;
 pub mod report_sections;
 pub mod response_figures;
 pub mod schema;
+pub mod serialized_dsp;
 pub mod signal_flow;
 pub mod symmetric_pairs;
 pub mod target_csv;

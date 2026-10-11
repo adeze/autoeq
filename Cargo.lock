@@ -541,6 +541,7 @@ dependencies = [
 name = "autoeq-report-wasm"
 version = "0.5.0"
 dependencies = [
+ "autoeq-core",
  "base64",
  "csv",
  "gpui-d3rs",

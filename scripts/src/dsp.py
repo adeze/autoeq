@@ -290,64 +290,10 @@ def kautz_sections(filt: dict, sample_rate: float) -> list[tuple[float, float, f
 
 
 def serialized_filter_response(filt: dict, frequencies: list[float], sample_rate: float) -> list[complex]:
-    """Complex transfer matching Rust's serialized EQ realization contract.
+    """Delegate serialized EQ transfer evaluation to the canonical Rust producer."""
+    from .native_serialized_dsp import serialized_filter_response as native_response
 
-    Kautz is unity plus an ordered basis bank, not a cascade of PEQs. Warped
-    biquads map both design and evaluation frequencies. This is a transfer
-    prediction, not a recording or whole-host validation.
-    """
-    sample_rate = _finite_filter_number(sample_rate, "sample rate")
-    if sample_rate <= 0:
-        raise ValueError("EQ sample rate must be positive")
-    for frequency in frequencies:
-        _finite_filter_number(frequency, "evaluation frequency")
-        if not 0 <= frequency <= sample_rate / 2:
-            raise ValueError("EQ evaluation frequency must be between DC and Nyquist")
-    topology = filt.get("topology", "biquad")
-    if topology not in ("biquad", "warped_biquad", "kautz_filter"):
-        raise ValueError(f"unsupported serialized EQ topology: {topology!r}")
-    if topology == "kautz_filter":
-        sections = []
-        for pole, q, gain in kautz_sections(filt, sample_rate):
-            radius = min(math.exp(-math.pi * pole / (max(q, 0.1) * sample_rate)), 0.9999)
-            a1 = -2 * radius * math.cos(2 * math.pi * pole / sample_rate)
-            a2 = radius * radius
-            sections.append((a1, a2, gain * (1-a2)**1.5))
-        result = []
-        for frequency in frequencies:
-            angle = -2 * math.pi * frequency / sample_rate
-            z = complex(math.cos(angle), math.sin(angle))
-            chain, value = 1+0j, 1+0j
-            for a1, a2, numerator in sections:
-                denominator = 1 + a1*z + a2*z*z
-                value += numerator * chain / denominator
-                chain *= (a2 + a1*z + z*z) / denominator
-            result.append(value)
-        return result
-
-    center = filt.get("freq", filt.get("frequency", 1_000.0))
-    q, gain = filt.get("q", 1.0), filt.get("db_gain", filt.get("gain", 0.0))
-    evaluation = frequencies
-    if topology == "warped_biquad":
-        center = _finite_filter_number(filt.get("freq"), "frequency")
-        q = _finite_filter_number(filt.get("q"), "Q")
-        gain = _finite_filter_number(filt.get("db_gain"), "dB gain")
-        if not 0 < center < sample_rate / 2 or q <= 0:
-            raise ValueError("warped EQ requires a sub-Nyquist positive frequency and positive Q")
-        default_lambda = 1.0674 * math.sqrt(2/math.pi * math.atan(0.06583*sample_rate)) - 0.1916
-        lam = _finite_filter_number(filt.get("lambda", default_lambda), "lambda")
-        if not -1 < lam < 1:
-            raise ValueError("warped EQ lambda must be between -1 and 1")
-
-        def warp(frequency):
-            omega = 2 * math.pi * frequency / sample_rate
-            omega += 2 * math.atan2(lam * math.sin(omega), 1-lam*math.cos(omega))
-            return min(max(omega * sample_rate / (2*math.pi), 0.0), sample_rate/2)
-
-        center = warp(center)
-        evaluation = [warp(frequency) for frequency in frequencies]
-    coefficients = biquad_coefficients(filt.get("filter_type", "peak"), center, sample_rate, q, gain)
-    return [_biquad_complex_response(coefficients, frequency, sample_rate) for frequency in evaluation]
+    return native_response(filt, frequencies, sample_rate)
 
 
 def _biquad_complex_response(
