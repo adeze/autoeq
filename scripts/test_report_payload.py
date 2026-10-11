@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.src.report import build_report_payload, create_html_report
+from scripts.src.report import (
+    _crossover_config_html, _rust_shared_sections, build_report_payload, create_html_report,
+)
 from scripts.test_report import _driver_eq_split_data
 
 
@@ -30,11 +32,13 @@ class ReportPayloadTests(unittest.TestCase):
 
     def test_missing_shared_section_uses_canonical_fallback(self):
         data = _driver_eq_split_data()
-        with patch("scripts.src.report._crossover_config_html", return_value="canonical crossover") as fallback:
+        expected = _crossover_config_html(data)
+        with patch("scripts.src.report._rust_shared_sections", wraps=_rust_shared_sections) as fallback:
             payload = build_report_payload(data, shared_sections={})
 
-        fallback.assert_called_once()
-        self.assertIn("canonical crossover", [
+        # Missing snapshots use one aggregate call for every migrated section.
+        fallback.assert_called_once_with(data)
+        self.assertIn(expected, [
             section.get("html", "") for section in payload["sections"]
         ])
 
