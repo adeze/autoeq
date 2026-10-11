@@ -365,86 +365,9 @@ def apply_plugins_to_curve(
     if not frequencies or len(frequencies) != len(spl):
         return None
 
-    transfer = [1.0 + 0.0j for _ in frequencies]
-    for plugin in plugins:
-        plugin_type = str(plugin.get("plugin_type", "")).lower()
-        parameters = plugin.get("parameters", {}) or {}
-        if plugin_type == "gain":
-            gain = 10.0 ** (float(parameters.get("gain_db", 0.0)) / 20.0)
-            if parameters.get("invert", False):
-                gain = -gain
-            transfer = [value * gain for value in transfer]
-        elif plugin_type in {"delay", "limiter"}:
-            if plugin_type == "limiter":
-                ceiling = parameters.get("threshold_db")
-                expected = {"threshold_db": ceiling, "release_ms": 100.0, "lookahead_ms": 5.0,
-                            "soft": False, "true_peak": False, "isp_mode": False,
-                            "dual_release": False, "mix": 1.0, "feed_forward": True,
-                            "link_amount": 1.0, "label": "room_eq_sub_output_limiter",
-                            "room_eq_stage": "post_route"}
-                if (not isinstance(ceiling, (int, float)) or not -20.0 <= ceiling <= -1.0
-                        or parameters != expected):
-                    raise ValueError("unsupported small-signal limiter contract")
-                # Only below-threshold response is representable by a curve.
-                delay_seconds = int(0.005 * sample_rate) / sample_rate
-            else:
-                delay_seconds = float(parameters.get("delay_ms", 0.0)) / 1000.0
-            transfer = [
-                value
-                * complex(
-                    math.cos(-2.0 * math.pi * frequency * delay_seconds),
-                    math.sin(-2.0 * math.pi * frequency * delay_seconds),
-                )
-                for value, frequency in zip(transfer, frequencies)
-            ]
-        elif plugin_type == "eq":
-            for filt in parameters.get("filters", []):
-                transfer = [
-                    value * eq
-                    for value, eq in zip(transfer, serialized_filter_response(filt, frequencies, sample_rate))
-                ]
-        elif plugin_type == "convolution" and parameters.get("room_eq_fir_placement") == "per_driver":
-            from .native_fir_response import fir_response
+    from .native_serialized_chain import serialized_plugin_chain_response
 
-            native_status = parameters.get("_native_fir_resource_status")
-            if native_status is not None:
-                if native_status != "available":
-                    reason = parameters.get("_native_fir_resource_reason")
-                    detail = f": {reason}" if isinstance(reason, str) and reason else ""
-                    raise ValueError(f"Physical FIR resource is unavailable{detail}")
-                rate = parameters.get("_native_fir_sample_rate")
-                resource_key = parameters.get("_native_fir_resource_key")
-                if resource_key != parameters.get("ir_file"):
-                    raise ValueError("Physical FIR resource key does not match the graph ir_file")
-                if rate != sample_rate:
-                    raise ValueError("Physical FIR sample rate does not match the report sample rate")
-                response = fir_response(
-                    frequencies,
-                    sample_rate,
-                    resource_key=resource_key,
-                    graph_sha256=parameters.get("_native_fir_graph_sha256"),
-                    resource_sha256=parameters.get("_native_fir_expected_resource_sha256"),
-                )
-            else:
-                taps = parameters.get("_fir_taps")
-                if not taps:
-                    raise ValueError(
-                        "Physical FIR replay is unavailable: no captured native resource or "
-                        "verified standalone FIR cache is available"
-                    )
-                if parameters.get("_fir_sample_rate") != sample_rate:
-                    raise ValueError("Physical FIR sample rate does not match the report sample rate")
-                response = fir_response(frequencies, sample_rate, taps=taps)
-            transfer = [value * fir for value, fir in zip(transfer, response)]
-        elif plugin_type == "crossover":
-            crossover = _crossover_response(
-                str(parameters.get("type", "LR24")),
-                str(parameters.get("output", "low")),
-                float(parameters.get("frequency", 80.0)),
-                frequencies,
-                sample_rate,
-            )
-            transfer = [value * xover for value, xover in zip(transfer, crossover)]
+    transfer = serialized_plugin_chain_response(plugins, frequencies, sample_rate)
 
     phase = curve.get("phase")
     has_phase = isinstance(phase, list) and len(phase) == len(frequencies)

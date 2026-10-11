@@ -1,5 +1,9 @@
 # Unreleased
 
+- Share serialized plugin-chain evaluation between playback and native/WASM reports,
+  including FIR gain/mix, validated band reconstruction and limiter latency.
+- Assemble single-dataset report channel blocks in the shared report library.
+
 - Expose canonical RoomEQ dashboard JSON without loading renderer assets; native consumers assemble it through the shared Rust/WASM library.
 - Preserve additive payload metadata through the shared capture-quality augmentation API, with validation before mutation.
 

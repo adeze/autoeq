@@ -21,6 +21,9 @@ pub fn produce(request: &Value) -> Result<String, String> {
         .ok_or("request must contain a string `operation`")?;
     match operation {
         "fir_response" => encode(&crate::fir_response::response_from_request(request)?),
+        "serialized_plugin_chain_response" => {
+            encode(&crate::serialized_chain::response_from_request(request)?)
+        }
         "serialized_filter_response" => {
             let frequencies = request["frequencies"]
                 .as_array()
@@ -64,6 +67,7 @@ pub fn produce(request: &Value) -> Result<String, String> {
             &request["prepared"],
         )?),
         "dashboard_payload" => encode(&crate::dashboard_payload::dashboard_payload(request)?),
+        "report_assembly" => encode(&crate::report_assembly::report_assembly(request)?),
         "eq_section_html" => encode(
             &crate::eq_sections::eq_section_html(
                 request["builder"]

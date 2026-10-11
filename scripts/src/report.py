@@ -85,7 +85,7 @@ from .loaders import RoomEqData
 from .native_eq_sections import render_eq_section as _render_eq_section
 from .payload_binding import verify_payload_binding
 from .native_evidence_sections import evidence_section as _evidence_section
-from .native_dashboard_payload import dashboard_payload as _dashboard_payload
+from .native_report_assembly import report_assembly as _report_assembly
 from .native_comparison_tables import epa_comparison_tables as _epa_comparison_tables
 from .signal_flow import signal_flow_sections
 from .target_overlay import (
@@ -624,6 +624,9 @@ def build_report_payload(
 ) -> dict:
     """Build every RoomEQ dashboard without loading HTML or WASM assets.
 
+    This function assembles one dataset; cross-mode comparison assembly remains
+    in :func:`create_comparison_html_report`.
+
     Args:
         data: Output JSON data (roomeq result)
         output_json_path: Path to output JSON (for resolving relative paths)
@@ -664,6 +667,7 @@ def build_report_payload(
     _emit_html(sections, _playback_status_html(metadata, data=data), flat=True)
     status_sections = sections
     why, overview, speakers, timing, symmetric, time_domain, epa = ([] for _ in range(7))
+    channel_blocks = []
     landmark_figures = []
     sections = why
     _emit_html(sections, correction_explanation_html(data))
@@ -818,10 +822,12 @@ def build_report_payload(
     tab_entries = display_channel_entries(data)
 
     for i, entry in enumerate(tab_entries):
-        sections = speakers
         channel_name = entry["channel"]
         driver_index = entry["driver"]
         tab_label = entry["label"]
+        tab_groups = {"speakers": [], "time_domain": [], "epa": []}
+        channel_blocks.append({"label": tab_label, "groups": tab_groups})
+        sections = tab_groups["speakers"]
         safe_label = escape(tab_label)
         channel_data = channels_dict[channel_name]
         is_driver_tab = driver_index is not None
@@ -931,7 +937,7 @@ def build_report_payload(
                 fig_full["figure"]["series"].append({**trace, "y_axis": 1})
 
         # IR waveform plot
-        sections = time_domain
+        sections = tab_groups["time_domain"]
         if is_driver_tab and acoustic_data:
             rate = acoustic_data.get("sample_rate_hz")
             _emit_html(sections,
@@ -1006,14 +1012,14 @@ def build_report_payload(
                 )
 
         # EPA psychoacoustic scores (pre/post) for this channel
-        sections = epa
+        sections = tab_groups["epa"]
         epa_per_channel = metadata.get("epa_per_channel") or {}
         epa_html = _epa_channel_table_html(epa_per_channel.get(channel_name))
         if epa_html:
             _emit_html(sections, epa_html, tab=tab_label)
 
         # Filter details (grouped by pass when 3-pass labels are present).
-        sections = speakers
+        sections = tab_groups["speakers"]
         # Driver tabs merge the driver EQ with the shared channel EQ, so
         # they render per-origin inner tabs instead of one flat list.
         has_labeled = any(p["label"] for p in passes)
@@ -1072,11 +1078,13 @@ def build_report_payload(
     flow_snapshot = shared_section("signal_flow_sections")
     if flow_snapshot is None:
         flow_snapshot = signal_flow_sections(data)
-    return _dashboard_payload(
-        page_title, status_sections,
+    return _report_assembly(
+        page_title,
+        status_sections,
         {"why": why, "overview": overview, "speakers": speakers,
          "timing": timing, "symmetric": symmetric, "time_domain": time_domain,
          "epa": epa, "flow": flow_snapshot},
+        channel_blocks,
         _report_provenance([("", data)]),
         relative_levels_html=level_compensation_html(data),
         modes_html=resonance_summary_html(data),

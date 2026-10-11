@@ -61,3 +61,11 @@ pub use measurement_quality::{
 };
 pub use param_utils::{FilterParams, ParamLayout, PeqLayout};
 pub use peq_model::PeqModel;
+
+pub mod serialized_plugins;
+
+pub mod serialized_chain;
+
+pub mod crossover;
+
+pub mod runtime_limiter;
