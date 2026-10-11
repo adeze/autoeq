@@ -1,6 +1,7 @@
 """HTML report generation for roomeq visualization."""
 
 import datetime
+import json
 import math
 import re
 from html import escape
@@ -512,99 +513,11 @@ def _all_eq_filters_html(data: dict) -> str:
 
 
 def _crossover_config_html(data: dict) -> str:
-    """Render the crossover configuration in one summary section.
-
-    Covers the deployed crossover/band-split DSP plugins (per channel and
-    per driver) plus the routing-graph crossover cutoffs, so the full
-    crossover setup is visible without opening individual tabs. Returns an
-    empty string when no crossover configuration exists.
-    """
-    channels = data.get("channels") or {}
-    if not isinstance(channels, dict):
-        return ""
-    plugin_rows: list[str] = []
-    for name in sorted(channels.keys(), key=get_channel_sort_key):
-        channel = channels[name] or {}
-        owners: list[tuple[str, list[dict]]] = [(f"Channel {name}", channel.get("plugins") or [])]
-        names = driver_display_names(data, name)
-        for index, driver in enumerate(get_plottable_drivers(channel)):
-            label = (
-                names[index]
-                if 0 <= index < len(names)
-                else str((driver or {}).get("name") or index)
-            )
-            owners.append((f"Driver {label}", (driver or {}).get("plugins") or []))
-        for owner, plugins in owners:
-            for plugin in plugins:
-                if not isinstance(plugin, dict):
-                    continue
-                kind = str(plugin.get("plugin_type", "")).lower()
-                if kind not in ("crossover", "band_split"):
-                    continue
-                params = plugin.get("parameters") or {}
-                freq = params.get("frequency")
-                freq_str = f"{freq:.1f} Hz" if isinstance(freq, (int, float)) else "-"
-                if kind == "band_split":
-                    type_str = str(params.get("type", "band_split"))
-                    output_str = "-"
-                else:
-                    type_str = str(params.get("type", "-"))
-                    output_str = str(params.get("output", "-"))
-                stage = params.get("room_eq_stage")
-                stage_str = str(stage) if stage is not None else "-"
-                plugin_rows.append(
-                    f"                    <tr><td>{escape(str(owner))}</td>"
-                    f"<td>{escape(type_str)}</td><td>{escape(output_str)}</td>"
-                    f"<td>{freq_str}</td><td>{escape(stage_str)}</td></tr>\n"
-                )
-    route_rows: list[str] = []
-    bass_management = (data.get("metadata") or {}).get("bass_management", {}) or {}
-    graph = bass_management.get("routing_graph", {}) or {}
-    for route in graph.get("routes", []) or []:
-        if not isinstance(route, dict):
-            continue
-        low = route.get("low_pass_hz")
-        high = route.get("high_pass_hz")
-        if low is None and high is None:
-            continue
-        low_str = f"{low:.1f} Hz" if isinstance(low, (int, float)) else "-"
-        high_str = f"{high:.1f} Hz" if isinstance(high, (int, float)) else "-"
-        crossover_type = route.get("crossover_type")
-        type_str = str(crossover_type) if crossover_type is not None else "-"
-        route_rows.append(
-            f"                    <tr><td>{escape(str(route.get('source_channel', '-')))} "
-            f"\u2192 {escape(str(route.get('destination', '-')))}</td>"
-            f"<td>{escape(str(route.get('route_kind', '-')))}</td>"
-            f"<td>{escape(type_str)}</td><td>{low_str}</td><td>{high_str}</td></tr>\n"
-        )
-    if not plugin_rows and not route_rows:
-        return ""
-    parts = [
-        ('        <div class="plot-container">\n'
-        "            <h2>Crossover Configuration</h2>\n")
-    ]
-    if plugin_rows:
-        parts.append(
-            "            <h3>Deployed Crossover DSP</h3>\n"
-            '            <table class="bm-table">\n'
-            "                <thead><tr><th>Owner</th><th>Type</th><th>Output</th>"
-            "<th>Frequency</th><th>Stage</th></tr></thead>\n"
-            "                <tbody>\n"
-            + "".join(plugin_rows)
-            + "                </tbody>\n            </table>\n"
-        )
-    if route_rows:
-        parts.append(
-            "            <h3>Routing-Graph Crossovers</h3>\n"
-            '            <table class="bm-table">\n'
-            "                <thead><tr><th>Route</th><th>Kind</th><th>Type</th>"
-            "<th>Low-pass</th><th>High-pass</th></tr></thead>\n"
-            "                <tbody>\n"
-            + "".join(route_rows)
-            + "                </tbody>\n            </table>\n"
-        )
-    parts.append("        </div>\n")
-    return "".join(parts)
+    """Delegate the crossover section to the canonical Rust renderer."""
+    return json.loads(wasm_report.produce({
+        "operation": "crossover_config_html",
+        "data": data,
+    }))
 
 
 # Ordered EPA fields with their display labels and formatting rules.
@@ -1298,6 +1211,7 @@ def build_report_payload(
     smoothed_octaves: float = 1.0,
     capture_verification: dict | None = None,
     shared_tof_html: str | None = None,
+    shared_sections: dict[str, str] | None = None,
 ) -> dict:
     """Build every RoomEQ dashboard without loading HTML or WASM assets.
 
@@ -1310,6 +1224,9 @@ def build_report_payload(
             identity must match the verified saved optimization payload.
         shared_tof_html: Optional snapshot already produced by the shared Rust
             time-of-flight API, used by native hosts without a subprocess.
+        shared_sections: Optional section HTML snapshots produced by the
+            shared Rust renderer. Present keys, including empty values,
+            override standalone fallback generation.
     """
     if output_json_path is not None and not isinstance(data, RoomEqData):
         data = RoomEqData(data, output_json_path.resolve().parent)
@@ -1364,7 +1281,12 @@ def build_report_payload(
     # Single-screen summaries: the full PEQ listing and the crossover
     # configuration, so nothing requires switching per-channel tabs.
     _emit_html(sections, _gain_plugins_html(data))
-    _emit_html(sections, _crossover_config_html(data))
+    crossover_html = (
+        shared_sections["crossover_config_html"]
+        if shared_sections is not None and "crossover_config_html" in shared_sections
+        else _crossover_config_html(data)
+    )
+    _emit_html(sections, crossover_html)
     sections = time_domain
     room_decay = room_t60_rows(data)
     decay_reference = t60_itu_reference(data)
@@ -1388,7 +1310,12 @@ def build_report_payload(
     # Time of flight (feat-report Section 3): table only. The before/after
     # bar charts were removed; the table carries both arrival columns.
     sections = timing
-    _emit_html(sections, tof_html(metadata) if shared_tof_html is None else shared_tof_html)
+    tof_snapshot = (
+        shared_sections["time_of_flight_html"]
+        if shared_sections is not None and "time_of_flight_html" in shared_sections
+        else shared_tof_html
+    )
+    _emit_html(sections, tof_html(metadata) if tof_snapshot is None else tof_snapshot)
 
     # Symmetric-monitor summing, magnitude domain (feat-report Section 2).
     sections = symmetric

@@ -10,6 +10,7 @@
 
 pub mod assemble;
 pub mod capture_quality;
+pub mod crossover_config;
 pub mod draw;
 pub mod grid;
 pub mod schema;
@@ -21,6 +22,8 @@ pub use capture_quality::{
     CaptureQualityThreshold, CaptureStimulusMetadata, CaptureThresholdComparison,
     append_capture_quality_section, append_capture_quality_section_to_value,
 };
+#[doc(inline)]
+pub use crossover_config::crossover_config_html;
 pub use schema::*;
 #[doc(inline)]
 pub use time_of_flight::{time_of_flight_html, time_of_flight_rows};

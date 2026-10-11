@@ -2,9 +2,9 @@
 //!
 //! The HTML shell inlines the generated glue plus the base64 `.wasm` and
 //! drives these functions: [`render_section`], [`legend_json`],
-//! [`toggle_series`], plus [`last_error`] and [`schema_version`]. All layout
-//! math lives in the shared [`autoeq_report_wasm::draw`] core (d3rs
-//! scales/geometry).
+//! [`toggle_series`], and [`crossover_config_html`], plus [`last_error`] and
+//! [`schema_version`]. All layout math lives in the shared
+//! [`autoeq_report_wasm::draw`] core (d3rs scales/geometry).
 //!
 //! This crate is `cdylib`-only on purpose: the release profile sets
 //! `panic = "abort"` while test targets use `unwind`, so a `cdylib` + `rlib`
@@ -20,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use autoeq_report_wasm::crossover_config_html as render_crossover_config_html;
 use autoeq_report_wasm::draw::{
     Ctx, DrawMeta, LegendEntry, PaintTriangle, PlotGeometry, TextAlign, draw_bar, draw_figure,
     draw_sankey, paint_triangles,
@@ -176,6 +177,21 @@ fn draw_error(canvas_id: &str, msg: &str) {
         backend.fill_text(msg, 12.0, 30.0, TextAlign::Left);
     }
     web_sys::console::error_1(&JsValue::from_str(&format!("report2d/{canvas_id}: {msg}")));
+}
+
+/// Builds the shared Crossover Configuration HTML section in WebAssembly.
+///
+/// `data_json` is a serialized RoomEQ result document. The returned string is
+/// the same escaped HTML fragment used by native report generation.
+///
+/// # Errors
+///
+/// Returns a JavaScript error when `data_json` is not valid JSON.
+#[wasm_bindgen]
+pub fn crossover_config_html(data_json: &str) -> Result<String, JsValue> {
+    let data: serde_json::Value = serde_json::from_str(data_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid crossover section JSON: {error}")))?;
+    Ok(render_crossover_config_html(&data))
 }
 
 /// Render one payload section into a canvas.

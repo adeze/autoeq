@@ -1,8 +1,9 @@
 //! Native command-line adapter for the shared report producer APIs.
 //!
 //! Input is one JSON object on stdin. The `time_of_flight` operation returns
-//! a JSON string; `assemble` returns raw HTML. Errors are printed to stderr
-//! and produce a nonzero exit status.
+//! a JSON string; `crossover_config_html` returns a JSON string; `assemble`
+//! returns raw HTML. Errors are printed to stderr and produce a nonzero exit
+//! status.
 
 // Rust guideline compliant 2026-02-21
 
@@ -10,7 +11,7 @@ use std::io::{self, Read};
 use std::process::ExitCode;
 
 use autoeq_report_wasm::assemble::{ShellAssets, assemble_html, checked_in_assets};
-use autoeq_report_wasm::{time_of_flight_html, time_of_flight_rows};
+use autoeq_report_wasm::{crossover_config_html, time_of_flight_html, time_of_flight_rows};
 use serde_json::Value;
 
 fn main() -> ExitCode {
@@ -48,6 +49,14 @@ fn run() -> Result<(), String> {
             let rows = serde_json::to_string(&time_of_flight_rows(metadata))
                 .map_err(|error| format!("could not encode Time of Flight rows: {error}"))?;
             println!("{rows}");
+        }
+        "crossover_config_html" => {
+            let data = request.get("data").unwrap_or(&Value::Null);
+            let html = crossover_config_html(data);
+            let encoded = serde_json::to_string(&html).map_err(|error| {
+                format!("could not encode crossover configuration response: {error}")
+            })?;
+            println!("{encoded}");
         }
         "assemble" => {
             let title = request
