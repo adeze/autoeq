@@ -377,6 +377,11 @@ fn route_for<'a>(data: &'a Value, channel: &str, kind: &str) -> Option<&'a Value
         })
 }
 
+/// Reports whether the saved topology owns low-pass shaping for a source.
+pub(crate) fn has_lfe_lowpass_route(data: &Value, channel: &str) -> bool {
+    route_for(data, channel, "lfe_lowpass_to_sub").is_some()
+}
+
 /// Applies a caller-supplied low-pass response to an LFE target when routed.
 ///
 /// # Example
@@ -493,6 +498,23 @@ pub fn build_target_overlay_curves(
     loaded_target: Option<&Value>,
     route_crossover_db: Option<&Value>,
 ) -> Value {
+    build_target_overlay_curves_with_status(
+        data,
+        reference_curves,
+        loaded_target,
+        route_crossover_db,
+        None,
+    )
+}
+
+/// Builds target overlays while requiring explicit availability for routed shaping.
+pub fn build_target_overlay_curves_with_status(
+    data: &Value,
+    reference_curves: &Value,
+    loaded_target: Option<&Value>,
+    route_crossover_db: Option<&Value>,
+    route_crossover_status: Option<&Value>,
+) -> Value {
     let metadata = data.get("metadata").unwrap_or(&Value::Null);
     let config = metadata.get("effective_config").unwrap_or(&Value::Null);
     let optimizer = config.get("optimizer").unwrap_or(&Value::Null);
@@ -561,6 +583,18 @@ pub fn build_target_overlay_curves(
         let Some(target) = loaded_target else {
             continue;
         };
+        if route_target_unavailable_reason(
+            data,
+            channel,
+            target,
+            route_crossover_db,
+            route_crossover_status,
+            Some(reference),
+        )
+        .is_some()
+        {
+            continue;
+        }
         let Some(channel_target) =
             target_shape_for_channel(data, channel, target, reference, route_crossover_db)
         else {
@@ -574,6 +608,108 @@ pub fn build_target_overlay_curves(
         }
     }
     Value::Object(result)
+}
+
+/// Returns why a loaded target cannot be shaped for one routed source.
+pub(crate) fn route_target_unavailable_reason(
+    data: &Value,
+    channel: &str,
+    loaded_target: &Value,
+    route_crossover_db: Option<&Value>,
+    route_crossover_status: Option<&Value>,
+    reference: Option<&Value>,
+) -> Option<String> {
+    if !loaded_target.is_object() {
+        return None;
+    }
+    let absolute = data
+        .get("channels")
+        .and_then(|channels| channels.get(channel))
+        .and_then(|value| value.get("target_curve"))
+        .filter(|target| {
+            target["freq"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty())
+                && target["spl"]
+                    .as_array()
+                    .is_some_and(|values| !values.is_empty())
+        });
+    if absolute.is_some() || route_for(data, channel, "lfe_lowpass_to_sub").is_none() {
+        return None;
+    }
+    let statuses = route_crossover_status?;
+    let status = statuses.get(channel);
+    if status.is_some_and(|value| value["status"] == "available") {
+        let response = route_crossover_db
+            .and_then(|responses| responses.get(channel))
+            .and_then(Value::as_array);
+        let expected_len = reference.and_then(frequencies).map(|values| values.len());
+        if expected_len.is_none() {
+            return Some("routed reference response grid is unavailable".to_owned());
+        }
+        let response_is_valid = response.is_some_and(|values| {
+            Some(values.len()) == expected_len
+                && !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| value.as_f64().is_some_and(f64::is_finite))
+        });
+        return (!response_is_valid).then(|| {
+            "canonical routed crossover response is missing, invalid, or off-grid".to_owned()
+        });
+    }
+    Some(
+        status
+            .and_then(|value| value["reason"].as_str())
+            .unwrap_or("canonical routed crossover response is unavailable")
+            .to_owned(),
+    )
+}
+
+/// Lists unavailable loaded-target shaping results for saved LFE routes.
+pub(crate) fn unavailable_route_target_statuses(
+    data: &Value,
+    loaded_target: Option<&Value>,
+    route_crossover_db: Option<&Value>,
+    route_crossover_status: Option<&Value>,
+    reference_curves: Option<&Value>,
+) -> Vec<Value> {
+    let Some(target) = loaded_target else {
+        return Vec::new();
+    };
+    let Some(routes) = data["metadata"]["bass_management"]["routing_graph"]["routes"].as_array()
+    else {
+        return Vec::new();
+    };
+    let mut sources = std::collections::BTreeSet::new();
+    let mut results = Vec::new();
+    for route in routes {
+        if route["route_kind"] != "lfe_lowpass_to_sub" {
+            continue;
+        }
+        let Some(channel) = route["source_channel"].as_str() else {
+            continue;
+        };
+        if !sources.insert(channel) {
+            continue;
+        }
+        if let Some(reason) = route_target_unavailable_reason(
+            data,
+            channel,
+            target,
+            route_crossover_db,
+            route_crossover_status,
+            reference_curves.and_then(|curves| curves.get(channel)),
+        ) {
+            results.push(json!({
+                "section":"target_overlay",
+                "channel":channel,
+                "status":"unavailable",
+                "reason":reason
+            }));
+        }
+    }
+    results
 }
 
 /// Executes a small named target-overlay helper request from native adapters.
@@ -676,5 +812,78 @@ mod tests {
             "max_hz": 1000.0
         });
         assert_eq!(helper_response(&request).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn unavailable_lfe_crossover_suppresses_loaded_target_but_baseline_target_remains() {
+        let graph = json!({
+            "channels": {},
+            "metadata": {"bass_management": {"routing_graph": {"routes": [{
+                "source_channel":"LFE", "route_kind":"lfe_lowpass_to_sub", "low_pass_hz":80.0
+            }]}}}
+        });
+        let references = json!({"LFE":{"freq":[40.0,80.0,160.0],"spl":[70.0,70.0,70.0]}});
+        let target = json!({"freq":[20.0,20000.0],"spl":[75.0,75.0]});
+        let unavailable = json!({"LFE":{"status":"unavailable","reason":"playback rate missing"}});
+        let routed = build_target_overlay_curves_with_status(
+            &graph,
+            &references,
+            Some(&target),
+            Some(&json!({})),
+            Some(&unavailable),
+        );
+        assert!(routed.get("LFE").is_none());
+        assert_eq!(
+            route_target_unavailable_reason(
+                &graph,
+                "LFE",
+                &target,
+                Some(&json!({})),
+                Some(&unavailable),
+                references.get("LFE"),
+            )
+            .as_deref(),
+            Some("playback rate missing")
+        );
+
+        let malformed_available = json!({"LFE":{"status":"available"}});
+        let off_grid_response = json!({"LFE":[-1.0,-2.0]});
+        let reason = route_target_unavailable_reason(
+            &graph,
+            "LFE",
+            &target,
+            Some(&off_grid_response),
+            Some(&malformed_available),
+            references.get("LFE"),
+        );
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("off-grid"))
+        );
+        let malformed = build_target_overlay_curves_with_status(
+            &graph,
+            &references,
+            Some(&target),
+            Some(&off_grid_response),
+            Some(&malformed_available),
+        );
+        assert!(malformed.get("LFE").is_none());
+
+        let baseline_graph = json!({"channels":{},"metadata":{"bass_management":{"routing_graph":{"routes":[{
+            "source_channel":"LFE","route_kind":"direct","low_pass_hz":80.0
+        }]}}}});
+        let baseline = build_target_overlay_curves_with_status(
+            &baseline_graph,
+            &references,
+            Some(&target),
+            None,
+            Some(&json!({})),
+        );
+        assert!(baseline.get("LFE").is_some());
+        assert_eq!(
+            baseline,
+            build_target_overlay_curves(&baseline_graph, &references, Some(&target), None,)
+        );
     }
 }

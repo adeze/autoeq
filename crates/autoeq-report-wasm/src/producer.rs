@@ -68,6 +68,26 @@ pub fn produce(request: &Value) -> Result<String, String> {
         )?),
         "dashboard_payload" => encode(&crate::dashboard_payload::dashboard_payload(request)?),
         "report_assembly" => encode(&crate::report_assembly::report_assembly(request)?),
+        "comparison_dataset" => encode(&crate::comparison_dataset::build_comparison_report(
+            request,
+        )?),
+        "report_dataset" => {
+            let prepared: crate::PreparedReportData = serde_json::from_value(
+                request
+                    .get("data")
+                    .cloned()
+                    .ok_or("report_dataset requires prepared data")?,
+            )
+            .map_err(|error| format!("invalid prepared report data: {error}"))?;
+            let options: crate::report_dataset::ReportDatasetOptions = match request.get("options")
+            {
+                None | Some(Value::Null) => Default::default(),
+                Some(options) => serde_json::from_value(options.clone())
+                    .map_err(|error| format!("invalid report dataset options: {error}"))?,
+            };
+            let report = crate::report_dataset_payload::build_dataset_report(&prepared, &options)?;
+            encode(&serde_json::to_value(report).map_err(|error| error.to_string())?)
+        }
         "eq_section_html" => encode(
             &crate::eq_sections::eq_section_html(
                 request["builder"]
@@ -124,16 +144,21 @@ pub fn produce(request: &Value) -> Result<String, String> {
             _ => Err("unsupported bass figure builder".into()),
         },
         "report_data" => encode(&crate::report_data::helper_response(request)?),
-        "target_overlay_curves" => encode(&crate::target_overlay::build_target_overlay_curves(
-            &request["data"],
-            &request["reference_curves"],
-            request
-                .get("loaded_target")
-                .filter(|value| !value.is_null()),
-            request
-                .get("route_crossover_db")
-                .filter(|value| !value.is_null()),
-        )),
+        "target_overlay_curves" => encode(
+            &crate::target_overlay::build_target_overlay_curves_with_status(
+                &request["data"],
+                &request["reference_curves"],
+                request
+                    .get("loaded_target")
+                    .filter(|value| !value.is_null()),
+                request
+                    .get("route_crossover_db")
+                    .filter(|value| !value.is_null()),
+                request
+                    .get("route_crossover_status")
+                    .filter(|value| !value.is_null()),
+            ),
+        ),
         "target_overlay_helper" => encode(&crate::target_overlay::helper_response(request)?),
         "ir_group_delay" => {
             let samples = |key: &str| -> Vec<f64> {
@@ -247,6 +272,32 @@ pub fn produce(request: &Value) -> Result<String, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn dataset_dispatch_builds_dashboard_and_rejects_invalid_transport() {
+        let mut request = json!({
+            "operation":"report_dataset",
+            "data":{"schema_version":1,"graph":{"channels":{}},
+                "target_snapshot":{"schema_version":1,"state":"not_configured","target":null}},
+            "options":{"header_provenance":{"generated_at":"2026-10-12T00:00:00Z"}}
+        });
+        let result: Value = serde_json::from_str(&produce(&request).unwrap()).unwrap();
+        assert_eq!(result["payload"]["schema"], "autoeq-report-data-v1");
+        assert!(!result["payload"]["sections"].as_array().unwrap().is_empty());
+        assert!(
+            result["preparation_status"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|status| {
+                    status["section"] == "playback_status" && status["status"] == "unavailable"
+                })
+        );
+        request["data"]["schema_version"] = json!(2);
+        assert!(produce(&request).is_err());
+        request["data"]["schema_version"] = json!(1);
+        request["options"]["smoothed_octaves"] = json!(0);
+        assert!(produce(&request).is_err());
+    }
     #[test]
     fn invalid_operations_fail_and_known_operation_matches_direct_api() {
         assert!(produce(&json!({})).is_err());

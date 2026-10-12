@@ -1,0 +1,850 @@
+[
+  {
+    "data": {
+      "channels": {
+        "L": {
+          "eq_response": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              71.0,
+              71.0,
+              71.0,
+              71.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              70.0,
+              70.0,
+              70.0,
+              70.0
+            ]
+          },
+          "plugins": []
+        },
+        "LFE": {
+          "drivers": [
+            {
+              "initial_curve": {
+                "freq": [
+                  20.0,
+                  40.0,
+                  80.0,
+                  160.0
+                ],
+                "spl": [
+                  70.0,
+                  70.0,
+                  70.0,
+                  70.0
+                ]
+              },
+              "name": "Two subs_1",
+              "plugins": [
+                {
+                  "parameters": {
+                    "frequency": 80.0,
+                    "output": "low",
+                    "room_eq_stage": "post_route",
+                    "type": "LR24"
+                  },
+                  "plugin_type": "crossover"
+                }
+              ]
+            },
+            {
+              "initial_curve": {
+                "freq": [
+                  20.0,
+                  40.0,
+                  80.0,
+                  160.0
+                ],
+                "spl": [
+                  66.0,
+                  66.0,
+                  66.0,
+                  66.0
+                ]
+              },
+              "name": "Two subs_2",
+              "plugins": [
+                {
+                  "parameters": {
+                    "gain_db": -4.0,
+                    "room_eq_stage": "post_route"
+                  },
+                  "plugin_type": "gain"
+                },
+                {
+                  "parameters": {
+                    "frequency": 90.0,
+                    "output": "low",
+                    "room_eq_stage": "post_route",
+                    "type": "LR24"
+                  },
+                  "plugin_type": "crossover"
+                }
+              ]
+            }
+          ],
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              61.0,
+              61.0,
+              61.0,
+              61.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              60.0,
+              60.0,
+              60.0,
+              60.0
+            ]
+          },
+          "plugins": [
+            {
+              "parameters": {
+                "filters": [
+                  {
+                    "db_gain": -3.0,
+                    "filter_type": "peak",
+                    "freq": 40.0,
+                    "q": 1.0
+                  }
+                ],
+                "label": "room_eq_correction",
+                "room_eq_stage": "post_route"
+              },
+              "plugin_type": "eq"
+            }
+          ]
+        },
+        "R": {
+          "eq_response": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              71.0,
+              71.0,
+              71.0,
+              71.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              70.0,
+              70.0,
+              70.0,
+              70.0
+            ]
+          },
+          "plugins": []
+        }
+      },
+      "metadata": {
+        "bass_management": {
+          "physical_sub_output": "LFE",
+          "routing_graph": {
+            "routes": [
+              {
+                "crossover_type": "LR24",
+                "delay_ms": 0.0,
+                "destination": "Two subs_1",
+                "gain_db": 14.0,
+                "low_pass_hz": 120.0,
+                "polarity_inverted": false,
+                "route_kind": "lfe_lowpass_to_sub",
+                "source_channel": "LFE"
+              },
+              {
+                "crossover_type": "LR24",
+                "delay_ms": 0.0,
+                "destination": "Two subs_2",
+                "gain_db": 10.0,
+                "low_pass_hz": 120.0,
+                "polarity_inverted": false,
+                "route_kind": "lfe_lowpass_to_sub",
+                "source_channel": "LFE"
+              }
+            ]
+          }
+        },
+        "effective_config": {
+          "speakers": {
+            "subs": {
+              "name": "Two subs",
+              "subwoofers": [
+                {
+                  "name": "Left Sub"
+                },
+                {
+                  "name": "Right Sub"
+                }
+              ]
+            }
+          },
+          "system": {
+            "speakers": {
+              "L": "L",
+              "LFE": "subs",
+              "R": "R"
+            }
+          }
+        }
+      }
+    },
+    "driver_identity_expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Left Sub",
+        "source_driver_index": null,
+        "source_driver_name": "Two subs_1",
+        "source_driver_position": 0
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "Right Sub",
+        "source_driver_index": null,
+        "source_driver_name": "Two subs_2",
+        "source_driver_position": 1
+      }
+    ],
+    "expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L"
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R"
+      },
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Left Sub"
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "Right Sub"
+      }
+    ],
+    "name": "configured_two_sub_tabs"
+  },
+  {
+    "data": {
+      "channels": {
+        "L": {
+          "eq_response": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              71.0,
+              71.0,
+              71.0,
+              71.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              70.0,
+              70.0,
+              70.0,
+              70.0
+            ]
+          },
+          "plugins": []
+        },
+        "LFE": {
+          "drivers": [
+            {
+              "initial_curve": {
+                "freq": [
+                  20.0,
+                  40.0,
+                  80.0,
+                  160.0
+                ],
+                "spl": [
+                  70.0,
+                  70.0,
+                  70.0,
+                  70.0
+                ]
+              },
+              "name": "Two subs_1",
+              "plugins": [
+                {
+                  "parameters": {
+                    "frequency": 80.0,
+                    "output": "low",
+                    "room_eq_stage": "post_route",
+                    "type": "LR24"
+                  },
+                  "plugin_type": "crossover"
+                }
+              ]
+            },
+            {
+              "initial_curve": {
+                "freq": [
+                  20.0,
+                  40.0,
+                  80.0,
+                  160.0
+                ],
+                "spl": [
+                  66.0,
+                  66.0,
+                  66.0,
+                  66.0
+                ]
+              },
+              "name": "Two subs_2",
+              "plugins": [
+                {
+                  "parameters": {
+                    "gain_db": -4.0,
+                    "room_eq_stage": "post_route"
+                  },
+                  "plugin_type": "gain"
+                },
+                {
+                  "parameters": {
+                    "frequency": 90.0,
+                    "output": "low",
+                    "room_eq_stage": "post_route",
+                    "type": "LR24"
+                  },
+                  "plugin_type": "crossover"
+                }
+              ]
+            }
+          ],
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              61.0,
+              61.0,
+              61.0,
+              61.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              60.0,
+              60.0,
+              60.0,
+              60.0
+            ]
+          },
+          "plugins": [
+            {
+              "parameters": {
+                "filters": [
+                  {
+                    "db_gain": -3.0,
+                    "filter_type": "peak",
+                    "freq": 40.0,
+                    "q": 1.0
+                  }
+                ],
+                "label": "room_eq_correction",
+                "room_eq_stage": "post_route"
+              },
+              "plugin_type": "eq"
+            }
+          ]
+        },
+        "R": {
+          "eq_response": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              71.0,
+              71.0,
+              71.0,
+              71.0
+            ]
+          },
+          "initial_curve": {
+            "freq": [
+              20.0,
+              40.0,
+              80.0,
+              160.0
+            ],
+            "spl": [
+              70.0,
+              70.0,
+              70.0,
+              70.0
+            ]
+          },
+          "plugins": []
+        }
+      },
+      "metadata": {
+        "bass_management": {
+          "physical_sub_output": "LFE",
+          "routing_graph": {
+            "routes": [
+              {
+                "crossover_type": "LR24",
+                "delay_ms": 0.0,
+                "destination": "Two subs_1",
+                "gain_db": 14.0,
+                "low_pass_hz": 120.0,
+                "polarity_inverted": false,
+                "route_kind": "lfe_lowpass_to_sub",
+                "source_channel": "LFE"
+              },
+              {
+                "crossover_type": "LR24",
+                "delay_ms": 0.0,
+                "destination": "Two subs_2",
+                "gain_db": 10.0,
+                "low_pass_hz": 120.0,
+                "polarity_inverted": false,
+                "route_kind": "lfe_lowpass_to_sub",
+                "source_channel": "LFE"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "driver_identity_expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Two subs_1",
+        "source_driver_index": null,
+        "source_driver_name": "Two subs_1",
+        "source_driver_position": 0
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "Two subs_2",
+        "source_driver_index": null,
+        "source_driver_name": "Two subs_2",
+        "source_driver_position": 1
+      }
+    ],
+    "expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L"
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R"
+      },
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Two subs_1"
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "Two subs_2"
+      }
+    ],
+    "name": "fallback_driver_names"
+  },
+  {
+    "data": {
+      "channels": {
+        "L": {},
+        "LFE": {},
+        "R": {}
+      }
+    },
+    "driver_identity_expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "LFE",
+        "driver": null,
+        "label": "LFE",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      }
+    ],
+    "expected": [
+      {
+        "channel": "L",
+        "driver": null,
+        "label": "L"
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R"
+      },
+      {
+        "channel": "LFE",
+        "driver": null,
+        "label": "LFE"
+      }
+    ],
+    "name": "channels_without_plottable_drivers"
+  },
+  {
+    "data": {
+      "channels": {
+        "LFE": {
+          "drivers": [
+            {
+              "index": 17,
+              "initial_curve": {
+                "freq": [
+                  20.0
+                ],
+                "spl": [
+                  70.0
+                ]
+              },
+              "name": "Front Sub"
+            },
+            {
+              "index": 23,
+              "initial_curve": {
+                "freq": [],
+                "spl": [
+                  60.0
+                ]
+              },
+              "name": "Missing measurement"
+            },
+            {
+              "index": 42,
+              "initial_curve": {
+                "freq": [
+                  20.0,
+                  40.0
+                ],
+                "spl": [
+                  65.0,
+                  66.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "driver_identity_expected": [
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Front Sub",
+        "source_driver_index": 17,
+        "source_driver_name": "Front Sub",
+        "source_driver_position": 0
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "42",
+        "source_driver_index": 42,
+        "source_driver_name": null,
+        "source_driver_position": 2
+      }
+    ],
+    "expected": [
+      {
+        "channel": "LFE",
+        "driver": 0,
+        "label": "Front Sub"
+      },
+      {
+        "channel": "LFE",
+        "driver": 1,
+        "label": "42"
+      }
+    ],
+    "name": "sparse_driver_display_ordinals"
+  },
+  {
+    "data": {
+      "channels": {
+        "Center": {},
+        "LFE1": {},
+        "LFE2": {},
+        "Left": {},
+        "R": {},
+        "SBR": {},
+        "Unknown": {}
+      }
+    },
+    "driver_identity_expected": [
+      {
+        "channel": "Left",
+        "driver": null,
+        "label": "Left",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "Center",
+        "driver": null,
+        "label": "Center",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "LFE1",
+        "driver": null,
+        "label": "LFE1",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "LFE2",
+        "driver": null,
+        "label": "LFE2",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "SBR",
+        "driver": null,
+        "label": "SBR",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      },
+      {
+        "channel": "Unknown",
+        "driver": null,
+        "label": "Unknown",
+        "source_driver_index": null,
+        "source_driver_name": null,
+        "source_driver_position": null
+      }
+    ],
+    "expected": [
+      {
+        "channel": "Left",
+        "driver": null,
+        "label": "Left"
+      },
+      {
+        "channel": "R",
+        "driver": null,
+        "label": "R"
+      },
+      {
+        "channel": "Center",
+        "driver": null,
+        "label": "Center"
+      },
+      {
+        "channel": "LFE1",
+        "driver": null,
+        "label": "LFE1"
+      },
+      {
+        "channel": "LFE2",
+        "driver": null,
+        "label": "LFE2"
+      },
+      {
+        "channel": "SBR",
+        "driver": null,
+        "label": "SBR"
+      },
+      {
+        "channel": "Unknown",
+        "driver": null,
+        "label": "Unknown"
+      }
+    ],
+    "name": "classical_alias_and_unknown_order"
+  }
+]

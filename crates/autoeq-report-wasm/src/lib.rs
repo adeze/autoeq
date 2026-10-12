@@ -16,7 +16,9 @@ pub mod assemble;
 pub mod bass_figures;
 pub mod bass_management;
 pub mod capture_quality;
+pub mod channel_evidence;
 pub mod combined_figures;
+pub mod comparison_dataset;
 pub mod comparison_figures;
 pub mod comparison_tables;
 pub mod crossover_config;
@@ -29,9 +31,14 @@ pub mod fir_response;
 pub mod gain_summary;
 pub mod grid;
 pub mod ir_group_delay;
+pub mod prepared_report;
 pub mod producer;
 pub mod report_assembly;
 pub mod report_data;
+pub mod report_dataset;
+pub mod report_dataset_channel;
+pub mod report_dataset_global;
+pub mod report_dataset_payload;
 pub(crate) mod report_helpers;
 pub mod report_provenance;
 pub mod report_sections;
@@ -60,6 +67,8 @@ pub use capture_quality::{
 pub use crossover_config::crossover_config_html;
 #[doc(inline)]
 pub use gain_summary::gain_summary_html;
+#[doc(inline)]
+pub use prepared_report::{PREPARED_REPORT_SCHEMA_VERSION, PreparedReplay, PreparedReportData};
 #[doc(inline)]
 pub use report_sections::build_shared_sections;
 pub use schema::*;

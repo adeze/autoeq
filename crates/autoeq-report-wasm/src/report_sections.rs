@@ -49,6 +49,16 @@ pub fn build_shared_sections(data: &Value) -> Map<String, Value> {
     sections
 }
 
+/// Builds global evidence HTML from an already prepared graph and its
+/// externally verified payload-binding result.
+pub fn build_global_evidence_sections(
+    data: &Value,
+    label: &str,
+    payload_binding: &Value,
+) -> Map<String, Value> {
+    crate::evidence_sections::global_evidence_sections(data, label, payload_binding)
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_shared_sections;

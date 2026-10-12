@@ -2,6 +2,18 @@
 /* eslint-disable */
 
 /**
+ * Builds the shared Crossover Configuration HTML section in WebAssembly.
+ *
+ * `data_json` is a serialized RoomEQ result document. The returned string is
+ * the same escaped HTML fragment used by native report generation.
+ *
+ * # Errors
+ *
+ * Returns a JavaScript error when `data_json` is not valid JSON.
+ */
+export function crossover_config_html(data_json: string): string;
+
+/**
  * Last internal error captured by [`toggle_series`] (empty when none).
  */
 export function last_error(): string;
@@ -11,6 +23,16 @@ export function last_error(): string;
  * (`[{"series":i,"x":..,"y":..,"w":..,"h":..}]`, `"[]"` when unknown).
  */
 export function legend_json(canvas_id: string): string;
+
+/**
+ * Dispatches one canonical report producer request in WebAssembly.
+ *
+ * Section results are serialized JSON; the assembly operation returns HTML.
+ *
+ * # Errors
+ * Returns an error for invalid JSON, unsupported operations, or invalid request fields.
+ */
+export function produce_json(request_json: string): string;
 
 /**
  * Render one payload section into a canvas.
@@ -34,6 +56,18 @@ export function schema_version(): string;
 export function selection_domain_json(canvas_id: string, x0: number, y0: number, x1: number, y1: number): string;
 
 /**
+ * Builds the canonical report fragments as one JSON object in WebAssembly.
+ *
+ * The input is a serialized RoomEQ result document. HTML fragments are
+ * strings; signal-flow sections are ordinary report section objects.
+ *
+ * # Errors
+ *
+ * Returns a JavaScript error when `data_json` is not valid JSON.
+ */
+export function shared_sections_json(data_json: string): string;
+
+/**
  * Flip one series' visibility and re-render. Returns 1 when re-rendered,
  * 0 when the canvas or series is unknown, -99 on an internal panic
  * (see [`last_error`]).
@@ -44,18 +78,22 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly crossover_config_html: (a: number, b: number) => [number, number, number, number];
     readonly last_error: () => [number, number];
     readonly legend_json: (a: number, b: number) => [number, number];
+    readonly produce_json: (a: number, b: number) => [number, number, number, number];
     readonly render_section: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly schema_version: () => [number, number];
     readonly selection_domain_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly shared_sections_json: (a: number, b: number) => [number, number, number, number];
     readonly toggle_series: (a: number, b: number, c: number) => number;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_exn_store_command_export: (a: number) => void;
+    readonly __externref_table_alloc_command_export: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_malloc_command_export: (a: number, b: number) => number;
+    readonly __wbindgen_realloc_command_export: (a: number, b: number, c: number, d: number) => number;
+    readonly __externref_table_dealloc_command_export: (a: number) => void;
+    readonly __wbindgen_free_command_export: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

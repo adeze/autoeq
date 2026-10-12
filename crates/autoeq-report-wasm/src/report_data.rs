@@ -64,6 +64,151 @@ fn populated(value: &Value) -> bool {
     }
 }
 
+fn plottable_drivers(channel: &Value) -> Vec<(usize, &Value)> {
+    channel["drivers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, driver)| {
+            let initial = &driver["initial_curve"];
+            populated(&initial["freq"]) && populated(&initial["spl"])
+        })
+        .collect()
+}
+
+fn configured_driver_names(data: &Value, channel_name: &str, driver_count: usize) -> Vec<String> {
+    if driver_count == 0 {
+        return Vec::new();
+    }
+    let effective = &data["metadata"]["effective_config"];
+    let speaker_key = effective["system"]["speakers"][channel_name].as_str();
+    let subwoofers = speaker_key
+        .and_then(|key| effective["speakers"][key]["subwoofers"].as_array())
+        .into_iter()
+        .flatten();
+    let names: Vec<_> = subwoofers
+        .filter(|entry| entry.is_object() && populated(&entry["name"]))
+        .map(|entry| crate::report_helpers::python_string(&entry["name"]))
+        .collect();
+    if names.len() == driver_count {
+        names
+    } else {
+        Vec::new()
+    }
+}
+
+/// Expands sorted channels into their report tab entries.
+///
+/// Driver numbers are positions in the filtered plottable-driver list. This
+/// keeps the existing Python consumer contract when source driver arrays have
+/// missing or unplottable entries; source `index` values only supply fallback
+/// labels and do not replace those display positions.
+pub fn display_channel_entries(data: &Value) -> Value {
+    let Some(channels) = data["channels"].as_object() else {
+        return json!([]);
+    };
+    let mut names: Vec<_> = channels.keys().collect();
+    names.sort_by(|left, right| {
+        crate::report_helpers::channel_sort_key(left)
+            .cmp(&crate::report_helpers::channel_sort_key(right))
+    });
+
+    let mut entries = Vec::new();
+    for channel_name in names {
+        let channel = &channels[channel_name];
+        let drivers = plottable_drivers(channel);
+        if drivers.is_empty() {
+            entries.push(json!({
+                "label": channel_name,
+                "channel": channel_name,
+                "driver": null,
+            }));
+            continue;
+        }
+
+        let configured_names = configured_driver_names(data, channel_name, drivers.len());
+        for (display_index, (_, driver)) in drivers.into_iter().enumerate() {
+            let label = configured_names
+                .get(display_index)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let fallback = if populated(&driver["name"]) {
+                        &driver["name"]
+                    } else if let Some(source_index) =
+                        driver.as_object().and_then(|object| object.get("index"))
+                    {
+                        source_index
+                    } else {
+                        return display_index.to_string();
+                    };
+                    crate::report_helpers::python_string(fallback)
+                });
+            entries.push(json!({
+                "label": label,
+                "channel": channel_name,
+                "driver": display_index,
+            }));
+        }
+    }
+    json!(entries)
+}
+
+/// Expands channel tabs while preserving each driver's raw graph identity.
+///
+/// `driver` remains the filtered display position used by existing report
+/// consumers. The `source_*` fields identify the original driver entry.
+pub fn driver_display_entries(data: &Value) -> Value {
+    let Some(channels) = data["channels"].as_object() else {
+        return json!([]);
+    };
+    let mut names: Vec<_> = channels.keys().collect();
+    names.sort_by(|left, right| {
+        crate::report_helpers::channel_sort_key(left)
+            .cmp(&crate::report_helpers::channel_sort_key(right))
+    });
+    let mut entries = Vec::new();
+    for channel_name in names {
+        let channel = &channels[channel_name];
+        let drivers = plottable_drivers(channel);
+        if drivers.is_empty() {
+            entries.push(json!({
+                "label": channel_name,
+                "channel": channel_name,
+                "driver": null,
+                "source_driver_position": null,
+                "source_driver_index": null,
+                "source_driver_name": null,
+            }));
+            continue;
+        }
+        let configured_names = configured_driver_names(data, channel_name, drivers.len());
+        for (display_index, (source_position, driver)) in drivers.into_iter().enumerate() {
+            let source_name = populated(&driver["name"]).then(|| driver["name"].clone());
+            let source_index = driver.get("index").cloned();
+            let label = configured_names
+                .get(display_index)
+                .cloned()
+                .unwrap_or_else(|| {
+                    source_name
+                        .as_ref()
+                        .or(source_index.as_ref())
+                        .map(crate::report_helpers::python_string)
+                        .unwrap_or_else(|| display_index.to_string())
+                });
+            entries.push(json!({
+                "label": label,
+                "channel": channel_name,
+                "driver": display_index,
+                "source_driver_position": source_position,
+                "source_driver_index": source_index,
+                "source_driver_name": source_name,
+            }));
+        }
+    }
+    json!(entries)
+}
+
 /// Reports whether serialized channel or driver chains contain equalization.
 pub fn channel_has_eq(channel: &Value) -> bool {
     if populated(&channel["eq_response"]["spl"]) {
@@ -175,6 +320,8 @@ pub fn helper_response(request: &Value) -> Result<Value, String> {
             bound("max_hz")
         ))),
         "channel_has_eq" => Ok(json!(channel_has_eq(&request["channel"]))),
+        "channel_display_entries" => Ok(display_channel_entries(&request["data"])),
+        "driver_display_entries" => Ok(driver_display_entries(&request["data"])),
         "clip_curve" => Ok(clip_curve_to_measured_band(
             &request["curve"],
             &request["driver"],
@@ -211,5 +358,48 @@ mod tests {
                 numeric_form(&case["expected"])
             );
         }
+    }
+
+    #[test]
+    fn channel_display_entries_match_captured_python_cases() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/channel_display_entries_python.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let request = json!({
+                "helper": "channel_display_entries",
+                "data": case["data"],
+            });
+            assert_eq!(
+                helper_response(&request).unwrap(),
+                case["expected"],
+                "case {}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn driver_display_entries_retain_filtered_and_source_identity() {
+        let data = json!({
+            "channels": {
+                "LFE": {"drivers": [
+                    {"index": 12, "name": "missing", "initial_curve": {"freq": [], "spl": []}},
+                    {"index": 28, "name": "Sub <A>", "initial_curve": {"freq": [20], "spl": [70]}},
+                    {"name": "", "initial_curve": {"freq": [30], "spl": [71]}}
+                ]}
+            }
+        });
+        let entries = driver_display_entries(&data);
+        assert_eq!(entries[0]["driver"], 0);
+        assert_eq!(entries[0]["source_driver_position"], 1);
+        assert_eq!(entries[0]["source_driver_index"], 28);
+        assert_eq!(entries[0]["source_driver_name"], "Sub <A>");
+        assert_eq!(entries[0]["label"], "Sub <A>");
+        assert_eq!(entries[1]["driver"], 1);
+        assert_eq!(entries[1]["source_driver_position"], 2);
+        assert_eq!(entries[1]["source_driver_index"], Value::Null);
+        assert_eq!(entries[1]["label"], "1");
     }
 }
