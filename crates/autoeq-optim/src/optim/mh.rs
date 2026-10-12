@@ -1,8 +1,8 @@
 // Metaheuristics-specific optimization code
 
 use super::backend::{
-    AlgorithmType, BackendSearchEvidence, BackendSearchStopCause, ConstraintCapabilities, FilterOptimizer,
-    FilterOptimizerOutput,
+    AlgorithmType, BackendSearchEvidence, BackendSearchStopCause, ConstraintCapabilities,
+    FilterOptimizer, FilterOptimizerOutput,
 };
 use super::callback::{ProgressTracker, format_param_summary};
 use super::constraints_install::install_constraints;
@@ -88,7 +88,10 @@ impl FilterOptimizer for MhBackend {
             return None;
         }
         let population_size = params.population.max(1);
-        let generation_limit = params.maxeval.max(population_size).div_ceil(population_size);
+        let generation_limit = params
+            .maxeval
+            .max(population_size)
+            .div_ceil(population_size);
         Some(OptimizerBudgetProfile::new(
             params.maxeval,
             None,
@@ -107,7 +110,7 @@ impl FilterOptimizer for MhBackend {
         objective: ObjectiveData,
         params: &OptimParams,
         callback: Option<OptimProgressCallback>,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         self.optimize_with_report(x, lower, upper, objective, params, callback)
             .into_legacy_result()
     }
@@ -311,7 +314,7 @@ pub fn optimize_filters_mh(
     mh_name: &str,
     population: usize,
     maxeval: usize,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_mh_seeded(
         x,
         lower_bounds,
@@ -334,7 +337,7 @@ fn optimize_filters_mh_seeded(
     population: usize,
     maxeval: usize,
     seed: u64,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     // Create default callback for terminal output
     let callback = create_mh_callback(&format!("mh::{}", mh_name));
 
@@ -363,7 +366,7 @@ pub fn optimize_filters_mh_with_callback(
     population: usize,
     maxeval: usize,
     callback: Box<dyn FnMut(&MHIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_mh_with_callback_seeded(
         x,
         lower_bounds,
@@ -388,7 +391,7 @@ fn optimize_filters_mh_with_callback_seeded(
     maxeval: usize,
     callback: Box<dyn FnMut(&MHIntermediate) -> CallbackAction + Send>,
     seed: u64,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_mh_with_callback_seeded_report(
         x,
         lower_bounds,
@@ -414,7 +417,10 @@ fn optimize_filters_mh_with_callback_seeded_report(
     maxeval: usize,
     mut callback: Box<dyn FnMut(&MHIntermediate) -> CallbackAction + Send>,
     seed: u64,
-) -> (Result<(String, f64), (String, f64)>, Option<BackendSearchEvidence>) {
+) -> (
+    crate::optim::OptimizerOutcome,
+    Option<BackendSearchEvidence>,
+) {
     let num_params = x.len();
 
     // Build bounds for metaheuristics (as pairs)
@@ -529,7 +535,10 @@ fn optimize_filters_mh_with_callback_seeded_report(
                 state.population_stddev = None;
                 if !fitness.is_empty() && fitness.iter().all(|value| value.is_finite()) {
                     let mean = fitness.iter().sum::<f64>() / fitness.len() as f64;
-                    let variance = fitness.iter().map(|value| (value - mean).powi(2)).sum::<f64>()
+                    let variance = fitness
+                        .iter()
+                        .map(|value| (value - mean).powi(2))
+                        .sum::<f64>()
                         / fitness.len() as f64;
                     if mean.is_finite() && variance.is_finite() {
                         state.population_mean = Some(mean);
@@ -590,7 +599,12 @@ fn optimize_filters_mh_with_callback_seeded_report(
         // candidate whose real objective value was actually computed.
         if state.best_params.len() != x.len() || !state.best_fitness.is_finite() {
             return (
-                Err((format!("Metaheuristics({mh_name}) exhausted its objective budget without a finite candidate"), f64::INFINITY)),
+                Err((
+                    format!(
+                        "Metaheuristics({mh_name}) exhausted its objective budget without a finite candidate"
+                    ),
+                    f64::INFINITY,
+                )),
                 None,
             );
         }

@@ -17,6 +17,11 @@
 
 pub use backend::{AlgorithmType, ConstraintCapabilities, FilterOptimizer, FilterOptimizerOutput};
 
+/// Optimizer termination message and objective value, for success or failure.
+///
+/// Both variants preserve the backend's reason and last reported objective.
+pub type OptimizerOutcome = Result<(String, f64), (String, f64)>;
+
 /// Version of the optimizer implementation used in warm-start identities.
 pub const OPTIMIZER_IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 

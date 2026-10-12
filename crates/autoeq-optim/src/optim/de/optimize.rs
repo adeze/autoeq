@@ -62,7 +62,7 @@ pub fn optimize_filters_autoeq(
     objective_data: ObjectiveData,
     autoeq_name: &str,
     params: &crate::OptimParams,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     // Create the callback with all the logging and user feedback
     let callback = create_de_callback("autoeq::DE", params.quiet);
 
@@ -87,7 +87,7 @@ pub fn optimize_filters_autoeq_with_completion(
     objective_data: ObjectiveData,
     autoeq_name: &str,
     params: &crate::OptimParams,
-) -> (Result<(String, f64), (String, f64)>, Option<DECompletion>) {
+) -> (crate::optim::OptimizerOutcome, Option<DECompletion>) {
     let callback = create_de_callback("autoeq::DE", params.quiet);
     let mut completion = None;
     let result = optimize_filters_autoeq_with_callback_and_initial_and_exact(
@@ -114,7 +114,7 @@ pub fn optimize_filters_autoeq_with_callback(
     autoeq_name: &str,
     params: &crate::OptimParams,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial(
         x,
         lower_bounds,
@@ -142,7 +142,7 @@ pub fn optimize_filters_autoeq_with_callback_and_initial(
     params: &crate::OptimParams,
     initial_candidate: Option<&[f64]>,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial_and_exact(
         x,
         lower_bounds,
@@ -181,7 +181,7 @@ pub fn optimize_filters_autoeq_with_exact_checkpoint(
     params: &crate::OptimParams,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
     continuation: DEExactContinuation,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial_and_exact(
         x,
         lower_bounds,
@@ -211,7 +211,7 @@ fn optimize_filters_autoeq_with_callback_and_initial_and_exact(
     mut callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
     mut exact: Option<DEExactContinuation>,
     report_summary: Option<&mut Option<DECompletion>>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     let explicit_initial_candidate = if let Some(candidate) = initial_candidate {
         if candidate.is_empty()
             || candidate.len() != x.len()
@@ -450,11 +450,13 @@ fn optimize_filters_autoeq_with_callback_and_initial_and_exact(
         // Speaker-score searches can have a narrow population-fitness spread
         // before the scored preference has improved. Use the existing
         // generation/evaluation cap before accepting population convergence.
-        .min_convergence_iter(if setup.penalty_data.loss_type == crate::LossType::SpeakerScore {
-            setup.max_iter
-        } else {
-            0
-        })
+        .min_convergence_iter(
+            if setup.penalty_data.loss_type == crate::LossType::SpeakerScore {
+                setup.max_iter
+            } else {
+                0
+            },
+        )
         .popsize(setup.pop_multiplier)
         .tol(tolerance)
         .atol(atolerance)

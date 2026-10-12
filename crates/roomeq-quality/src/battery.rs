@@ -610,18 +610,30 @@ mod battery_tests {
     #[test]
     fn battery_cells_bind_to_frozen_setup_conditions_and_levels() {
         let (battery, setup) = bound_battery();
-        assert!(battery.validate_against_setups(&[setup.clone()]).is_ok());
+        assert!(
+            battery
+                .validate_against_setups(std::slice::from_ref(&setup))
+                .is_ok()
+        );
         let mut stale = battery.clone();
         stale.cells[0].protocol_hash = String::from("stale-hash");
-        assert!(stale.validate_against_setups(&[setup.clone()]).is_err());
+        assert!(
+            stale
+                .validate_against_setups(std::slice::from_ref(&setup))
+                .is_err()
+        );
         let mut wrong_arm = battery.clone();
         wrong_arm.cells[0].arm = ListeningArm::PrunedVsFull;
-        assert!(wrong_arm.validate_against_setups(&[setup.clone()]).is_err());
+        assert!(
+            wrong_arm
+                .validate_against_setups(std::slice::from_ref(&setup))
+                .is_err()
+        );
         let mut wrong_level = battery.clone();
         wrong_level.cells[0].level_match.absolute_level_db_spl += 1.0;
         assert!(
             wrong_level
-                .validate_against_setups(&[setup.clone()])
+                .validate_against_setups(std::slice::from_ref(&setup))
                 .is_err()
         );
         let mut wrong_material = battery.clone();
@@ -629,12 +641,16 @@ mod battery_tests {
         wrong_material.cells[1].material = MaterialClass::ResonanceSustained;
         assert!(
             wrong_material
-                .validate_against_setups(&[setup.clone()])
+                .validate_against_setups(std::slice::from_ref(&setup))
                 .is_err()
         );
         let mut repeated = battery.clone();
         repeated.cells.push(repeated.cells[0].clone());
-        assert!(repeated.validate_against_setups(&[setup.clone()]).is_err());
+        assert!(
+            repeated
+                .validate_against_setups(std::slice::from_ref(&setup))
+                .is_err()
+        );
         let mut tampered = setup;
         tampered.binding.stimulus_hash = String::from("changed-stimulus");
         assert!(battery.validate_against_setups(&[tampered]).is_err());
@@ -693,7 +709,12 @@ mod battery_tests {
             synthetic: false,
             rows,
         };
-        let scored = score_battery_imports(&battery, &[setup.clone()], &[import.clone()]).unwrap();
+        let scored = score_battery_imports(
+            &battery,
+            std::slice::from_ref(&setup),
+            std::slice::from_ref(&import),
+        )
+        .unwrap();
         assert!(scored.all_success);
         assert_eq!(scored.cells.len(), battery.cells.len());
         assert_eq!(scored.import_sha256.len(), 1);
@@ -735,9 +756,13 @@ mod battery_tests {
         assert_eq!(paired.import_sha256.len(), 2);
         import.synthetic = true;
         assert!(
-            !score_battery_imports(&battery, &[setup.clone()], &[import.clone()])
-                .unwrap()
-                .all_success
+            !score_battery_imports(
+                &battery,
+                std::slice::from_ref(&setup),
+                std::slice::from_ref(&import)
+            )
+            .unwrap()
+            .all_success
         );
         import.synthetic = false;
         import.rows.pop();

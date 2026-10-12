@@ -21,11 +21,11 @@ fn finalize_dispatch_winner(
     upper_bounds: &[f64],
     data: &ObjectiveData,
     params: &crate::OptimParams,
-    result: Result<(String, f64), (String, f64)>,
-) -> Result<(String, f64), (String, f64)> {
+    result: crate::optim::OptimizerOutcome,
+) -> crate::optim::OptimizerOutcome {
     let (algo, _) = result?;
     let failed =
-        |reason: String| -> Result<(String, f64), (String, f64)> { Err((reason, f64::INFINITY)) };
+        |reason: String| -> crate::optim::OptimizerOutcome { Err((reason, f64::INFINITY)) };
     let owned = match super::constraint_envelope::OwnedConstraintSpec::from_params(params) {
         Ok(owned) => owned,
         Err(reason) => return failed(reason),
@@ -256,7 +256,7 @@ pub struct OptimizerRunEvidence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlledOptimizerRun {
     /// Legacy backend result, including its unchanged raw status text.
-    pub result: Result<(String, f64), (String, f64)>,
+    pub result: crate::optim::OptimizerOutcome,
     /// Structured evidence after applying the final run-control snapshot.
     pub evidence: OptimizerRunEvidence,
     /// Counters and stop causes captured after finalization completed.
@@ -275,7 +275,7 @@ impl OptimizerRunEvidence {
     #[allow(clippy::too_many_arguments)]
     pub fn from_backend_result(
         algorithm: &str,
-        result: Result<(String, f64), (String, f64)>,
+        result: crate::optim::OptimizerOutcome,
         parameters: &[f64],
         lower_bounds: &[f64],
         upper_bounds: &[f64],
@@ -513,8 +513,8 @@ fn max_bound_violation(parameters: &[f64], lower_bounds: &[f64], upper_bounds: &
 }
 
 fn validation_refusal_caused_by_stop(
-    backend_result: &Result<(String, f64), (String, f64)>,
-    finalized_result: &Result<(String, f64), (String, f64)>,
+    backend_result: &crate::optim::OptimizerOutcome,
+    finalized_result: &crate::optim::OptimizerOutcome,
     parameters: &[f64],
     bounds: (&[f64], &[f64]),
     snapshots: (
@@ -568,7 +568,7 @@ pub fn optimize_filters(
     upper_bounds: &[f64],
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_with_algo_override(x, lower_bounds, upper_bounds, objective_data, params, None)
 }
 
@@ -580,12 +580,21 @@ pub fn optimize_filters_with_de_completion(
     upper_bounds: &[f64],
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
-) -> (Result<(String, f64), (String, f64)>, Option<super::de::DECompletion>) {
+) -> (
+    crate::optim::OptimizerOutcome,
+    Option<super::de::DECompletion>,
+) {
     let Some(backend) = super::registry::resolve(&params.algo) else {
-        return (optimize_filters(x, lower_bounds, upper_bounds, objective_data, params), None);
+        return (
+            optimize_filters(x, lower_bounds, upper_bounds, objective_data, params),
+            None,
+        );
     };
     if !backend.name().eq_ignore_ascii_case("autoeq:de") {
-        return (optimize_filters(x, lower_bounds, upper_bounds, objective_data, params), None);
+        return (
+            optimize_filters(x, lower_bounds, upper_bounds, objective_data, params),
+            None,
+        );
     }
     let snapshot = objective_data.clone();
     let (result, completion) = super::de::optimize_filters_autoeq_with_completion(
@@ -622,7 +631,7 @@ pub fn optimize_filters_with_completion_evidence(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
 ) -> (
-    Result<(String, f64), (String, f64)>,
+    crate::optim::OptimizerOutcome,
     Option<super::de::DECompletion>,
     Option<super::backend::BackendSearchEvidence>,
 ) {
@@ -631,21 +640,30 @@ pub fn optimize_filters_with_completion_evidence(
     {
         let snapshot = objective_data.clone();
         let output = backend.optimize_with_report(
-            x, lower_bounds, upper_bounds, objective_data, params, None,
+            x,
+            lower_bounds,
+            upper_bounds,
+            objective_data,
+            params,
+            None,
         );
         let normalized = normalize_backend_output(output, backend.name(), x);
         return (
             finalize_dispatch_winner(
-                &params.algo, x, lower_bounds, upper_bounds, &snapshot, params,
+                &params.algo,
+                x,
+                lower_bounds,
+                upper_bounds,
+                &snapshot,
+                params,
                 normalized.result,
             ),
             None,
             normalized.search_evidence,
         );
     }
-    let (result, de_completion) = optimize_filters_with_de_completion(
-        x, lower_bounds, upper_bounds, objective_data, params,
-    );
+    let (result, de_completion) =
+        optimize_filters_with_de_completion(x, lower_bounds, upper_bounds, objective_data, params);
     (result, de_completion, None)
 }
 
@@ -688,7 +706,7 @@ pub fn optimize_filters_with_run_control(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     run_control: &OptimizerRunControl,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_with_run_control_dispatch(
         x,
         lower_bounds,
@@ -705,7 +723,7 @@ pub fn optimize_filters_with_run_control(
 }
 
 struct ControlledOptimizationDispatch {
-    result: Result<(String, f64), (String, f64)>,
+    result: crate::optim::OptimizerOutcome,
     dispatch: OptimizerDispatchOutcome,
     evaluation_limit: usize,
     validation_stop_refusal: bool,
@@ -714,7 +732,7 @@ struct ControlledOptimizationDispatch {
 }
 
 struct NormalizedBackendOutput {
-    result: Result<(String, f64), (String, f64)>,
+    result: crate::optim::OptimizerOutcome,
     pareto_report: Option<roomeq_model::ParetoDispatchReport>,
     validation_stop_refusal: bool,
     search_evidence: Option<super::backend::BackendSearchEvidence>,
@@ -1147,13 +1165,21 @@ pub fn optimize_filters_with_algo_override(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     algo_override: Option<&str>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     let algo = algo_override.unwrap_or(&params.algo);
     let backend = super::registry::resolve(algo)
         .ok_or_else(|| (format!("Unknown algorithm: {}", algo), f64::INFINITY))?;
     let snapshot = objective_data.clone();
     let result = backend.optimize(x, lower_bounds, upper_bounds, objective_data, params, None);
-    finalize_dispatch_winner(algo, x, lower_bounds, upper_bounds, &snapshot, params, result)
+    finalize_dispatch_winner(
+        algo,
+        x,
+        lower_bounds,
+        upper_bounds,
+        &snapshot,
+        params,
+        result,
+    )
 }
 
 /// Optimize filter parameters with a progress callback for per-iteration updates.
@@ -1171,7 +1197,7 @@ pub fn optimize_filters_with_callback(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     callback: OptimProgressCallback,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     let backend = super::registry::resolve(&params.algo)
         .ok_or_else(|| (format!("Unknown algorithm: {}", params.algo), f64::INFINITY))?;
 
@@ -1194,7 +1220,13 @@ pub fn optimize_filters_with_callback(
             callback,
         );
         return finalize_dispatch_winner(
-            backend.name(), x, lower_bounds, upper_bounds, &snapshot, params, result,
+            backend.name(),
+            x,
+            lower_bounds,
+            upper_bounds,
+            &snapshot,
+            params,
+            result,
         );
     }
 
@@ -1228,7 +1260,13 @@ pub fn optimize_filters_with_callback(
         cb_for_backend,
     );
     finalize_dispatch_winner(
-        backend.name(), x, lower_bounds, upper_bounds, &snapshot, params, result,
+        backend.name(),
+        x,
+        lower_bounds,
+        upper_bounds,
+        &snapshot,
+        params,
+        result,
     )
 }
 
