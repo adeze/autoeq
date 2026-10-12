@@ -56,7 +56,9 @@
       "autoeq-plot",
       "autoeq-workflow"
     ],
-    "autoeq-report-wasm": [],
+    "autoeq-report-wasm": [
+      "autoeq-core"
+    ],
     "autoeq-report-wasm-shell": [
       "autoeq-report-wasm"
     ],

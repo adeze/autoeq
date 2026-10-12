@@ -9,6 +9,7 @@ use base64::Engine as _;
 /// Filled shell pieces: base64 `.wasm` binaries plus base64 wasm-pack glue.
 /// Glue travels base64 so an inline `<script>` can never be broken by a
 /// `</script>` sequence inside generated code.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShellAssets {
     /// Contents of `shell/template.html`.
     pub template: String,
@@ -24,14 +25,46 @@ pub struct ShellAssets {
 
 /// Assemble a self-contained HTML report.
 pub fn assemble_html(title: &str, payload_json: &str, assets: &ShellAssets) -> String {
-    assets
-        .template
-        .replace("{{PAGE_TITLE}}", &escape_html(title))
-        .replace("{{PAYLOAD_JSON}}", payload_json)
-        .replace("{{WASM_2D_B64}}", &assets.wasm_2d_b64)
-        .replace("{{GLUE_2D_B64}}", &assets.glue_2d_b64)
-        .replace("{{WASM_GPUI_B64}}", &assets.wasm_gpui_b64)
-        .replace("{{GLUE_GPUI_B64}}", &assets.glue_gpui_b64)
+    // JSON is embedded in a script data block. HTML parsers still recognize
+    // a closing script tag inside a JSON string, so escape those characters
+    // without changing the decoded payload. Both native and WASM callers use
+    // this boundary rather than maintaining host-specific escaping.
+    let payload_json = payload_json
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    let title = escape_html(title);
+    let replacements = [
+        ("{{WASM_2D_B64}}", assets.wasm_2d_b64.as_str()),
+        ("{{GLUE_2D_B64}}", assets.glue_2d_b64.as_str()),
+        ("{{WASM_GPUI_B64}}", assets.wasm_gpui_b64.as_str()),
+        ("{{GLUE_GPUI_B64}}", assets.glue_gpui_b64.as_str()),
+        ("{{PAGE_TITLE}}", title.as_str()),
+        ("{{PAYLOAD_JSON}}", payload_json.as_str()),
+    ];
+    // Only template tokens are interpreted. Inserted values may themselves
+    // contain token-shaped text and must survive without another substitution.
+    let mut remaining = assets.template.as_str();
+    let mut output = String::with_capacity(remaining.len() + payload_json.len());
+    while let Some(start) = remaining.find("{{") {
+        output.push_str(&remaining[..start]);
+        remaining = &remaining[start..];
+        let Some(end) = remaining.find("}}") else {
+            break;
+        };
+        let token = &remaining[..end + 2];
+        output.push_str(
+            replacements
+                .iter()
+                .find(|(key, _)| *key == token)
+                .map_or(token, |(_, value)| *value),
+        );
+        remaining = &remaining[end + 2..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 /// Base64-encode raw bytes (standard alphabet, no line breaks).
@@ -88,6 +121,25 @@ mod tests {
     }
 
     #[test]
+    fn inserted_tokens_are_never_reinterpreted() {
+        let assets = ShellAssets {
+            template: "{{PAGE_TITLE}}|{{WASM_2D_B64}}|{{PAYLOAD_JSON}}|{{UNKNOWN}}|{{tail".into(),
+            wasm_2d_b64: "{{PAGE_TITLE}}".into(),
+            glue_2d_b64: String::new(),
+            wasm_gpui_b64: String::new(),
+            glue_gpui_b64: String::new(),
+        };
+        assert_eq!(
+            assemble_html(
+                "{{PAYLOAD_JSON}}",
+                r#"{"label":"{{WASM_2D_B64}}"}"#,
+                &assets
+            ),
+            r#"{{PAYLOAD_JSON}}|{{PAGE_TITLE}}|{"label":"{{WASM_2D_B64}}"}|{{UNKNOWN}}|{{tail"#,
+        );
+    }
+
+    #[test]
     fn b64_round_trip() {
         let raw = [0u8, 1, 2, 250, 255];
         let enc = b64(&raw);
@@ -95,5 +147,30 @@ mod tests {
             .decode(&enc)
             .expect("decode");
         assert_eq!(back, raw);
+    }
+
+    #[test]
+    fn embedded_payload_cannot_close_its_script_block() {
+        let assets = ShellAssets {
+            template: "<script type=\"application/json\">{{PAYLOAD_JSON}}</script>".into(),
+            wasm_2d_b64: String::new(),
+            glue_2d_b64: String::new(),
+            wasm_gpui_b64: String::new(),
+            glue_gpui_b64: String::new(),
+        };
+        let value =
+            serde_json::json!({"label":"</script><script>alert(1)</script>&{{WASM_2D_B64}}"});
+        let html = assemble_html("Report", &value.to_string(), &assets);
+        assert_eq!(html.matches("</script>").count(), 1);
+        let embedded = html
+            .split_once('>')
+            .unwrap()
+            .1
+            .strip_suffix("</script>")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(embedded).unwrap(),
+            value
+        );
     }
 }

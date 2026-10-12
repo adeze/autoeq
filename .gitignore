@@ -92,3 +92,9 @@ CTAGS
 
 # Keep the measured-IR provenance and remaining import limitations.
 !/docs/MEASURED_IR_IMPORT.md
+
+# Generated report-shell WASM bundles (rebuild with `just report-dist`
+# and `just report-dist-gpui`; never merge these by hand).
+crates/autoeq-report-wasm/dist/
+crates/autoeq-report-wasm/pkg2d/
+crates/autoeq-report-gpui/pkg/

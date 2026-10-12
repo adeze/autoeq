@@ -65,7 +65,7 @@ pub fn optimize_filters_autoeq(
     objective_data: ObjectiveData,
     autoeq_name: &str,
     params: &crate::OptimParams,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     // Create the callback with all the logging and user feedback
     let callback = create_de_callback("autoeq::DE", params.quiet);
 
@@ -117,7 +117,7 @@ pub fn optimize_filters_autoeq_with_callback(
     autoeq_name: &str,
     params: &crate::OptimParams,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial(
         x,
         lower_bounds,
@@ -145,7 +145,7 @@ pub fn optimize_filters_autoeq_with_callback_and_initial(
     params: &crate::OptimParams,
     initial_candidate: Option<&[f64]>,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial_and_exact(
         x,
         lower_bounds,
@@ -184,7 +184,7 @@ pub fn optimize_filters_autoeq_with_exact_checkpoint(
     params: &crate::OptimParams,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
     continuation: DEExactContinuation,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_autoeq_with_callback_and_initial_and_exact(
         x,
         lower_bounds,

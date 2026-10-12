@@ -131,8 +131,19 @@ class BoundCaptureReportTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("Capture acceptance diagnostics", html)
-            self.assertIn("Matched IR evidence: synthetic_capture_pair", html)
-            self.assertIn("&lt;source&gt; / seat", html)
+            # A raw standalone dictionary has a recomputable payload binding,
+            # but no frozen source-byte identity or host-verified view-binding
+            # wrapper. Keep the diagnostics visible and fail closed on plots.
+            self.assertIn("saved optimization graph binding is invalid", html)
+            self.assertNotIn("Matched IR evidence: synthetic_capture_pair", html)
+            embedded = re.search(r'<script id="report-payload" type="application/json">(.*?)</script>', html, re.S)
+            self.assertIsNotNone(embedded, "report omitted its embedded payload")
+            payload = json.loads(embedded.group(1))
+            capture_sections = [section.get("html", "") for section in payload["sections"]
+                                if "Capture acceptance diagnostics" in section.get("html", "")]
+            self.assertTrue(capture_sections, "report omitted capture diagnostics")
+            self.assertNotIn("&lt;source&gt; / seat", "".join(capture_sections))
+            self.assertNotIn("<source> / seat", "".join(capture_sections))
 
     def test_mismatched_or_tampered_graph_cannot_display_capture_views(self):
         data = self._bound_output()
@@ -142,7 +153,7 @@ class BoundCaptureReportTests(unittest.TestCase):
             capture["graph_id"] = "other"
             create_html_report(data, html_path, capture_verification=capture)
             html = html_path.read_text(encoding="utf-8")
-            self.assertIn("verification candidate graph does not match", html)
+            self.assertIn("saved optimization graph binding is invalid", html)
             self.assertNotIn("Matched IR evidence", html)
             capture["graph_id"] = "candidate"
             data["channels"]["LFE"]["plugins"].append(
@@ -359,17 +370,36 @@ class SubDriverTabTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
 
         # Per-channel tabs are shell tabs now (no tab buttons in the file):
         # sections carry the tab label in the payload.
-        self.assertIn('"tab": "Left Sub"', html)
-        self.assertIn('"tab": "Right Sub"', html)
-        self.assertNotIn('"tab": "LFE"', html)
-        self.assertIn("<h2>Channel: Left Sub</h2>", html)
+        payload = json.loads(html)
+        self.assertIn("Left Sub", {section.get("tab") for section in payload["sections"]})
+        self.assertIn("Right Sub", {section.get("tab") for section in payload["sections"]})
+        self.assertNotIn("LFE", {section.get("tab") for section in payload["sections"]})
+        for tab, expected in {
+            "Left Sub": [13.03152391518231, 10.36686630678699, 5.485827006400306, -23.19556114805409],
+            "Right Sub": [5.044230764660753, 2.5609780584658086, -0.7068392254840254, -27.405418527554552],
+        }.items():
+            with self.subTest(tab=tab):
+                figures = [
+                    section["figure"]
+                    for section in payload["sections"]
+                    if section.get("tab") == tab and section.get("kind") == "figure"
+                ]
+                self.assertTrue(any(figure["title"].endswith("(Full Range)") for figure in figures))
+                combined_eq = next(
+                    series
+                    for figure in figures
+                    for series in figure["series"]
+                    if series.get("name") == "Combined EQ"
+                )
+                self.assertEqual(combined_eq["x"], [20.0, 40.0, 80.0, 160.0])
+                self.assertEqual(combined_eq["y_axis"], 1)
+                for actual, wanted in zip(combined_eq["y"], expected):
+                    self.assertAlmostEqual(actual, wanted, places=10)
         self.assertIn("Sub DSP Chain", html)
-        self.assertIn("EQ: Left Sub", html)
-        self.assertIn("EQ: Right Sub", html)
 
 
 class DriverEqFilterSplitTests(unittest.TestCase):
@@ -502,7 +532,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "comparison.html"
             create_comparison_html_report([("strict", rejected), ("conditional", conditional)], output)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertIn("strict — Saved DSP playback eligibility: rejected", html)
         self.assertIn("conditional — Saved DSP playback eligibility: accepted", html)
         self.assertIn("Not approved for playback", html)
@@ -703,7 +733,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertIn("Recorded final correction decisions", html)
         self.assertLess(html.index("Recorded final correction decisions"),
                         html.index('"subhead": "Summary"'))
@@ -712,7 +742,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "comparison.html"
             create_comparison_html_report([("iir", data), ("fir", data)], output)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
         self.assertEqual(html.count("Recorded final correction decisions"), 2)
         self.assertLess(html.index("Recorded final correction decisions"),
                         html.index("<h2>Summary</h2>"))
@@ -722,7 +752,7 @@ class SummarySectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.html"
             create_html_report(data, output, None)
-            html = output.read_text(encoding="utf-8")
+            html = decoded_report_contents(output.read_text(encoding="utf-8"))
 
         self.assertIn("EQ Filters", html)
         self.assertNotIn("<h2>All EQ Filters</h2>", html)
@@ -1186,7 +1216,7 @@ class AcousticReportTests(unittest.TestCase):
                          "1–8 kHz early reflections: L",
                          "First dip (Hz)",
                          "Early vs late sound: pending roomeq field",
-                         "Room mean: measured octave-band T60",
+            "Room mean: measured octave-band T60",
                          "Room T60 contributing speakers by octave: 63 Hz: 1"):
             self.assertIn(expected, html)
         # Removed duplications: no repeated Section 4 heading, no per-channel
@@ -1684,3 +1714,10 @@ class ReportBucketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def decoded_report_contents(html):
+    """Read the report data independently of JSON whitespace/script escaping."""
+    marker = '<script id="report-payload" type="application/json">'
+    payload = json.loads(html.split(marker, 1)[1].split('</script>', 1)[0])
+    return json.dumps(payload, ensure_ascii=False)

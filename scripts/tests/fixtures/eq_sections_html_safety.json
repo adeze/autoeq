@@ -1,0 +1,13 @@
+{
+  "passes": [
+    {
+      "label": "room_eq",
+      "display_name": "<img src=x onerror=\"alert(1)\">",
+      "color": "red\" onmouseover=\"alert(1)",
+      "filters": [
+        {"filter_type": "peak", "freq": 40, "q": 1, "db_gain": -2.5}
+      ]
+    }
+  ],
+  "id_prefix": "eq_';alert(1)//"
+}

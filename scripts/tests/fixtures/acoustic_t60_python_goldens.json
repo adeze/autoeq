@@ -1,0 +1,728 @@
+{
+  "schema": "autoeq-t60-python-golden-v1",
+  "inputs": {
+    "valid": {
+      "channels": {
+        "L": {
+          "t60_octaves": {
+            "basis": "measured_room_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          }
+        },
+        "R": {
+          "t60_octaves": {
+            "basis": "measured_room_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.25,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "t60_flatness_tolerance_s": 0.05,
+        "effective_config": {
+          "recording_config": {
+            "room_dimensions": {
+              "length": 5,
+              "width": 4,
+              "height": 5
+            }
+          }
+        }
+      }
+    },
+    "invalid": {
+      "channels": {
+        "L": {
+          "t60_octaves": {
+            "basis": "measured_room_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": null,
+                "fit_range": null,
+                "r2": 0.0,
+                "valid": false,
+                "reason": "above-nyquist <unsafe>"
+              }
+            ]
+          }
+        },
+        "R": {
+          "t60_octaves": {
+            "basis": "measured_room_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.6,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {}
+    },
+    "measured_reference": {
+      "channels": {
+        "L": {
+          "t60_octaves": {
+            "basis": "measured_room_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {}
+    },
+    "unsupported": {
+      "channels": {
+        "L": {
+          "t60_octaves": {
+            "basis": "reconstructed_transfer_ir",
+            "min_r2": 0.9,
+            "bands": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.96,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {}
+    }
+  },
+  "expected": {
+    "valid_l_rows": [
+      {
+        "centre_hz": 63,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 125,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 250,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 500,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 1000,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 2000,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 4000,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 8000,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 16000,
+        "t60_s": 0.25,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      }
+    ],
+    "invalid_l_rows": [
+      {
+        "centre_hz": 63,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 125,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 250,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 500,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 1000,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 2000,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 4000,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 8000,
+        "t60_s": 0.4,
+        "fit_range": "T30",
+        "r2": 0.96,
+        "reason": ""
+      },
+      {
+        "centre_hz": 16000,
+        "t60_s": null,
+        "fit_range": null,
+        "r2": 0.0,
+        "reason": "above-nyquist <unsafe>"
+      }
+    ],
+    "undeclared_tolerance": [
+      0.05,
+      false
+    ],
+    "declared_tolerance": [
+      0.05,
+      true
+    ],
+    "flatness_window": [
+      0.2,
+      0.3
+    ],
+    "flatness_pct_l": 100.0,
+    "room_rows": [
+      {
+        "centre_hz": 63,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 125,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 250,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 500,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 1000,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 2000,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 4000,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 8000,
+        "t60_s": 0.5,
+        "speaker_count": 2
+      },
+      {
+        "centre_hz": 16000,
+        "t60_s": 0.6,
+        "speaker_count": 1
+      }
+    ],
+    "volume_reference": {
+      "tm": 0.25,
+      "volume_m3": 100,
+      "source": "volume recommendation (100 m³)"
+    },
+    "measured_reference": {
+      "tm": 0.3,
+      "source": "measured midband mean; room volume unavailable"
+    },
+    "itu_pct_volume_l": 100.0,
+    "itu_pct_missing_volume_l": null,
+    "t60_table_html_invalid_l": "<div class=\"filters-section\"><h3>Octave-band T60</h3><p class=\"epa-footer\">Measured room IR; T30 preferred, T20 fallback. Invalid bands are excluded from the curve.</p><table class=\"epa-table\"><thead><tr><th>Centre (Hz)</th><th>T60 (s)</th><th>Fit</th><th>R²</th><th>Status</th></tr></thead><tbody><tr><td>63</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>125</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>250</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>500</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>1000</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>2000</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>4000</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>8000</td><td>0.400</td><td>T30</td><td>0.960</td><td>valid</td></tr><tr><td>16000</td><td>n/a</td><td>n/a</td><td>0.000</td><td>above-nyquist &lt;unsafe&gt;</td></tr></tbody></table></div>",
+    "t60_table_html_pending": "<p class=\"epa-footer\">Octave T60: pending roomeq field t60_octaves from a measured room impulse response.</p>",
+    "room_t60_table_html": "<h3>Octave-band T60 — room and speakers</h3><table class=\"epa-table\"><thead><tr><th>Centre (Hz)</th><th>Room mean (s)</th><th>Valid speakers</th><th>L T60 (s)</th><th>R T60 (s)</th></tr></thead><tbody><tr><td>63</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>125</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>250</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>500</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>1000</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>2000</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>4000</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>8000</td><td>0.500</td><td>2</td><td>0.400</td><td>0.600</td></tr><tr><td>16000</td><td>0.600</td><td>1</td><td>n/a</td><td>0.600</td></tr></tbody></table>",
+    "itu_note_html": "<p class=\"epa-footer\">ITU-R BS.1116-3 §8.2.3.1, Figure 1: Tm = 0.250 s — volume recommendation (100 m³). Upper limit covers 63 Hz–8 kHz; lower limit starts at 100 Hz. No extrapolated limits outside that range. A measured-mean reference checks relative decay shape only, not the volume-based recommendation. The summary’s fixed-window flatness score is a separate metric. <a href=\"https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1116-3-201502-I!!PDF-E.pdf\">ITU recommendation</a>.</p>",
+    "itu_note_unavailable_html": "<p class=\"epa-footer\">ITU-R BS.1116-3 §8.2.3.1, Figure 1: limits unavailable: no room volume or complete midband fits. Upper limit covers 63 Hz–8 kHz; lower limit starts at 100 Hz. No extrapolated limits outside that range. A measured-mean reference checks relative decay shape only, not the volume-based recommendation. The summary’s fixed-window flatness score is a separate metric. <a href=\"https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1116-3-201502-I!!PDF-E.pdf\">ITU recommendation</a>.</p>",
+    "flatness_cell_html": "<td style=\"background:#2ecc7133\" title=\"nine measured octave fits within declared ±0.05 s of the complete-channel room mean\">100.0</td>",
+    "flatness_cell_pending_html": "<td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td>",
+    "itu_cell_html": "<td style=\"background:#2ecc7133\" title=\"8/8 octave centers within ITU-R BS.1116-3 Figure 1 limits around the volume recommendation; 63 Hz has only an upper bound; 4 kHz uses the midband limits; 16 kHz is excluded. Not overall room compliance.\">100.0</td>",
+    "itu_cell_pending_html": "<td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td>"
+  }
+}

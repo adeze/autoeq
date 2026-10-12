@@ -3,9 +3,21 @@
 import math
 import sys
 
-import numpy as np
+from .native_ir_group_delay import compute_group_delay_from_ir
 
 from .data_extract import get_plottable_drivers
+
+
+def _playback_sample_rate(data):
+    """Prefer caller-owned playback context over legacy graph defaults."""
+    rate = getattr(data, "native_playback_sample_rate", None)
+    if rate is not None:
+        if type(rate) is not int or not 0 < rate <= 0xFFFFFFFF:
+            raise ValueError("DSP playback sample-rate context is invalid")
+        return float(rate)
+    if getattr(data, "native_dsp_replay_present", False):
+        raise ValueError("Native DSP replay requires explicit playback-rate context")
+    return float(data.get("sample_rate", 48_000.0) or 48_000.0)
 
 
 def smooth_octave(freq: list[float], spl: list[float], octave_fraction: float) -> list[float]:
@@ -290,64 +302,10 @@ def kautz_sections(filt: dict, sample_rate: float) -> list[tuple[float, float, f
 
 
 def serialized_filter_response(filt: dict, frequencies: list[float], sample_rate: float) -> list[complex]:
-    """Complex transfer matching Rust's serialized EQ realization contract.
+    """Delegate serialized EQ transfer evaluation to the canonical Rust producer."""
+    from .native_serialized_dsp import serialized_filter_response as native_response
 
-    Kautz is unity plus an ordered basis bank, not a cascade of PEQs. Warped
-    biquads map both design and evaluation frequencies. This is a transfer
-    prediction, not a recording or whole-host validation.
-    """
-    sample_rate = _finite_filter_number(sample_rate, "sample rate")
-    if sample_rate <= 0:
-        raise ValueError("EQ sample rate must be positive")
-    for frequency in frequencies:
-        _finite_filter_number(frequency, "evaluation frequency")
-        if not 0 <= frequency <= sample_rate / 2:
-            raise ValueError("EQ evaluation frequency must be between DC and Nyquist")
-    topology = filt.get("topology", "biquad")
-    if topology not in ("biquad", "warped_biquad", "kautz_filter"):
-        raise ValueError(f"unsupported serialized EQ topology: {topology!r}")
-    if topology == "kautz_filter":
-        sections = []
-        for pole, q, gain in kautz_sections(filt, sample_rate):
-            radius = min(math.exp(-math.pi * pole / (max(q, 0.1) * sample_rate)), 0.9999)
-            a1 = -2 * radius * math.cos(2 * math.pi * pole / sample_rate)
-            a2 = radius * radius
-            sections.append((a1, a2, gain * (1-a2)**1.5))
-        result = []
-        for frequency in frequencies:
-            angle = -2 * math.pi * frequency / sample_rate
-            z = complex(math.cos(angle), math.sin(angle))
-            chain, value = 1+0j, 1+0j
-            for a1, a2, numerator in sections:
-                denominator = 1 + a1*z + a2*z*z
-                value += numerator * chain / denominator
-                chain *= (a2 + a1*z + z*z) / denominator
-            result.append(value)
-        return result
-
-    center = filt.get("freq", filt.get("frequency", 1_000.0))
-    q, gain = filt.get("q", 1.0), filt.get("db_gain", filt.get("gain", 0.0))
-    evaluation = frequencies
-    if topology == "warped_biquad":
-        center = _finite_filter_number(filt.get("freq"), "frequency")
-        q = _finite_filter_number(filt.get("q"), "Q")
-        gain = _finite_filter_number(filt.get("db_gain"), "dB gain")
-        if not 0 < center < sample_rate / 2 or q <= 0:
-            raise ValueError("warped EQ requires a sub-Nyquist positive frequency and positive Q")
-        default_lambda = 1.0674 * math.sqrt(2/math.pi * math.atan(0.06583*sample_rate)) - 0.1916
-        lam = _finite_filter_number(filt.get("lambda", default_lambda), "lambda")
-        if not -1 < lam < 1:
-            raise ValueError("warped EQ lambda must be between -1 and 1")
-
-        def warp(frequency):
-            omega = 2 * math.pi * frequency / sample_rate
-            omega += 2 * math.atan2(lam * math.sin(omega), 1-lam*math.cos(omega))
-            return min(max(omega * sample_rate / (2*math.pi), 0.0), sample_rate/2)
-
-        center = warp(center)
-        evaluation = [warp(frequency) for frequency in frequencies]
-    coefficients = biquad_coefficients(filt.get("filter_type", "peak"), center, sample_rate, q, gain)
-    return [_biquad_complex_response(coefficients, frequency, sample_rate) for frequency in evaluation]
+    return native_response(filt, frequencies, sample_rate)
 
 
 def _biquad_complex_response(
@@ -419,65 +377,9 @@ def apply_plugins_to_curve(
     if not frequencies or len(frequencies) != len(spl):
         return None
 
-    transfer = [1.0 + 0.0j for _ in frequencies]
-    for plugin in plugins:
-        plugin_type = str(plugin.get("plugin_type", "")).lower()
-        parameters = plugin.get("parameters", {}) or {}
-        if plugin_type == "gain":
-            gain = 10.0 ** (float(parameters.get("gain_db", 0.0)) / 20.0)
-            if parameters.get("invert", False):
-                gain = -gain
-            transfer = [value * gain for value in transfer]
-        elif plugin_type in {"delay", "limiter"}:
-            if plugin_type == "limiter":
-                ceiling = parameters.get("threshold_db")
-                expected = {"threshold_db": ceiling, "release_ms": 100.0, "lookahead_ms": 5.0,
-                            "soft": False, "true_peak": False, "isp_mode": False,
-                            "dual_release": False, "mix": 1.0, "feed_forward": True,
-                            "link_amount": 1.0, "label": "room_eq_sub_output_limiter",
-                            "room_eq_stage": "post_route"}
-                if (not isinstance(ceiling, (int, float)) or not -20.0 <= ceiling <= -1.0
-                        or parameters != expected):
-                    raise ValueError("unsupported small-signal limiter contract")
-                # Only below-threshold response is representable by a curve.
-                delay_seconds = int(0.005 * sample_rate) / sample_rate
-            else:
-                delay_seconds = float(parameters.get("delay_ms", 0.0)) / 1000.0
-            transfer = [
-                value
-                * complex(
-                    math.cos(-2.0 * math.pi * frequency * delay_seconds),
-                    math.sin(-2.0 * math.pi * frequency * delay_seconds),
-                )
-                for value, frequency in zip(transfer, frequencies)
-            ]
-        elif plugin_type == "eq":
-            for filt in parameters.get("filters", []):
-                transfer = [
-                    value * eq
-                    for value, eq in zip(transfer, serialized_filter_response(filt, frequencies, sample_rate))
-                ]
-        elif plugin_type == "convolution" and parameters.get("room_eq_fir_placement") == "per_driver":
-            taps = parameters.get("_fir_taps")
-            if not taps or parameters.get("_fir_sample_rate") != sample_rate:
-                raise ValueError("Physical FIR replay requires its matching WAV sidecar; use load_roomeq_json")
-            # Direct Horner DTFT: includes each driver's own phase and latency.
-            for index, frequency in enumerate(frequencies):
-                angle = -2.0 * math.pi * frequency / sample_rate
-                z = complex(math.cos(angle), math.sin(angle))
-                h = 0j
-                for tap in reversed(taps):
-                    h = h * z + tap
-                transfer[index] *= h
-        elif plugin_type == "crossover":
-            crossover = _crossover_response(
-                str(parameters.get("type", "LR24")),
-                str(parameters.get("output", "low")),
-                float(parameters.get("frequency", 80.0)),
-                frequencies,
-                sample_rate,
-            )
-            transfer = [value * xover for value, xover in zip(transfer, crossover)]
+    from .native_serialized_chain import serialized_plugin_chain_response
+
+    transfer = serialized_plugin_chain_response(plugins, frequencies, sample_rate)
 
     phase = curve.get("phase")
     has_phase = isinstance(phase, list) and len(phase) == len(frequencies)
@@ -509,47 +411,9 @@ def resample_spl_onto_grid(
     different stages (driver measurements vs. deployed replay grids) share one
     x-axis instead of crashing on length mismatches.
     """
-    if (
-        not source_freq
-        or not target_freq
-        or len(source_freq) != len(source_spl)
-        or len(target_freq) == 0
-    ):
-        return list(source_spl)
-    if len(source_freq) == len(target_freq) and all(
-        a == b for a, b in zip(source_freq, target_freq)
-    ):
-        return list(source_spl)
-    pairs = sorted(
-        (float(f), float(s))
-        for f, s in zip(source_freq, source_spl)
-        if isinstance(f, (int, float))
-        and isinstance(s, (int, float))
-        and math.isfinite(f)
-        and math.isfinite(s)
-        and f > 0.0
-    )
-    if not pairs:
-        return list(source_spl)
-    if len(pairs) == 1:
-        return [pairs[0][1]] * len(target_freq)
-    log_src = [math.log10(f) for f, _ in pairs]
-    spl_src = [s for _, s in pairs]
+    from .native_response_figures import resample_spl_onto_grid as _native_resample
 
-    def interp(log_f: float) -> float:
-        if log_f <= log_src[0]:
-            return spl_src[0]
-        if log_f >= log_src[-1]:
-            return spl_src[-1]
-        upper = 1
-        while upper < len(log_src) - 1 and log_src[upper] < log_f:
-            upper += 1
-        lower = upper - 1
-        span = log_src[upper] - log_src[lower]
-        position = (log_f - log_src[lower]) / span if span > 0.0 else 0.0
-        return spl_src[lower] + position * (spl_src[upper] - spl_src[lower])
-
-    return [interp(math.log10(float(f))) if f > 0.0 else spl_src[0] for f in target_freq]
+    return _native_resample(source_freq, source_spl, target_freq)
 
 
 def _resample_curve_onto_grid(curve: dict | None, target_freq: list[float]) -> dict | None:
@@ -686,7 +550,7 @@ def sum_driver_initial_curves(channel_data: dict | None) -> dict | None:
 
 def replay_serialized_output(data: dict) -> dict[str, dict]:
     """Replay serialized channel chains without consuming reported curves."""
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     replayed = {}
     for name, channel in (data.get("channels", {}) or {}).items():
         curve = channel.get("initial_curve") or channel.get("raw_curve")
@@ -948,6 +812,9 @@ def per_driver_effective_eq(
     subwoofer of a multi-sub channel. Returns `None` when the driver
     has no usable frequency grid.
     """
+    if getattr(data, "native_dsp_replay_present", False):
+        # Prepared acoustic curves do not certify a separate electrical EQ preview.
+        return None
     channel = (data.get("channels") or {}).get(channel_name)
     drivers = get_plottable_drivers(channel)
     if driver_index < 0 or driver_index >= len(drivers):
@@ -956,7 +823,7 @@ def per_driver_effective_eq(
     chain = per_driver_chain_plugins(data, channel_name, driver_index) or []
     if not grid or not chain:
         return None
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     return apply_plugins_to_curve(
         {"freq": list(grid), "spl": [0.0] * len(grid)}, chain, sample_rate
     )
@@ -974,11 +841,15 @@ def per_driver_corrected_curve(
     drivers = get_plottable_drivers(channel)
     if driver_index < 0 or driver_index >= len(drivers):
         return None
+    if getattr(data, "native_dsp_replay_present", False):
+        from .native_driver_replay import resolve_native_driver_curve
+        _, curve, _ = resolve_native_driver_curve(data, channel_name, drivers[driver_index])
+        return curve
     initial = drivers[driver_index].get("initial_curve")
     chain = per_driver_chain_plugins(data, channel_name, driver_index) or []
     if not initial or not chain:
         return None
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
     return apply_plugins_to_curve(initial, chain, sample_rate)
 
 
@@ -997,6 +868,11 @@ def build_post_dsp_source_curves(data: dict) -> dict[str, dict]:
     Multi-driver subs replay each driver's own measurement so the result
     stays at the acoustic level instead of the level-relative aggregate.
     """
+    from .native_source_replay import resolve_native_source_curves
+    handled, native_curves = resolve_native_source_curves(data)
+    if handled:
+        return native_curves
+
     deployed = data.get("deployed_source_curves") or {}
     if deployed:
         return deployed
@@ -1033,7 +909,7 @@ def build_post_dsp_source_curves(data: dict) -> dict[str, dict]:
         for plugin in sub_channel.get("plugins", [])
         if (plugin.get("parameters", {}) or {}).get("room_eq_stage") == "post_route"
     ]
-    sample_rate = float(data.get("sample_rate", 48_000.0) or 48_000.0)
+    sample_rate = _playback_sample_rate(data)
 
     # The channel aggregate of a multi-driver sub is level-relative
     # optimizer state. Redirected branches must replay the acoustic
@@ -1225,59 +1101,6 @@ def unwrap_phase(phase_deg: list[float]) -> list[float]:
 def wrap_phase(phase_deg: list[float]) -> list[float]:
     """Wrap phase to the JSON/report convention ``[-180, 180)``."""
     return [((float(value) + 180.0) % 360.0) - 180.0 for value in phase_deg]
-
-
-def compute_group_delay_from_ir(
-    ir: dict | None,
-    min_freq: float = 20.0,
-    max_freq: float = 20_000.0,
-    point_count: int = 512,
-) -> tuple[list[float], list[float]]:
-    """Derive group delay from an impulse-response waveform.
-
-    The serialized curve phase is intentionally wrapped for display and a
-    sparse log-frequency phase curve cannot be unwrapped reliably when the
-    acoustic propagation delay spans multiple turns between points.  The IR
-    retains that timing, so its dense FFT phase is the authoritative source
-    for the group-delay plot.
-    """
-    if not ir:
-        return [], []
-    time_ms = np.asarray(ir.get("time_ms", []), dtype=float)
-    amplitude = np.asarray(ir.get("amplitude", []), dtype=float)
-    if time_ms.size < 4 or amplitude.size != time_ms.size:
-        return [], []
-
-    steps_ms = np.diff(time_ms)
-    finite_steps = steps_ms[np.isfinite(steps_ms) & (steps_ms > 0.0)]
-    if finite_steps.size == 0:
-        return [], []
-    sample_rate = 1000.0 / float(np.median(finite_steps))
-    nyquist = sample_rate / 2.0
-    upper = min(float(max_freq), nyquist)
-    lower = max(float(min_freq), sample_rate / amplitude.size)
-    if not math.isfinite(sample_rate) or lower >= upper:
-        return [], []
-
-    spectrum = np.fft.rfft(amplitude)
-    fft_freq = np.fft.rfftfreq(amplitude.size, d=1.0 / sample_rate)
-    magnitude = np.abs(spectrum)
-    peak_magnitude = float(np.max(magnitude))
-    if not math.isfinite(peak_magnitude) or peak_magnitude <= 1.0e-12:
-        return [], []
-
-    phase = np.unwrap(np.angle(spectrum))
-    output_freq = np.geomspace(lower, upper, max(8, int(point_count)))
-    output_phase = np.interp(output_freq, fft_freq, phase)
-    omega = 2.0 * np.pi * output_freq
-    group_delay_ms = -np.gradient(output_phase, omega) * 1000.0
-    output_magnitude = np.interp(output_freq, fft_freq, magnitude)
-    valid = (
-        np.isfinite(group_delay_ms)
-        & np.isfinite(output_magnitude)
-        & (output_magnitude >= peak_magnitude * 1.0e-8)
-    )
-    return output_freq[valid].tolist(), group_delay_ms[valid].tolist()
 
 
 def compute_group_delay(

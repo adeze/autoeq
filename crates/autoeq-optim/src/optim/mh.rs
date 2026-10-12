@@ -319,7 +319,7 @@ pub fn optimize_filters_mh(
     mh_name: &str,
     population: usize,
     maxeval: usize,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_mh_seeded(
         x,
         lower_bounds,
@@ -342,7 +342,7 @@ fn optimize_filters_mh_seeded(
     population: usize,
     maxeval: usize,
     seed: u64,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     // Create default callback for terminal output
     let callback = create_mh_callback(&format!("mh::{}", mh_name));
 
@@ -371,7 +371,7 @@ pub fn optimize_filters_mh_with_callback(
     population: usize,
     maxeval: usize,
     callback: Box<dyn FnMut(&MHIntermediate) -> CallbackAction + Send>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_mh_with_callback_seeded(
         x,
         lower_bounds,

@@ -126,6 +126,40 @@ h2 {
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     overflow-x: auto;
 }
+.capture-quality-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.capture-quality-actions[hidden] {
+    display: none;
+}
+.capture-quality-actions button {
+    font: inherit;
+    font-size: 0.88em;
+    min-height: 30px;
+    border: 1px solid #b9c8d8;
+    border-radius: 5px;
+    background: #fff;
+    color: #244f72;
+    padding: 4px 9px;
+    cursor: pointer;
+}
+.capture-quality-actions button:hover {
+    background: #e8f1fa;
+}
+.capture-quality-actions button:focus-visible {
+    outline: 2px solid #4a90d9;
+    outline-offset: 2px;
+}
+html[data-report-theme="dark"] .capture-quality-actions button {
+    border-color: #596578;
+    background: #202630;
+    color: #e7eef8;
+}
+html[data-report-theme="dark"] .capture-quality-actions button:hover {
+    background: #303b4b;
+}
 /* Single-card rule: `.html-section` is the only card. Producer grouping
    wrappers render flat inside it, and `flat` sections (self-framed
    verdicts) skip the card entirely. */
@@ -159,6 +193,7 @@ h2 {
 }
 .bucket-bar {
     display: flex;
+    flex-wrap: wrap;
     justify-content: center;
     gap: 6px;
     margin: 4px 0 20px;
@@ -207,11 +242,12 @@ th {
 }
 .header-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 16px;
 }
 .header-row h1 {
-    flex: 1;
+    flex: 1 1 200px;
     margin: 0;
 }
 .header-meta {
@@ -219,7 +255,9 @@ th {
     flex-direction: column;
     align-items: flex-end;
     gap: 2px;
-    flex-shrink: 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 #report-provenance {
     font-size: 12px;
@@ -230,6 +268,7 @@ th {
 }
 .viewbar {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     align-items: center;
     margin-bottom: 0;
@@ -386,11 +425,22 @@ function b64ToBytes(b64) {
     return out;
 }
 function showError(msg) {
+    const message = String(msg);
     const box = document.getElementById("report-errors");
-    const div = document.createElement("div");
-    div.className = "render-error";
-    div.textContent = msg;
-    box.appendChild(div);
+    if (box) {
+        const div = document.createElement("div");
+        div.className = "render-error";
+        div.textContent = message;
+        box.appendChild(div);
+    }
+    const host = readyReportHost();
+    if (host) {
+        try {
+            host.send({action: "error", message});
+        } catch (error) {
+            console.warn("SotF report host error notification failed:", error);
+        }
+    }
 }
 async function importGlue(glueText) {
     // Blob URLs in browsers (no size limits); data: URLs where blobs cannot
@@ -439,6 +489,99 @@ if (payload) {
 
 const canvases = []; // {id, section, originalSection, el, tab, smoothing, viewport, panEnabled}
 let wasm2d = null;
+let reportRendererReady = false;
+let readySentReportId = null;
+
+const captureActionLabels = {
+    en: {select: "Select", retake: "Review retake"},
+    fr: {select: "Sélectionner", retake: "Examiner une nouvelle prise"},
+    de: {select: "Auswählen", retake: "Neuaufnahme prüfen"},
+    es: {select: "Seleccionar", retake: "Revisar nueva toma"},
+};
+
+function readyReportHost() {
+    const host = window.sotfReportHost;
+    if (!host || host.version !== 1 || typeof host.send !== "function" ||
+        typeof host.reportId !== "string" || !host.reportId.trim()) return null;
+    return host;
+}
+
+function reportLocale(value) {
+    return Object.prototype.hasOwnProperty.call(captureActionLabels, value) ? value : "en";
+}
+
+function applyHostPresentation(hostValues) {
+    if (!hostValues || typeof hostValues !== "object") return;
+    const root = document.documentElement;
+    if (hostValues.theme === "light" || hostValues.theme === "dark") {
+        root.dataset.reportTheme = hostValues.theme;
+    } else {
+        delete root.dataset.reportTheme;
+    }
+    const labels = captureActionLabels[reportLocale(hostValues.locale)];
+    for (const button of document.querySelectorAll("[data-report-capture-action]")) {
+        const action = button.dataset.reportCaptureAction;
+        if (labels[action]) button.textContent = labels[action];
+    }
+}
+
+function refreshCaptureQualityActions(root = document) {
+    const host = readyReportHost();
+    const enabled = host !== null;
+    const labels = captureActionLabels[reportLocale(host?.locale)];
+    for (const controls of root.querySelectorAll(".capture-quality-actions")) {
+        controls.hidden = !enabled;
+        for (const button of controls.querySelectorAll("button[data-report-capture-action]")) {
+            const action = button.dataset.reportCaptureAction;
+            if (labels[action]) button.textContent = labels[action];
+            button.disabled = !enabled;
+        }
+    }
+}
+
+function notifyReportViewerReady() {
+    reportRendererReady = true;
+    const host = readyReportHost();
+    if (!host || readySentReportId === host.reportId) return;
+    try {
+        host.send({action: "ready", renderer: "autoeq-report-wasm"});
+        readySentReportId = host.reportId;
+    } catch (error) {
+        console.warn("SotF report host readiness notification failed:", error);
+    }
+}
+
+window.addEventListener("sotf-report-host-ready", event => {
+    const detail = event.detail;
+    if (!detail || detail.version !== 1) return;
+    const host = readyReportHost();
+    if (!host || host.reportId !== detail.reportId) return;
+    applyHostPresentation(detail);
+    refreshCaptureQualityActions();
+    if (reportRendererReady) notifyReportViewerReady();
+});
+
+document.addEventListener("click", event => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest("button[data-report-capture-action]");
+    const host = readyReportHost();
+    if (!button || !host || button.disabled) return;
+    const controls = button.closest(".capture-quality-actions[data-capture-source-id]");
+    const sourceId = controls?.dataset.captureSourceId;
+    const action = button.dataset.reportCaptureAction;
+    if (!sourceId || (action !== "select" && action !== "retake")) return;
+    try {
+        host.send({
+            action,
+            selection: {source_id: sourceId, microphone_id: null, take_id: null},
+        });
+    } catch (error) {
+        console.warn("SotF capture-quality action failed:", error);
+    }
+});
+
+if (readyReportHost()) applyHostPresentation(window.sotfReportHost);
+refreshCaptureQualityActions();
 
 function sectionHeight(kind, cssW) {
     if (kind === "sankey") return Math.min(560, Math.max(320, cssW * 0.5));
@@ -461,6 +604,7 @@ function appendSection(host, sec, i) {
         const div = document.createElement("div");
         div.className = "html-section" + (sec.flat ? " flat" : "");
         div.innerHTML = sec.html;
+        refreshCaptureQualityActions(div);
         host.appendChild(div);
         for (const placeholder of div.querySelectorAll(".report-figure[data-section]")) {
             const chart = JSON.parse(placeholder.dataset.section);
@@ -1204,17 +1348,16 @@ window.addEventListener("resize", () => {
 async function boot2d() {
     try {
         wasm2d = await loadBundle(WASM_2D_B64, GLUE_2D_B64);
-    } catch (e) {
-        showError("Could not start the 2D plot renderer: " + e);
-        return;
+        if (wasm2d.schema_version && wasm2d.schema_version() !== SCHEMA) {
+            throw new Error("Renderer/payload schema mismatch.");
+        }
+        buildDom();
+        renderVisible();
+        wireLegendClicks();
+        notifyReportViewerReady();
+    } catch (error) {
+        showError("Could not start the 2D report renderer: " + error);
     }
-    if (wasm2d.schema_version && wasm2d.schema_version() !== SCHEMA) {
-        showError("Renderer/payload schema mismatch.");
-        return;
-    }
-    buildDom();
-    renderVisible();
-    wireLegendClicks();
 }
 
 // One report and one d3rs/WASM geometry path. WebGPU only changes rasterization.
@@ -1320,7 +1463,9 @@ struct Vertex { @builtin(position) position: vec4f, @location(0) color: vec4f };
 if (payload) {
     // Render immediately, then upgrade surfaces when the adapter is ready.
     boot2d();
-    bootGpu().then(() => { if (wasm2d) renderVisible(); });
+    bootGpu().then(() => { if (wasm2d) renderVisible(); }).catch(error => {
+        showError("Could not finish report rendering: " + error);
+    });
 }
 </script>
 </body>

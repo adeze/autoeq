@@ -1,0 +1,286 @@
+{
+  "input": {
+    "label": "Left",
+    "speech_transmission": {
+      "speech_transmission": {
+        "method": "iec_60268_16_2020_indirect_ir_only_v1",
+        "basis": "measured_room_ir",
+        "octave_centers_hz": [
+          125,
+          250,
+          500,
+          1000,
+          2000,
+          4000,
+          8000
+        ],
+        "modulation_frequencies_hz": [
+          0.63,
+          0.8,
+          1,
+          1.25,
+          1.6,
+          2,
+          2.5,
+          3.15,
+          4,
+          5,
+          6.3,
+          8,
+          10,
+          12.5
+        ],
+        "sti": 0.72,
+        "sample_rate_hz": 48000,
+        "duration_s": 1.25,
+        "mti": [
+          0.7,
+          0.71,
+          0.72,
+          0.73,
+          0.74,
+          0.75,
+          0.76
+        ],
+        "modulation_transfer": [
+          [
+            0.5,
+            0.51,
+            0.52,
+            0.53,
+            0.54,
+            0.55,
+            0.56
+          ],
+          [
+            0.5700000000000001,
+            0.58,
+            0.59,
+            0.6,
+            0.61,
+            0.62,
+            0.63
+          ],
+          [
+            0.64,
+            0.65,
+            0.66,
+            0.67,
+            0.6799999999999999,
+            0.69,
+            0.7
+          ],
+          [
+            0.71,
+            0.72,
+            0.73,
+            0.74,
+            0.75,
+            0.76,
+            0.77
+          ],
+          [
+            0.78,
+            0.79,
+            0.8,
+            0.81,
+            0.8200000000000001,
+            0.8300000000000001,
+            0.8400000000000001
+          ],
+          [
+            0.85,
+            0.86,
+            0.87,
+            0.88,
+            0.89,
+            0.9,
+            0.9099999999999999
+          ],
+          [
+            0.9199999999999999,
+            0.9299999999999999,
+            0.94,
+            0.95,
+            0.96,
+            0.97,
+            0.98
+          ],
+          [
+            0.99,
+            1.0,
+            1.01,
+            1.02,
+            1.03,
+            1.04,
+            1.05
+          ],
+          [
+            1.06,
+            1.0699999999999998,
+            1.08,
+            1.0899999999999999,
+            1.1,
+            1.1099999999999999,
+            1.12
+          ],
+          [
+            1.13,
+            1.1400000000000001,
+            1.15,
+            1.1600000000000001,
+            1.17,
+            1.1800000000000002,
+            1.19
+          ],
+          [
+            1.2,
+            1.21,
+            1.22,
+            1.23,
+            1.24,
+            1.25,
+            1.26
+          ],
+          [
+            1.27,
+            1.28,
+            1.29,
+            1.3,
+            1.31,
+            1.3199999999999998,
+            1.33
+          ],
+          [
+            1.3399999999999999,
+            1.35,
+            1.3599999999999999,
+            1.37,
+            1.38,
+            1.3900000000000001,
+            1.4
+          ],
+          [
+            1.4100000000000001,
+            1.42,
+            1.4300000000000002,
+            1.44,
+            1.45,
+            1.46,
+            1.47
+          ]
+        ],
+        "warnings": [
+          "Measured scope only"
+        ]
+      }
+    },
+    "waterfall": {
+      "basis": "measured_room_ir",
+      "method": "hann_stft_waterfall_v1",
+      "reference": "full_grid_peak",
+      "window_ms": 32.0,
+      "hop_ms": 2.0,
+      "post_ms": 500.0,
+      "valid_band_hz": [
+        80,
+        20000
+      ],
+      "scope": "Pre-correction measured response",
+      "times_ms": [
+        0,
+        10,
+        20
+      ],
+      "freqs_hz": [
+        100,
+        1000,
+        10000
+      ],
+      "mags_db": [
+        [
+          0,
+          -10,
+          -20
+        ],
+        [
+          -20,
+          -30,
+          -40
+        ],
+        [
+          -40,
+          -50,
+          -60
+        ]
+      ]
+    },
+    "resonance_decays": {
+      "basis": "measured_room_ir",
+      "method": "hann_stft_waterfall_v1",
+      "reference": "full_grid_peak",
+      "slice_ms": 60.0,
+      "decays": [
+        {
+          "freq_hz": 1000.0,
+          "level_db": -8.5,
+          "decay_time_s": 0.42
+        },
+        {
+          "freq_hz": 10000.0,
+          "level_db": -20.0,
+          "decay_time_s": null
+        }
+      ]
+    },
+    "wavelet": {
+      "basis": "measured_room_ir",
+      "method": "complex_morlet_three_cycle_v1",
+      "reference": "full_grid_peak",
+      "cycles": 3.0,
+      "freqs_per_octave": 6.0,
+      "hop_ms": 1.0,
+      "display_range_db": [
+        -30.0,
+        0.0
+      ],
+      "valid_band_hz": [
+        80,
+        20000
+      ],
+      "scope": "Pre-correction measured response",
+      "freqs_hz": [
+        100,
+        1000,
+        10000
+      ],
+      "times_ms": [
+        0,
+        2,
+        4
+      ],
+      "mags_db": [
+        [
+          0,
+          -1,
+          -4
+        ],
+        [
+          -8,
+          -9,
+          -10
+        ],
+        [
+          -20,
+          -25,
+          -30
+        ]
+      ]
+    }
+  },
+  "expected": {
+    "speech_transmission_html": "<h3>Speech Transmission Index — Left</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+    "optimization_waterfall_html": "<h3>Measured room IR waterfall and resonance decay</h3><p>Pre-correction measured response</p><p>Supported band: 80–20000 Hz. The grid is referenced to its own full-grid peak; colors and levels do not compare absolute output between channels.</p><h4>Pre-correction</h4><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Measured room IR waterfall&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 10000}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 20}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;1000.0 Hz&quot;, &quot;x&quot;: [], &quot;y&quot;: [], &quot;color&quot;: &quot;#cc47cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;10000.0 Hz&quot;, &quot;x&quot;: [], &quot;y&quot;: [], &quot;color&quot;: &quot;#cc47cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 1000, 10000], &quot;y&quot;: [0, 10, 20], &quot;z&quot;: [[0, -10, -20], [-20, -30, -40], [-40, -50, -60]], &quot;surface&quot;: true, &quot;zmin&quot;: -60, &quot;zmax&quot;: 0, &quot;highlights&quot;: [1, 2], &quot;colormap&quot;: &quot;turbo&quot;, &quot;show_surface&quot;: false, &quot;show_contours&quot;: true}}\"></div><table><caption>Detected 60 ms peaks and fitted 20–200 ms decay</caption><tr><th>Frequency (Hz)</th><th>Level (dB re own grid peak)</th><th>Fitted decay (s)</th></tr><tr><td>1e+03</td><td>-8.50</td><td>0.42</td></tr><tr><td>1e+04</td><td>-20.00</td><td>unavailable</td></tr></table><p>Highlighted: up to two longest fitted decays, then strongest 60 ms peak. Curves retain the full-grid peak reference; no fitted intercept is exported, so no extrapolated fit line is invented.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Pre-correction: decay of highlighted resonances&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 500}, &quot;y&quot;: {&quot;label&quot;: &quot;Level relative to full grid peak (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -60, &quot;max&quot;: 0}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;1000.0 Hz — T60 0.420 s&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [-10.0, -30.0, -50.0], &quot;color&quot;: &quot;#cc47cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;10000.0 Hz&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [-20.0, -40.0, -60.0], &quot;color&quot;: &quot;#cc47cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div>",
+    "optimization_wavelet_html": "<h3>Measured room IR three-cycle wavelet</h3><p>Blue = −30 dB, red = 0 dB relative to the channel’s own full wavelet-grid peak. Colors do not compare absolute output levels.</p><p>Frequency runs left to right; time runs upward. Dense exports use 0.1 ms early-time sampling through 15 ms and 1 ms later sampling; the recorded time coordinates remain authoritative.</p><p>Three-cycle wavelet; first 15 ms (3 exported time samples). Log-frequency x-axis, time y-axis. Colours retain the full-grid peak reference. The cyan dashed ridge marks peak energy arrival time per frequency. Display cells reflect the exported sampling; zoom cannot restore omitted samples.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Measured room IR three-cycle wavelet heatmap&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 10000}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 4}, &quot;y2&quot;: null, &quot;series&quot;: [], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 1000, 10000], &quot;y&quot;: [0, 2, 4], &quot;z&quot;: [[0, -8, -20], [-1, -9, -25], [-4, -10, -30]], &quot;surface&quot;: false, &quot;zmin&quot;: -30, &quot;zmax&quot;: 0, &quot;highlights&quot;: []}}\"></div>"
+  }
+}

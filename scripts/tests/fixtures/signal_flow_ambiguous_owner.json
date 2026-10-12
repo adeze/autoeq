@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "html",
+    "html": "<p>Read left to right. Each numbered node is a saved processing stage; expand its row below for parameters. Branches join at Σ before output processing. Link widths show connections, not signal level. Select All channels for the complete graph, or an output for its inputs.</p>",
+    "tab": null
+  },
+  {
+    "kind": "html",
+    "html": "<p>Signal flow unavailable: a plugin has no explicit pre-route/post-route ownership. Regenerate this legacy output with explicit routing ownership.</p>",
+    "tab": "All channels"
+  },
+  {
+    "kind": "html",
+    "html": "<p>Signal flow unavailable: a plugin has no explicit pre-route/post-route ownership. Regenerate this legacy output with explicit routing ownership.</p>",
+    "tab": "L"
+  }
+]

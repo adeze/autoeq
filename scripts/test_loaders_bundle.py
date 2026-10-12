@@ -10,6 +10,7 @@ from unittest import mock
 
 import scripts.src.loaders as loaders
 from scripts.src.loaders import assets_dir_for, load_roomeq_json
+from scripts.src.dsp import apply_plugins_to_curve
 from scripts.src.payload_binding import ALGORITHM, payload_digest, verify_payload_binding
 
 
@@ -226,6 +227,12 @@ class BundleLoaderTests(unittest.TestCase):
 
             source_resource.write_bytes(b"tampered after load")
             self.assertEqual(snapshot_resource.read_bytes(), wav_bytes)
+            replay = apply_plugins_to_curve(
+                {"freq": [12_000.0], "spl": [80.0], "phase": [0.0]},
+                data["channels"]["L"]["drivers"][0]["plugins"],
+            )
+            self.assertAlmostEqual(replay["spl"][0], 74.24268947394387, delta=1e-10)
+            self.assertAlmostEqual(replay["phase"][0], 75.96375653207353, delta=1e-10)
             snapshot_directory = data.assets_directory
             data.close()
             self.assertFalse(snapshot_directory.exists())

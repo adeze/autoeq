@@ -1,0 +1,55 @@
+{
+  "source": "pre-port scripts.src.report._report_provenance",
+  "cases": [
+    {
+      "name": "ordered_unique_versions_and_timestamps",
+      "prepared": {
+        "versions": [" 1.2.0 ", "2.0.0", "1.2.0"],
+        "timestamps": [" t1 ", "t2", "t1"],
+        "generated_at": "2026-10-11T12:34:56Z"
+      },
+      "expected": {
+        "roomeq_version": "1.2.0 / 2.0.0",
+        "data_timestamp": "t1 / t2",
+        "generated_at": "2026-10-11T12:34:56Z"
+      }
+    },
+    {
+      "name": "version_fallback_and_blank_timestamps",
+      "prepared": {
+        "versions": [" 3.1 ", " 4.0 "],
+        "timestamps": [" "],
+        "generated_at": "2026-10-11T12:34:56Z"
+      },
+      "expected": {
+        "roomeq_version": "3.1 / 4.0",
+        "generated_at": "2026-10-11T12:34:56Z"
+      }
+    },
+    {
+      "name": "legacy_timestamp_dedup_compares_before_trimming",
+      "prepared": {
+        "versions": ["1.0"],
+        "timestamps": ["t1", " t1 "],
+        "generated_at": "2026-10-11T12:34:56Z"
+      },
+      "expected": {
+        "roomeq_version": "1.0",
+        "data_timestamp": "t1 / t1",
+        "generated_at": "2026-10-11T12:34:56Z"
+      }
+    },
+    {
+      "name": "missing_stamp_uses_workspace_fallback",
+      "prepared": {
+        "versions": ["0.5.77"],
+        "timestamps": [],
+        "generated_at": "2026-10-11T12:34:56Z"
+      },
+      "expected": {
+        "roomeq_version": "0.5.77",
+        "generated_at": "2026-10-11T12:34:56Z"
+      }
+    }
+  ]
+}

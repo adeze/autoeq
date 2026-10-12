@@ -502,13 +502,9 @@ pub struct ChannelSpeechTransmission {
     pub warnings: Vec<String>,
 }
 
-/// Backend-neutral serialized plugin descriptor. Native adapters translate this
-/// contract into their runtime types; the model does not depend on AudioEngine.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PluginConfigWrapper {
-    pub plugin_type: String,
-    pub parameters: serde_json::Value,
-}
+/// Portable serialized plugin descriptor shared with canonical DSP realization.
+#[doc(inline)]
+pub use autoeq_core::serialized_plugins::PluginConfigWrapper;
 
 /// Per-channel EPA psychoacoustic metrics computed on the initial
 /// (pre-EQ) and final (post-EQ) frequency responses.

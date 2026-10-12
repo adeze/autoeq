@@ -1,0 +1,603 @@
+[
+  {
+    "builder": "correction_explanation",
+    "data": {
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "rejected",
+          "decision": "rejected",
+          "violations": [
+            "headroom unknown"
+          ],
+          "acoustic_quality": {
+            "correction_band_hz": [
+              40,
+              18000
+            ],
+            "evaluated_band_hz": [
+              20,
+              20000
+            ],
+            "final_seats": [
+              {
+                "logical_input": "L",
+                "partition": "main",
+                "seat_index": 0,
+                "unassessed_bands_hz": [
+                  [
+                    20,
+                    40
+                  ],
+                  [
+                    18000,
+                    20000
+                  ]
+                ]
+              }
+            ],
+            "useful_output": [
+              {
+                "logical_input": "L",
+                "partition": "main",
+                "seat_index": 0,
+                "mean_level_change_db": -2.5,
+                "unexplained_loss_rms_db": 1.25,
+                "worst_unexplained_loss_db": 3.5,
+                "worst_loss_frequency_hz": 1000
+              }
+            ]
+          }
+        },
+        "effective_config": {
+          "optimizer": {
+            "correction_band": {
+              "min_hz": 40,
+              "max_hz": 18000
+            },
+            "min_freq": 20,
+            "max_freq": 20000
+          }
+        },
+        "stage_outcomes": [
+          {
+            "stage": "filter_design",
+            "status": "degraded",
+            "advisories": [
+              "limit applied"
+            ],
+            "checks": [
+              {
+                "id": "phase",
+                "passed": false,
+                "diagnostic": "phase unavailable"
+              }
+            ]
+          }
+        ],
+        "playback_comparisons": [
+          {
+            "capture_kind": "simulated_backend",
+            "processing_state": "small_signal",
+            "baseline_graph_identity": "base-1",
+            "candidate_graph_identity": "final-2",
+            "stimulus_hash": "abc",
+            "source_id": "L",
+            "seat_ids": [
+              0
+            ]
+          }
+        ],
+        "listening_evidence": {
+          "result": "inconclusive",
+          "protocol_id": "ABX-1"
+        },
+        "audibility_veto": {
+          "L": [
+            {
+              "center_hz": 1000,
+              "decision": "Remove",
+              "enforced": false,
+              "reason": "Audible",
+              "acceptance": {
+                "confidence": "low"
+              }
+            }
+          ]
+        }
+      },
+      "channels": {
+        "L": {}
+      }
+    },
+    "label": "Left <main>",
+    "expected": "<section class=\"correction-explanation\"><h2>Why this correction? — Left &lt;main&gt;</h2><p>Recorded reasons for correction scope, limitations and the final outcome.</p><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Channel / scope</th><th>Frequency</th><th>Decision</th><th>Why</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">All assessed frequencies</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final outcome</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">The final correction was rejected. Earlier applied stages do not establish an accepted result.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">40–18000 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Recorded active-correction band.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">20–40 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Outside correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Excluded from the active correction band. Routing, crossovers, gain and filter tails can still affect playback here.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">18000–20000 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Outside correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Excluded from the active correction band. Routing, crossovers, gain and filter tails can still affect playback here.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">L / main / seat 0</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">20–40 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Not assessed</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final playback was not assessed in this band. This does not establish that correction was absent or unnecessary.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">L / main / seat 0</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">18000–20000 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Not assessed</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final playback was not assessed in this band. This does not establish that correction was absent or unnecessary.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Individual decisions unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Reason unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">No versioned decision ledger was recorded with this output. Detailed reasons for individual peaks and dips are unavailable.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">L</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">1000 Hz (filter center)</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Removal nominated (advisory)</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Passed the configured veto rules; this is not proof of audibility. Confidence: low. This filter-center record does not establish a frequency interval or the final exported filter set.</td></tr></tbody></table></div><h3>Recorded playback and listening verification</h3><ul><li>Playback check (exported-backend simulation (not an acoustic recording); small_signal): recorded. Source L. Seats: 0. Baseline base-1; candidate final-2; stimulus abc.</li><li>Recorded listening outcome: inconclusive (protocol ABX-1). A modeled perceptual score is not a listener result; an inconclusive or unassessed outcome is not listening benefit.</li></ul><h3>Recorded raw output loss (unnormalized)</h3><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Seat</th><th>Recorded loss</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">L / main / seat 0</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Mean level change: -2.5 dB. Unexplained loss (RMS): 1.25 dB. Worst unexplained loss: 3.5 dB at 1000 Hz. Raw output evidence; display normalization cannot hide this loss.</td></tr></tbody></table></div><details><summary>Recorded constraints and stage history</summary><p>Stage history may describe attempts that were later reverted. The final outcome above takes precedence.</p><ul><li>Final acceptance constraint: headroom unknown</li><li>Stage filter_design (degraded): limit applied</li><li>Stage filter_design (degraded), phase: phase unavailable</li></ul></details><p>Detailed reasons for individual peaks and dips are unavailable unless recorded above. An unchanged response alone does not identify a cancellation, poor measurement, or an already acceptable result.</p></section>\n"
+  },
+  {
+    "builder": "acceptance_views",
+    "data": {
+      "metadata": {
+        "effective_config": {}
+      },
+      "channels": {
+        "L": {},
+        "R": {}
+      }
+    },
+    "label": "legacy",
+    "expected": "<section class=\"acceptance-views\"><h2>Acceptance diagnostics — legacy</h2><p>Unavailable: no production acceptance views were recorded (legacy or unfinalized output).</p></section>"
+  },
+  {
+    "builder": "waveform_status",
+    "data": {
+      "metadata": {
+        "stage_outcomes": [
+          {
+            "stage": "waveform_views",
+            "checks": [
+              {
+                "id": "post_ir:L",
+                "passed": false,
+                "diagnostic": "no phase"
+              },
+              {
+                "id": "pre_ir:L",
+                "passed": true,
+                "diagnostic": "saved"
+              }
+            ]
+          }
+        ]
+      },
+      "channels": {
+        "L": {
+          "pre_ir": {
+            "freq": [
+              20,
+              30
+            ]
+          },
+          "post_ir": null,
+          "t60_octaves": {
+            "basis": "measured_room_ir"
+          }
+        }
+      }
+    },
+    "label": "Left & Right",
+    "expected": "<section class=\"waveform-status\"><h2>Waveform-view availability — Left &amp; Right</h2><p>An impulse response shows amplitude over time. Before DSP uses the imported room IR when supplied; otherwise it is reconstructed from the input response. After DSP is a calculated prediction, not a new microphone measurement. Available means the waveform was saved and can be plotted.</p><table><thead><tr><th>Channel</th><th>View</th><th>Status / reason</th></tr></thead><tbody><tr><td>L</td><td>post_ir</td><td>Unavailable: no phase</td></tr><tr><td>L</td><td>pre_ir</td><td>Measured room impulse response imported</td></tr></tbody></table></section>"
+  },
+  {
+    "builder": "capture_clock_qa",
+    "data": {
+      "metadata": {
+        "effective_config": {
+          "system": {
+            "speakers": {
+              "L": "Left"
+            }
+          },
+          "speakers": {
+            "Left": {
+              "measurements": [
+                {}
+              ],
+              "provenance": {
+                "capture_kind": "stationary_ir",
+                "timing_reference_id": "ref-1",
+                "capture": {
+                  "geometry": "compact",
+                  "takes": [
+                    {
+                      "microphone_id": "mic<1>",
+                      "device_id": "dev&1",
+                      "calibration_id": "cal-1",
+                      "position_m": [
+                        0.1,
+                        0.2,
+                        0.3
+                      ],
+                      "position_uncertainty_mm": 0.5,
+                      "gain_db": -6.0,
+                      "calibration_orientation": "on_axis",
+                      "correction_applied": "resampled",
+                      "preserves_acoustic_delay": true,
+                      "quality_passed": false,
+                      "offset_samples": 3.25,
+                      "skew_ppm": 1.5,
+                      "residual_uncertainty_us": 48.0,
+                      "timing_reference_id": "ref-1"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "expected": "<section class=\"capture-clock-qa\"><h2>Capture clock QA</h2><p>Every participating microphone needs a finite residual bound below 50 µs, a common reference, and passed measurement quality. Missing evidence uses magnitude only. Bounds assume linear clocks and correctly isolated timing markers.</p><table class=\"summary-table\"><thead><tr><th>Source</th><th>Geometry</th><th>Microphone</th><th>Device</th><th>Offset (samples)</th><th>Skew (ppm)</th><th>Residual (µs)</th><th>Correction</th><th>Coherent-use status</th></tr></thead><tbody><tr><td>Left</td><td>compact</td><td>mic&lt;1&gt;</td><td>dev&amp;1</td><td>3.250</td><td>1.500</td><td>48.000</td><td>resampled</td><td>clock evidence does not identify every microphone</td></tr></tbody></table></section>"
+  },
+  {
+    "builder": "acceptance_views",
+    "data": {
+      "metadata": {},
+      "channels": {
+        "L": {}
+      },
+      "correction_decisions": {
+        "ledger_version": "1.0.0",
+        "payload_binding": {
+          "algorithm": "sha256-json-typed-v1",
+          "graph_identity": "graph-acceptance-1",
+          "sha256": "bd6f1562ddb6f4cb75a156beaeb039f45613f701e14a2fc23382f5eae81e5c68"
+        },
+        "decisions": [],
+        "acceptance_evidence": {
+          "version": "acceptance-evidence-v1",
+          "payload": {
+            "channels": {
+              "L": {
+                "source_id": "L",
+                "evidence_kind": "retained_prediction",
+                "seat_provenance": "seat-0",
+                "bundle": {
+                  "settings": {
+                    "sample_rate_hz": 48000,
+                    "normalization": "none",
+                    "window": "hann"
+                  },
+                  "magnitude": {
+                    "freqs": [
+                      20,
+                      100,
+                      1000
+                    ],
+                    "pre_db": [
+                      65.0,
+                      70.0,
+                      72.0
+                    ],
+                    "post_db": [
+                      64.0,
+                      68.5,
+                      71.0
+                    ],
+                    "provenance": {
+                      "graph_identity": "graph-acceptance-1"
+                    }
+                  },
+                  "disposition": {
+                    "graph_identity": "graph-acceptance-1",
+                    "channels": [
+                      {
+                        "channel": "L",
+                        "gain_db": -2.5,
+                        "delay_ms": 1.25,
+                        "inverted": false
+                      }
+                    ]
+                  }
+                },
+                "fine_magnitude": null,
+                "unavailable": {
+                  "impulse_response": "no measured phase"
+                }
+              }
+            }
+          },
+          "binding": {
+            "algorithm": "sha256-json-typed-v1",
+            "graph_identity": "graph-acceptance-1",
+            "sha256": "0e79b32b3706db5f1ee45c0c9f3326394b9689435de6f2f93b41ba3d3e488e9b"
+          }
+        }
+      }
+    },
+    "label": "verified fixture",
+    "request": {
+      "builder": "acceptance_views",
+      "data": {
+        "metadata": {},
+        "channels": {
+          "L": {}
+        },
+        "correction_decisions": {
+          "ledger_version": "1.0.0",
+          "payload_binding": {
+            "algorithm": "sha256-json-typed-v1",
+            "graph_identity": "graph-acceptance-1",
+            "sha256": "bd6f1562ddb6f4cb75a156beaeb039f45613f701e14a2fc23382f5eae81e5c68"
+          },
+          "decisions": [],
+          "acceptance_evidence": {
+            "version": "acceptance-evidence-v1",
+            "payload": {
+              "channels": {
+                "L": {
+                  "source_id": "L",
+                  "evidence_kind": "retained_prediction",
+                  "seat_provenance": "seat-0",
+                  "bundle": {
+                    "settings": {
+                      "sample_rate_hz": 48000,
+                      "normalization": "none",
+                      "window": "hann"
+                    },
+                    "magnitude": {
+                      "freqs": [
+                        20,
+                        100,
+                        1000
+                      ],
+                      "pre_db": [
+                        65.0,
+                        70.0,
+                        72.0
+                      ],
+                      "post_db": [
+                        64.0,
+                        68.5,
+                        71.0
+                      ],
+                      "provenance": {
+                        "graph_identity": "graph-acceptance-1"
+                      }
+                    },
+                    "disposition": {
+                      "graph_identity": "graph-acceptance-1",
+                      "channels": [
+                        {
+                          "channel": "L",
+                          "gain_db": -2.5,
+                          "delay_ms": 1.25,
+                          "inverted": false
+                        }
+                      ]
+                    }
+                  },
+                  "fine_magnitude": null,
+                  "unavailable": {
+                    "impulse_response": "no measured phase"
+                  }
+                }
+              }
+            },
+            "binding": {
+              "algorithm": "sha256-json-typed-v1",
+              "graph_identity": "graph-acceptance-1",
+              "sha256": "0e79b32b3706db5f1ee45c0c9f3326394b9689435de6f2f93b41ba3d3e488e9b"
+            }
+          }
+        }
+      },
+      "label": "verified fixture",
+      "binding_verified": true,
+      "binding_reason": "fixture verified",
+      "binding_graph_identity": "graph-acceptance-1",
+      "acceptance_evidence_verified": true,
+      "acceptance_evidence_reason": "acceptance evidence verified"
+    },
+    "expected": "<section class=\"acceptance-views\"><h2>Acceptance diagnostics — verified fixture</h2><p>Retained predictions and serialized DSP controls—not recorded playback, physical safety certification, or demonstrated listener benefit. Existing measurement conditioning is retained; additional smoothing cannot recover raw detail.</p><p>Graph: graph-acceptance-1</p><h3>L</h3><p>Seat provenance: seat-0</p><p>Rate: 48000 Hz; levels: none; window: hann</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;General magnitude (additional 1/12-octave smoothing)&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y&quot;: {&quot;label&quot;: &quot;Magnitude (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Before&quot;, &quot;x&quot;: [20.0, 100.0, 1000.0], &quot;y&quot;: [65.0, 70.0, 72.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Retained prediction after&quot;, &quot;x&quot;: [20.0, 100.0, 1000.0], &quot;y&quot;: [64.0, 68.5, 71.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><p>Serialized DSP disposition (not calibrated output capability):</p><ul><li>L: gain -2.5 dB; delay 1.25 ms; inverted False</li></ul><p>Unavailable evidence:</p><ul><li>impulse_response: no measured phase</li></ul><p>No complete acoustic/headroom acceptance is established by these diagnostics.</p></section>"
+  },
+  {
+    "builder": "correction_explanation",
+    "data": {
+      "metadata": {
+        "delivered_graph_identity": "graph-k4-1",
+        "correction_acceptance": {
+          "outcome": "accepted",
+          "accepted": true,
+          "decision": "accepted",
+          "acoustic_quality": {
+            "correction_band_hz": [
+              40,
+              16000
+            ],
+            "evaluated_band_hz": [
+              20,
+              20000
+            ]
+          },
+          "violations": []
+        },
+        "effective_config": {
+          "optimizer": {
+            "correction_band": {
+              "min_hz": 40,
+              "max_hz": 16000
+            },
+            "min_freq": 20,
+            "max_freq": 20000
+          }
+        }
+      },
+      "channels": {
+        "L": {
+          "plugins": []
+        }
+      },
+      "correction_decisions": {
+        "ledger_version": "1.0.0",
+        "decisions": [
+          {
+            "decision_id": "decision-final-1",
+            "stage": "final",
+            "final_graph_identity": "graph-k4-1",
+            "logical_input": "L",
+            "physical_output": "Left speaker",
+            "seat_refs": [
+              0
+            ],
+            "measurement_refs": [
+              "mic-left"
+            ],
+            "frequency_band_hz": [
+              100,
+              300
+            ],
+            "action": "equalize",
+            "status": "applied",
+            "reason_codes": [
+              "serialized_final_gain"
+            ],
+            "confidence": "high",
+            "observed": [
+              {
+                "name": "gain",
+                "value": -2.0,
+                "unit": "dB"
+              }
+            ],
+            "limits": [
+              {
+                "name": "max",
+                "value": 3.0,
+                "unit": "dB"
+              }
+            ],
+            "evidence_refs": [
+              "capture:1"
+            ]
+          },
+          {
+            "decision_id": "decision-provisional-1",
+            "stage": "provisional",
+            "logical_input": "L",
+            "physical_output": "Left speaker",
+            "seat_refs": [
+              0
+            ],
+            "measurement_refs": [
+              "mic-left"
+            ],
+            "filter_center_hz": 250,
+            "action": "prune",
+            "status": "advisory",
+            "reason_codes": [
+              "HighQAboveGuard"
+            ],
+            "confidence": "low"
+          }
+        ],
+        "payload_binding": {
+          "algorithm": "sha256-json-typed-v1",
+          "graph_identity": "graph-k4-1",
+          "sha256": "4dc5e1a8a4c32a0597de0aac1b37ff3bfe319c2bd67c1321d7348b16f54a2015"
+        }
+      }
+    },
+    "label": "bound decisions",
+    "request": {
+      "builder": "correction_explanation",
+      "data": {
+        "metadata": {
+          "delivered_graph_identity": "graph-k4-1",
+          "correction_acceptance": {
+            "outcome": "accepted",
+            "accepted": true,
+            "decision": "accepted",
+            "acoustic_quality": {
+              "correction_band_hz": [
+                40,
+                16000
+              ],
+              "evaluated_band_hz": [
+                20,
+                20000
+              ]
+            },
+            "violations": []
+          },
+          "effective_config": {
+            "optimizer": {
+              "correction_band": {
+                "min_hz": 40,
+                "max_hz": 16000
+              },
+              "min_freq": 20,
+              "max_freq": 20000
+            }
+          }
+        },
+        "channels": {
+          "L": {
+            "plugins": []
+          }
+        },
+        "correction_decisions": {
+          "ledger_version": "1.0.0",
+          "decisions": [
+            {
+              "decision_id": "decision-final-1",
+              "stage": "final",
+              "final_graph_identity": "graph-k4-1",
+              "logical_input": "L",
+              "physical_output": "Left speaker",
+              "seat_refs": [
+                0
+              ],
+              "measurement_refs": [
+                "mic-left"
+              ],
+              "frequency_band_hz": [
+                100,
+                300
+              ],
+              "action": "equalize",
+              "status": "applied",
+              "reason_codes": [
+                "serialized_final_gain"
+              ],
+              "confidence": "high",
+              "observed": [
+                {
+                  "name": "gain",
+                  "value": -2.0,
+                  "unit": "dB"
+                }
+              ],
+              "limits": [
+                {
+                  "name": "max",
+                  "value": 3.0,
+                  "unit": "dB"
+                }
+              ],
+              "evidence_refs": [
+                "capture:1"
+              ]
+            },
+            {
+              "decision_id": "decision-provisional-1",
+              "stage": "provisional",
+              "logical_input": "L",
+              "physical_output": "Left speaker",
+              "seat_refs": [
+                0
+              ],
+              "measurement_refs": [
+                "mic-left"
+              ],
+              "filter_center_hz": 250,
+              "action": "prune",
+              "status": "advisory",
+              "reason_codes": [
+                "HighQAboveGuard"
+              ],
+              "confidence": "low"
+            }
+          ],
+          "payload_binding": {
+            "algorithm": "sha256-json-typed-v1",
+            "graph_identity": "graph-k4-1",
+            "sha256": "4dc5e1a8a4c32a0597de0aac1b37ff3bfe319c2bd67c1321d7348b16f54a2015"
+          }
+        }
+      },
+      "label": "bound decisions",
+      "binding_verified": true,
+      "binding_reason": "Delivered payload and referenced resource bytes verified (not acoustic verification)."
+    },
+    "expected": "<section class=\"correction-explanation\"><h2>Why this correction? — bound decisions</h2><p>Recorded reasons for correction scope, limitations and the final outcome.</p><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Channel / scope</th><th>Frequency</th><th>Decision</th><th>Why</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">All assessed frequencies</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final outcome</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">The final correction passed the recorded acceptance checks. This is not a listening-benefit claim.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">40–16000 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Recorded active-correction band.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">20–40 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Outside correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Excluded from the active correction band. Routing, crossovers, gain and filter tails can still affect playback here.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">16000–20000 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Outside correction scope</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Excluded from the active correction band. Routing, crossovers, gain and filter tails can still affect playback here.</td></tr></tbody></table></div><h3>Recorded final correction decisions</h3><h4>Final acceptance sets:</h4><ul class=\"acceptance-sets\"><li>1 applied delivery claims (decision-final-1). Reasons: serialized_final_gain.</li><li>0 reverted (rolled back; not delivered) (none). No reason recorded.</li><li>1 provisional history (not delivery claims) (decision-provisional-1). Reasons: HighQAboveGuard.</li><li>0 withheld (final rows without delivery) (none). No reason recorded.</li></ul><p><strong>Delivered payload and referenced resource bytes verified (not acoustic verification).</strong></p><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Channel / output / seat</th><th>Frequency</th><th>Decision</th><th>Why</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">L / Left speaker / seat 0 (measured: mic-left)</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">100–300 Hz</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Equalize — Applied (final)</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Recorded reason: Gain present in the delivered DSP. Confidence: high. Observed: gain: -2 dB. Limit: max: 3 dB. Evidence: capture:1.</td></tr></tbody></table></div><details><summary>Recorded constraints and stage history</summary><p>Stage history may describe attempts that were later reverted. The final outcome above takes precedence.</p><ul><li>Provisional record decision-provisional-1 (L / Left speaker / seat 0 (measured: mic-left); 250 Hz (filter center); Prune — Advisory nomination only (nothing applied or removed) (provisional; not a delivery claim)): Recorded reason: HighQAboveGuard. Confidence: low. Evidence: unavailable. Final reconciled records above take precedence.</li></ul></details><p>Detailed reasons for individual peaks and dips are unavailable unless recorded above. An unchanged response alone does not identify a cancellation, poor measurement, or an already acceptable result.</p></section>\n"
+  }
+]

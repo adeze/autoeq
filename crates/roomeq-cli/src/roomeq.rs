@@ -1674,23 +1674,21 @@ fn execute_optimization(
                 let _ = session.mark_failed(&format!("{error:#}"));
             }
         }
-        if attempt_output.is_file() {
-            if let Some(attempt_dir) = attempt_dir {
-                let retained_dir = attempt_dir.keep();
-                return Err(error.context(format!(
-                    "canonical output was preserved; diagnostic attempt retained at {:?}",
-                    retained_dir.join(file_name)
-                )));
-            }
+        if attempt_output.is_file()
+            && let Some(attempt_dir) = attempt_dir
+        {
+            let retained_dir = attempt_dir.keep();
+            return Err(error.context(format!(
+                "canonical output was preserved; diagnostic attempt retained at {:?}",
+                retained_dir.join(file_name)
+            )));
         }
         return Err(error);
     }
-    if !stage_complete {
-        if let Some(session) = recovery.as_ref() {
-            session
-                .mark_stage_complete(&attempt_output)
-                .map_err(|message| anyhow!(message))?;
-        }
+    if !stage_complete && let Some(session) = recovery.as_ref() {
+        session
+            .mark_stage_complete(&attempt_output)
+            .map_err(|message| anyhow!(message))?;
     }
     if shutdown.load(Ordering::Acquire) {
         if let Some(session) = recovery.as_ref() {

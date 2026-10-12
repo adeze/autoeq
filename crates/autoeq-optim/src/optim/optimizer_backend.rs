@@ -80,7 +80,7 @@ pub trait OptimizerBackend: Send + Sync {
         upper_bounds: &[f64],
         objective: ObjectiveData,
         params: &OptimParams,
-    ) -> Result<(String, f64), (String, f64)>;
+    ) -> crate::optim::OptimizerOutcome;
 
     /// Retain typed DE completion when the backend can provide it.
     /// Test doubles and non-DE backends keep the historical result contract.
@@ -152,7 +152,7 @@ pub trait OptimizerBackend: Send + Sync {
         objective: ObjectiveData,
         params: &OptimParams,
         callback: OptimProgressCallback,
-    ) -> Result<(String, f64), (String, f64)>;
+    ) -> crate::optim::OptimizerOutcome;
 
     /// Run an optimizer with an optional algorithm override.
     ///
@@ -166,7 +166,7 @@ pub trait OptimizerBackend: Send + Sync {
         objective: ObjectiveData,
         params: &OptimParams,
         algo_override: Option<&str>,
-    ) -> Result<(String, f64), (String, f64)>;
+    ) -> crate::optim::OptimizerOutcome;
 
     /// Run with a shared score cap and retain typed dispatch evidence.
     ///
@@ -282,7 +282,7 @@ impl OptimizerBackend for RealOptimizerBackend {
         upper_bounds: &[f64],
         objective: ObjectiveData,
         params: &OptimParams,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         super::optimize_filters(x, lower_bounds, upper_bounds, objective, params)
     }
 
@@ -308,7 +308,7 @@ impl OptimizerBackend for RealOptimizerBackend {
         objective: ObjectiveData,
         params: &OptimParams,
         callback: OptimProgressCallback,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         super::optimize_filters_with_callback(
             x,
             lower_bounds,
@@ -327,7 +327,7 @@ impl OptimizerBackend for RealOptimizerBackend {
         objective: ObjectiveData,
         params: &OptimParams,
         algo_override: Option<&str>,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         super::optimize_filters_with_algo_override(
             x,
             lower_bounds,
@@ -372,10 +372,10 @@ impl OptimizerBackend for RealOptimizerBackend {
 #[derive(Debug, Clone)]
 pub struct MockOptimizerBackend {
     /// Result returned by global and spatial-robustness optimization calls.
-    pub result: Result<(String, f64), (String, f64)>,
+    pub result: crate::optim::OptimizerOutcome,
     /// Optional separate result for the local-refinement (`algo_override`) call.
     /// If `None`, [`Self::result`] is returned for refinement as well.
-    pub refine_result: Option<Result<(String, f64), (String, f64)>>,
+    pub refine_result: Option<crate::optim::OptimizerOutcome>,
 }
 
 impl Default for MockOptimizerBackend {
@@ -406,7 +406,7 @@ impl MockOptimizerBackend {
     }
 
     /// Set a separate result for local-refinement calls.
-    pub fn with_refine_result(mut self, result: Result<(String, f64), (String, f64)>) -> Self {
+    pub fn with_refine_result(mut self, result: crate::optim::OptimizerOutcome) -> Self {
         self.refine_result = Some(result);
         self
     }
@@ -420,7 +420,7 @@ impl OptimizerBackend for MockOptimizerBackend {
         _upper_bounds: &[f64],
         _objective: ObjectiveData,
         _params: &OptimParams,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         self.result.clone()
     }
 
@@ -432,7 +432,7 @@ impl OptimizerBackend for MockOptimizerBackend {
         _objective: ObjectiveData,
         _params: &OptimParams,
         _callback: OptimProgressCallback,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         self.result.clone()
     }
 
@@ -444,7 +444,7 @@ impl OptimizerBackend for MockOptimizerBackend {
         _objective: ObjectiveData,
         _params: &OptimParams,
         _algo_override: Option<&str>,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> crate::optim::OptimizerOutcome {
         self.refine_result
             .clone()
             .unwrap_or_else(|| self.result.clone())

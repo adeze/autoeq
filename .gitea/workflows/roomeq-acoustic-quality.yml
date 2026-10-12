@@ -1,5 +1,6 @@
-# Mirror of .github/workflows/roomeq-acoustic-quality.yml for Gitea Actions.
-# Keep the job/step bodies in sync; only the header above is Gitea-specific.
+# Private Gitea counterpart of the acoustic-quality workflow.
+# Sibling pins must match the shared report workspace dependency versions.
+# Uses the existing job token; WORKSPACE_READ_TOKEN can supply sibling read access.
 # Requires on the Gitea host: an Actions runner with the `ubuntu-latest`
 # label, `actions/*` fetched from github.com, and cache + artifact storage
 # enabled (Gitea >= 1.22).
@@ -9,6 +10,10 @@ on:
   pull_request:
     paths:
       - "crates/roomeq-*/**"
+      - "crates/autoeq-report-wasm/**"
+      - "scripts/src/**"
+      - "scripts/test_native_*.py"
+      - ".gitea/workflows/roomeq-acoustic-quality.yml"
       - "crates/autoeq-core/**"
       - "crates/autoeq-measurements/**"
       - "crates/autoeq-optim/**"
@@ -32,13 +37,37 @@ jobs:
   acoustic-quality:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: autoeq
     steps:
       - uses: actions/checkout@v4
-      - name: Check out pinned sibling workspaces
-        run: bash scripts/checkout_ci_siblings.sh
+        with:
+          path: autoeq
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/math-audio
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: 748192f93ddf66b063893c9d69333c1a09c117af
+          path: math-audio
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/gpui-toolkit
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: a1989afc2b070081763f9f888735ec51ee8a82b0
+          path: gpui-toolkit
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sofa-reader
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: 9b290c6b9384831bf2e6b76e005beff755fe32ca
+          path: sofa-reader
 
-      - name: Install Linux mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold
+      - name: Install Linux compiler and mold linker
+        run: sudo apt-get update && sudo apt-get install -y clang mold
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install pinned Just
@@ -55,6 +84,12 @@ jobs:
       - name: Install pinned MDAT Python dependencies
         run: python3 -m pip install --requirement scripts/requirements.txt
 
+      - name: Shared serialized DSP and report contracts
+        run: |
+          cargo test -p autoeq-core serialized_dsp::tests --locked
+          cargo test -p autoeq-report-wasm --locked
+          cargo build -p autoeq-report-wasm --bin report-producer --locked
+          python3 -S -m unittest scripts.test_native_serialized_dsp scripts.test_dsp scripts.test_native_eq_figures scripts.test_native_target_csv
       - name: REW MDAT converter contracts
         run: just qa-roomeq-mdat
       - name: PR acoustic gates and reports
@@ -81,4 +116,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: roomeq-acoustic-quality
-          path: target/qa/
+          path: autoeq/target/qa/

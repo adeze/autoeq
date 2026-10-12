@@ -110,6 +110,22 @@
 - Move RoomEQ signal supervision and runtime startup into the CLI crate,
   keeping the root binary as a compatibility launcher.
 
+- Share serialized plugin-chain evaluation between playback and native/WASM reports,
+  including FIR gain/mix, validated band reconstruction and limiter latency.
+- Assemble single-dataset report channel blocks in the shared report library.
+
+- Expose canonical RoomEQ dashboard JSON without loading renderer assets; native consumers assemble it through the shared Rust/WASM library.
+- Preserve additive payload metadata through the shared capture-quality augmentation API, with validation before mutation.
+
+- Add a versioned, renderer-neutral capture-quality report input and shared
+  Rust/WASM section builder. Preserve source, stimulus, policy and unavailable
+  evidence without requiring an app-specific dashboard renderer.
+- Keep report headers and dashboard controls within narrow viewports, and
+  escape embedded JSON at the shared HTML assembly boundary.
+
+- Move RoomEQ signal supervision and runtime startup into the CLI crate,
+  keeping the root binary as a compatibility launcher.
+
 - Keep local GPUI demos in a separate workspace so backend source installs
   resolve without sibling GPUI checkouts; preserve the existing demo recipes.
 

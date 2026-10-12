@@ -409,8 +409,7 @@ fn roadmap_correction_admission_physical_evidence_is_fail_closed() {
         })
         .run(None);
         let error = result
-            .err()
-            .expect("invalid physical evidence must refuse delivery")
+            .expect_err("invalid physical evidence must refuse delivery")
             .to_string();
         assert!(error.contains(expected), "{error}");
     }
@@ -1903,14 +1902,14 @@ fn roadmap_correction_joint_drive_search_reaches_final_graph_trials() {
             );
         }
         finalize_bound(&result);
-        if !source_specific_peak {
-            if let Ok(path) = std::env::var("ROOMEQ_SELECTED_GAIN_DELAY_ARTIFACT") {
-                std::fs::write(
-                    path,
-                    serde_json::to_vec_pretty(&result.to_dsp_chain_output()).unwrap(),
-                )
-                .expect("write selected gain-delay QA artifact");
-            }
+        if !source_specific_peak
+            && let Ok(path) = std::env::var("ROOMEQ_SELECTED_GAIN_DELAY_ARTIFACT")
+        {
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&result.to_dsp_chain_output()).unwrap(),
+            )
+            .expect("write selected gain-delay QA artifact");
         }
     }
 }
@@ -2913,13 +2912,11 @@ fn check_routed_joint_sub_refinement(named_outputs: bool) {
         );
     }
     finalize_bound(&ranked);
-    if named_outputs {
-        if let Ok(path) = std::env::var("ROOMEQ_ROUTED_JOINT_ARTIFACT") {
-            roomeq_workflow::output::save_dsp_chain(
-                &ranked.to_dsp_chain_output(),
-                std::path::Path::new(&path),
-            )
-            .expect("write routed joint-sub QA artifact");
-        }
+    if named_outputs && let Ok(path) = std::env::var("ROOMEQ_ROUTED_JOINT_ARTIFACT") {
+        roomeq_workflow::output::save_dsp_chain(
+            &ranked.to_dsp_chain_output(),
+            std::path::Path::new(&path),
+        )
+        .expect("write routed joint-sub QA artifact");
     }
 }

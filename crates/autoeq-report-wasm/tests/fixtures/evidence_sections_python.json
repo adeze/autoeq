@@ -1,0 +1,428 @@
+[
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {}
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: unverified</h2><p>No recorded acceptance verdict (legacy or unverified output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "rejected",
+          "violations": [
+            "noise <bad>",
+            1,
+            ""
+          ]
+        }
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: rejected</h2><p>Recorded verdict: rejected.</p><p>Recorded violations: noise &lt;bad&gt;.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "accepted"
+        }
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: accepted</h2><p>Recorded verdict is contradictory: outcome &#x27;accepted&#x27; without matching accepted/decision flags.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "accepted",
+          "accepted": true,
+          "decision": "accepted"
+        }
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: accepted</h2><p>Recorded verdict: accepted.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "unchanged"
+        }
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: unchanged</h2><p>Recorded verdict: unchanged.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "foreign <script>"
+        }
+      },
+      "label": "Left & \"rear\"",
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Saved DSP playback eligibility: foreign &lt;script&gt;</h2><p>Recorded verdict: foreign &lt;script&gt; — no playback approval.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Left &amp; &quot;rear&quot; — Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "effective_config": {
+          "optimizer": {
+            "finalization": {
+              "default_input_peak": 0.5,
+              "input_peak_limits": {
+                "R": 0.25,
+                "L": 1,
+                "invalid": -1
+              }
+            }
+          }
+        },
+        "stage_outcomes": [
+          {
+            "checks": [
+              {
+                "id": "runtime_limiter_physical_output:sub <rear>"
+              },
+              {
+                "id": "other"
+              }
+            ]
+          }
+        ]
+      },
+      "binding_verified": false,
+      "binding_reason": "Recomputable payload binding unavailable (legacy or unbound output)."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Saved DSP playback eligibility: unverified</h2><p>No recorded acceptance verdict (legacy or unverified output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p><p>Conditional on enforced input-peak ceilings (R: -12.04 dBFS, default: -6.02 dBFS). This report does not enforce them; full-scale input safety is not established.</p><p>Runtime limiter required on physical outputs: sub &lt;rear&gt;. Response curves describe small-signal playback below limiting. Loud bass peaks may be reduced dynamically. Protection is sample-peak, not a true-peak or loudspeaker-excursion guarantee. Do not bypass the limiter or add downstream gain.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "group_delay",
+      "metadata": {}
+    },
+    "expected": "<td style=\"color:#999\">-</td><td style=\"color:#999\">-</td><td style=\"color:#999\">-</td><td style=\"color:#999\">-</td><td style=\"color:#999\">-</td>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "group_delay",
+      "metadata": {
+        "group_delay": {
+          "advisory": "success",
+          "applied": true,
+          "sum_gd_pre_rms_ms": 1.25,
+          "sum_gd_post_rms_ms": 0.5,
+          "improvement_db": 2.25,
+          "per_channel_ap_count": [
+            2,
+            true,
+            3.5,
+            "5"
+          ],
+          "mean_coherence": 0.75
+        }
+      }
+    },
+    "expected": "<td style=\"color:#2ecc71;font-weight:600\">success</td><td style=\"color:#2ecc71;font-weight:600\">yes</td><td>1.250 ms → 0.500 ms</td><td style=\"color:#2ecc71;font-weight:600\">+2.25 dB</td><td>3, coh=0.75</td>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "group_delay",
+      "metadata": {
+        "group_delay": {
+          "advisory": "missing <clock>",
+          "applied": false,
+          "improvement_db": -3.25
+        }
+      }
+    },
+    "expected": "<td style=\"color:#b9770e;font-weight:600\">missing &lt;clock&gt;</td><td style=\"color:#999;font-weight:600\">no</td><td>- → -</td><td style=\"color:#e74c3c;font-weight:600\">-3.25 dB</td><td>0</td>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "mixed_phase",
+      "metadata": {},
+      "channels": {}
+    },
+    "expected": ""
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "mixed_phase",
+      "metadata": {
+        "mixed_phase_per_channel": {
+          "L": {
+            "fir_taps": 128,
+            "estimated_delay_ms": 2.125,
+            "residual_excess_phase_min_deg": -30,
+            "residual_excess_phase_max_deg": 20,
+            "residual_excess_phase_rms_deg": 7.25
+          }
+        }
+      },
+      "channels": {
+        "R": {
+          "fir_temporal_masking": {
+            "main_time_ms": 5,
+            "pre_ringing_peak_db": -20,
+            "pre_ringing_audible_db": -30,
+            "post_ringing_peak_db": -15,
+            "penalty": 0.125
+          }
+        }
+      }
+    },
+    "expected": "<div class=\"filters-section mixed-phase-section\">\n<h3>Mixed-Phase and FIR Timing</h3>\n<table class=\"bm-table\">\n<thead><tr><th>Channel</th><th>Estimated delay</th><th>FIR taps</th><th>Residual phase range</th><th>Residual RMS</th><th>Main impulse</th><th>Pre peak / audible</th><th>Post peak / audible</th><th>Penalty</th></tr></thead>\n<tbody>\n<tr><td>L</td><td>2.125 ms</td><td>128</td><td>-30.00° to +20.00°</td><td>7.25°</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>\n<tr><td>R</td><td>-</td><td>-</td><td>-</td><td>-</td><td>5.000 ms</td><td>-20.00 / -30.00 dB</td><td>-15.00 / - dB</td><td>0.125</td></tr>\n</tbody>\n</table>\n</div>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "mixed_phase",
+      "metadata": {
+        "perceptual_metrics": {
+          "fir_pre_ringing_audible_db": -30.5,
+          "fir_temporal_masking_penalty": 0.25
+        }
+      },
+      "channels": {}
+    },
+    "expected": "<div class=\"filters-section mixed-phase-section\">\n<h3>Mixed-Phase and FIR Timing</h3>\n<p class=\"epa-footer\">Worst audible pre/post ringing: -30.50 dB / -; worst temporal masking penalty: 0.250.</p>\n</div>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "mixed_phase",
+      "metadata": {
+        "mixed_phase_per_channel": {
+          "C<script>": {
+            "fir_taps": true
+          }
+        }
+      },
+      "channels": [
+        {
+          "channel": "L",
+          "fir_temporal_masking": {
+            "post_ringing_audible_db": -25
+          }
+        }
+      ]
+    },
+    "expected": "<div class=\"filters-section mixed-phase-section\">\n<h3>Mixed-Phase and FIR Timing</h3>\n<table class=\"bm-table\">\n<thead><tr><th>Channel</th><th>Estimated delay</th><th>FIR taps</th><th>Residual phase range</th><th>Residual RMS</th><th>Main impulse</th><th>Pre peak / audible</th><th>Post peak / audible</th><th>Penalty</th></tr></thead>\n<tbody>\n<tr><td>L</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>- / -25.00 dB</td><td>-</td></tr>\n<tr><td>C&lt;script&gt;</td><td>-</td><td>True</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>\n</tbody>\n</table>\n</div>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_channel",
+      "epa": null
+    },
+    "expected": ""
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_channel",
+      "epa": {}
+    },
+    "expected": ""
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_channel",
+      "epa": {
+        "pre": {
+          "preference": 1.25,
+          "activity": 2,
+          "roughness": 0.125
+        },
+        "post": {
+          "preference": 2.25,
+          "activity": 1,
+          "roughness": 0.25
+        }
+      }
+    },
+    "expected": "                <div class=\"epa-section\">\n                    <h3>EPA Psychoacoustic Scores</h3>\n                    <table class=\"epa-table\">\n                        <thead><tr><th>Metric</th><th>Before EQ</th><th>After EQ</th><th>Δ</th></tr></thead>\n                        <tbody>\n                        <tr><td>Preference</td><td>+1.25</td><td>+2.25</td><td><span style=\"color:#2ecc71;font-weight:600\">+1.000</span></td></tr>\n                        <tr><td>Evaluation</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Potency</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Activity</td><td>+2.00</td><td>+1.00</td><td><span style=\"color:#2ecc71;font-weight:600\">-1.000</span></td></tr>\n                        <tr><td>Sharpness (acum)</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Roughness</td><td>+0.125</td><td>+0.250</td><td><span style=\"color:#e74c3c;font-weight:600\">+0.125</span></td></tr>\n                        <tr><td>Total loudness (sone)</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Loudness balance</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        </tbody>\n                    </table>\n                    <p class=\"epa-footer\">Higher is better for Preference / Evaluation / Total loudness / Loudness balance; lower is better for Activity / Sharpness deviation / Roughness. Δ cells are green when the change improves the metric.</p>\n                </div>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_channel",
+      "epa": {
+        "pre": {
+          "preference": true
+        },
+        "post": {
+          "preference": false,
+          "evaluation": -2
+        }
+      }
+    },
+    "expected": "                <div class=\"epa-section\">\n                    <h3>EPA Psychoacoustic Scores</h3>\n                    <table class=\"epa-table\">\n                        <thead><tr><th>Metric</th><th>Before EQ</th><th>After EQ</th><th>Δ</th></tr></thead>\n                        <tbody>\n                        <tr><td>Preference</td><td>+1.00</td><td>+0.00</td><td><span style=\"color:#e74c3c;font-weight:600\">-1.000</span></td></tr>\n                        <tr><td>Evaluation</td><td>-</td><td>-2.00</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Potency</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Activity</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Sharpness (acum)</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Roughness</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Total loudness (sone)</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        <tr><td>Loudness balance</td><td>-</td><td>-</td><td><span style=\"color:#999\">-</span></td></tr>\n                        </tbody>\n                    </table>\n                    <p class=\"epa-footer\">Higher is better for Preference / Evaluation / Total loudness / Loudness balance; lower is better for Activity / Sharpness deviation / Roughness. Δ cells are green when the change improves the metric.</p>\n                </div>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_summary",
+      "metadata": {}
+    },
+    "expected": [
+      null,
+      null
+    ]
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "epa_summary",
+      "metadata": {
+        "epa_per_channel": {
+          "R": {
+            "pre": {
+              "preference": 1
+            },
+            "post": {
+              "preference": 2
+            }
+          },
+          "L": {
+            "pre": {
+              "preference": 3
+            }
+          },
+          "C": null
+        }
+      }
+    },
+    "expected": [
+      2.0,
+      2.0
+    ]
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "delta",
+      "field": "preference",
+      "pre": null,
+      "post": 2
+    },
+    "expected": "<span style=\"color:#999\">-</span>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "delta",
+      "field": "activity",
+      "pre": 1,
+      "post": 1
+    },
+    "expected": "<span style=\"color:#999\">=</span>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "delta",
+      "field": "roughness",
+      "pre": 0.125,
+      "post": 0.25
+    },
+    "expected": "<span style=\"color:#e74c3c;font-weight:600\">+0.125</span>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "delta",
+      "field": "preference",
+      "pre": 1,
+      "post": 2
+    },
+    "expected": "<span style=\"color:#2ecc71;font-weight:600\">+1.000</span>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "delta",
+      "field": "activity",
+      "pre": 2,
+      "post": 1
+    },
+    "expected": "<span style=\"color:#2ecc71;font-weight:600\">-1.000</span>"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "accepted",
+          "accepted": true,
+          "decision": "accepted"
+        }
+      },
+      "binding_verified": true,
+      "binding_reason": "Graph and decision ledger agree."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Saved DSP playback eligibility: accepted</h2><p>Recorded verdict: accepted.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Delivered payload: verified</h2><p>Graph and decision ledger agree.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Playback approval</h2><p>Approved for playback under the declared contract.</p><p>Recorded validation is evidence for the saved graph and its declared playback contract, not an independent replay by this report.</p></section>\n</section>\n"
+  },
+  {
+    "request": {
+      "operation": "evidence_section",
+      "builder": "playback_status",
+      "metadata": {
+        "correction_acceptance": {
+          "outcome": "unchanged"
+        },
+        "effective_config": {
+          "optimizer": {
+            "finalization": {
+              "default_input_peak": 0.5
+            }
+          }
+        }
+      },
+      "binding_verified": true,
+      "binding_reason": "Graph and decision ledger agree."
+    },
+    "expected": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Saved DSP playback eligibility: unchanged</h2><p>Recorded verdict: unchanged.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #2ecc71;padding:16px\"><h2>Delivered payload: verified</h2><p>Graph and decision ledger agree.</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Playback approval</h2><p>Approved for playback under the declared contract.</p><p>Recorded validation is evidence for the saved graph and its declared playback contract, not an independent replay by this report.</p><p>Conditional on enforced input-peak ceilings (default: -6.02 dBFS). This report does not enforce them; full-scale input safety is not established.</p></section>\n</section>\n"
+  }
+]

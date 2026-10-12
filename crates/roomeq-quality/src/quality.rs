@@ -1622,7 +1622,7 @@ mod tests {
         pre.phase = None;
         post.phase = None;
         for (index, value) in post.spl.iter_mut().enumerate() {
-            *value += (index as f64 * 1.618_033_988_75).sin() * 0.1;
+            *value += (index as f64 * std::f64::consts::GOLDEN_RATIO).sin() * 0.1;
         }
         let noisy = evaluate_partition(&[pre], &[post], None, config()).expect("noisy");
         assert!(noisy.post_weighted_rms_median_db.is_finite());

@@ -1,0 +1,762 @@
+{
+  "cases": [
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "gain_positive",
+      "plugins": [
+        {
+          "parameters": {
+            "gain_db": 6.0
+          },
+          "plugin_type": "gain"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          86.0,
+          87.99999999999999,
+          84.0,
+          76.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "gain_inverted",
+      "plugins": [
+        {
+          "parameters": {
+            "gain_db": -3.0,
+            "invert": true
+          },
+          "plugin_type": "gain"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          -10.0,
+          -359.0,
+          -170.0,
+          -160.0
+        ],
+        "spl": [
+          77.0,
+          79.0,
+          75.0,
+          67.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "delay_48k",
+      "plugins": [
+        {
+          "parameters": {
+            "delay_ms": 1.25
+          },
+          "plugin_type": "delay"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          152.0,
+          -224.0,
+          -79.99999999999999,
+          20.000000000000142
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "peq_48k",
+      "plugins": [
+        {
+          "parameters": {
+            "filters": [
+              {
+                "db_gain": 4.0,
+                "filter_type": "peak",
+                "freq": 1000.0,
+                "q": 0.707
+              }
+            ]
+          },
+          "plugin_type": "eq"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          171.50115543989773,
+          -175.2833020097927,
+          10.000000000000355,
+          15.789071556291088
+        ],
+        "spl": [
+          80.01321887078673,
+          82.08246484654572,
+          82.0,
+          70.10650851063035
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          20000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "peq_96k_near_nyquist",
+      "plugins": [
+        {
+          "parameters": {
+            "filters": [
+              {
+                "db_gain": -3.0,
+                "filter_type": "peak",
+                "freq": 20000.0,
+                "q": 1.2
+              }
+            ]
+          },
+          "plugin_type": "eq"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          20000.0
+        ],
+        "phase": [
+          169.97172753842548,
+          -179.07068166571753,
+          9.292581139236143,
+          20.000000000000004
+        ],
+        "spl": [
+          79.99999381588171,
+          81.99996134828262,
+          77.996123279094,
+          67.0
+        ]
+      },
+      "sample_rate": 96000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          20000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "lr24_lowpass_96k",
+      "plugins": [
+        {
+          "parameters": {
+            "frequency": 120.0,
+            "output": "low",
+            "type": "LR24"
+          },
+          "plugin_type": "crossover"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          20000.0
+        ],
+        "phase": [
+          114.12356544867795,
+          -329.9294271004074,
+          29.532422893361534,
+          20.829379052783775
+        ],
+        "spl": [
+          79.89342526591625,
+          78.58157048835211,
+          4.32047426351037,
+          -113.2734684104681
+        ]
+      },
+      "sample_rate": 96000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "ordered_gain_peq_delay_crossover",
+      "plugins": [
+        {
+          "parameters": {
+            "gain_db": -3.0
+          },
+          "plugin_type": "gain"
+        },
+        {
+          "parameters": {
+            "filters": [
+              {
+                "db_gain": 2.5,
+                "filter_type": "peak",
+                "freq": 100.0,
+                "q": 1.0
+              }
+            ]
+          },
+          "plugin_type": "eq"
+        },
+        {
+          "parameters": {
+            "delay_ms": 0.75
+          },
+          "plugin_type": "delay"
+        },
+        {
+          "parameters": {
+            "frequency": 80.0,
+            "output": "high",
+            "type": "LR24"
+          },
+          "plugin_type": "crossover"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          78.96961431691622,
+          -61.302712996515666,
+          111.32175057607567,
+          21.282152989196433
+        ],
+        "spl": [
+          52.85615943863097,
+          78.51813407546013,
+          75.02516259055486,
+          67.00032572112409
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "per_driver_fir_ignores_gain_and_mix",
+      "plugins": [
+        {
+          "parameters": {
+            "_fir_sample_rate": 48000.0,
+            "_fir_taps": [
+              1.0,
+              0.25,
+              -0.125
+            ],
+            "gain_db": -6.0,
+            "ir_file": "captured-fixture.wav",
+            "mix": 0.25,
+            "room_eq_fir_placement": "per_driver"
+          },
+          "plugin_type": "convolution"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          169.99999908615678,
+          -179.0000142780581,
+          9.985808869025457,
+          14.79128089714489
+        ],
+        "spl": [
+          81.02307690721709,
+          83.02321579792621,
+          79.03940714222108,
+          71.52861418337207
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "ordinary_convolution_ignored",
+      "plugins": [
+        {
+          "parameters": {
+            "gain_db": -6.0,
+            "ir_file": "captured-fixture.wav",
+            "mix": 0.25
+          },
+          "plugin_type": "convolution"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "band_split_merge_silently_ignored",
+      "plugins": [
+        {
+          "parameters": {
+            "frequency": 120.0,
+            "type": "LR24"
+          },
+          "plugin_type": "band_split"
+        },
+        {
+          "parameters": {
+            "channels": [
+              0
+            ],
+            "gain_db": 6.0
+          },
+          "plugin_type": "gain"
+        },
+        {
+          "parameters": {
+            "bands": 2
+          },
+          "plugin_type": "band_merge"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          86.0,
+          87.99999999999999,
+          84.0,
+          76.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "unknown_plugin_silently_ignored",
+      "plugins": [
+        {
+          "parameters": {
+            "amount": 0.9
+          },
+          "plugin_type": "vendor_dynamic_processor"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "phase": [
+          170.0,
+          -179.0,
+          10.0,
+          20.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "sample_rate": 48000.0
+    },
+    {
+      "input": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "spl": [
+          80.0,
+          82.0,
+          78.0,
+          70.0
+        ]
+      },
+      "name": "gain_without_input_phase",
+      "plugins": [
+        {
+          "parameters": {
+            "gain_db": 2.0
+          },
+          "plugin_type": "gain"
+        }
+      ],
+      "result": {
+        "freq": [
+          40.0,
+          100.0,
+          1000.0,
+          8000.0
+        ],
+        "spl": [
+          82.0,
+          83.99999999999999,
+          80.0,
+          72.0
+        ]
+      },
+      "sample_rate": 48000.0
+    }
+  ],
+  "schema_version": 1,
+  "source": "scripts/src/dsp.py::apply_plugins_to_curve",
+  "split_driver_eq_plugins": {
+    "channel": "SUB",
+    "driver_index": 0,
+    "input": {
+      "channels": {
+        "SUB": {
+          "drivers": [
+            {
+              "initial_curve": {
+                "freq": [
+                  100.0
+                ],
+                "spl": [
+                  80.0
+                ]
+              },
+              "name": "woofer",
+              "plugins": [
+                {
+                  "parameters": {
+                    "filters": [
+                      {
+                        "db_gain": 2.0,
+                        "filter_type": "peak",
+                        "freq": 100.0,
+                        "q": 1.0
+                      }
+                    ],
+                    "room_eq_stage": "post_route"
+                  },
+                  "plugin_type": "eq"
+                },
+                {
+                  "parameters": {
+                    "gain_db": -2.0,
+                    "room_eq_stage": "route_owned"
+                  },
+                  "plugin_type": "gain"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "bass_management": {
+          "routing_graph": {
+            "routes": []
+          }
+        }
+      }
+    },
+    "merge_support": "none: Python exposes split_driver_eq_plugins only; no merge counterpart",
+    "result": [
+      [
+        {
+          "parameters": {
+            "filters": [
+              {
+                "db_gain": 2.0,
+                "filter_type": "peak",
+                "freq": 100.0,
+                "q": 1.0
+              }
+            ],
+            "room_eq_stage": "post_route"
+          },
+          "plugin_type": "eq"
+        }
+      ],
+      []
+    ]
+  }
+}

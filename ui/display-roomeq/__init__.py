@@ -1,17 +1,14 @@
-"""RoomEQ display utilities."""
+"""Compatibility package exposing the canonical scripts.src constants."""
 
-# Smoothing options in octave fractions
-# Index 0 is the default — 1/6 octave preserves narrow Q filters while
-# still reducing measurement noise.
-SMOOTHING_OPTIONS = [
-    ("1/6 oct", 1/6),
-    ("1/3 oct", 1/3),
-    ("1/2 oct", 1/2),
-    ("1/1 oct", 1.0),
-    ("1/12 oct", 1/12),
-    ("1/24 oct", 1/24),
-    ("1/48 oct", 1/48),
-    ("Raw", None),
-]
+from pathlib import Path as _Path
+import sys as _sys
 
-DEFAULT_SMOOTHING = 1/6  # 1/6 octave
+_legacy_name = __name__
+_repo_root = _Path(__file__).resolve().parents[2]
+_repo_root_text = str(_repo_root)
+if _repo_root_text not in _sys.path:
+    _sys.path.insert(0, _repo_root_text)
+import scripts.src as _canonical
+
+globals().update(vars(_canonical))
+_sys.modules[_legacy_name] = _canonical

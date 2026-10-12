@@ -2,29 +2,35 @@
 
 from __future__ import annotations
 
-import bisect
 import csv
 import math
 from pathlib import Path
 
-from .dsp import _crossover_response
+from .native_target_overlay import (
+    build_target_overlay_curves as _build_native_target_overlay_curves,
+    target_overlay_helper as _target_overlay_helper,
+    target_shape_for_channel as _native_target_shape_for_channel,
+)
+from .native_target_csv import parse_target_csv as _parse_native_target_csv
 
-
-_FREQUENCY_COLUMNS = ("frequency", "freq", "frequency_hz", "freq_hz")
-_SPL_COLUMNS = ("spl", "spl_db", "level", "level_db")
 
 #: Midband (Hz) over which a design-target level is matched to measured data.
 #: Reports anchor every channel tab's target to the per-channel mean of the
 #: measured L/R pair over this band so one global calibration offset applies.
 TARGET_LEVEL_MATCH_BAND_HZ = (100.0, 10_000.0)
+# Target files are small response tables; bounding reads also bounds the JSON
+# request copied into native/WASM report transport.
+MAX_TARGET_CSV_BYTES = 8 * 1024 * 1024
+_NO_NATIVE_TARGET_SNAPSHOT = object()
 
 
-def _column(row: dict[str, str], names: tuple[str, ...]) -> str | None:
-    normalized = {str(key).strip().lower(): value for key, value in row.items()}
-    for name in names:
-        if name in normalized:
-            return normalized[name]
-    return None
+def _finite_real(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _configured_target_path(data: dict, json_path: Path | None) -> Path | None:
@@ -51,55 +57,79 @@ def load_target_shape(data: dict, json_path: Path | None = None) -> dict | None:
     path = _configured_target_path(data, json_path)
     if path is None:
         return None
-
     try:
-        points: dict[float, float] = {}
-        with path.open(newline="", encoding="utf-8-sig") as handle:
-            for row in csv.DictReader(handle):
-                frequency_text = _column(row, _FREQUENCY_COLUMNS)
-                spl_text = _column(row, _SPL_COLUMNS)
-                if frequency_text is None or spl_text is None:
-                    raise ValueError(
-                        "target CSV needs frequency/freq and spl/spl_db columns"
-                    )
-                frequency = float(frequency_text)
-                spl = float(spl_text)
-                if frequency > 0.0 and math.isfinite(frequency) and math.isfinite(spl):
-                    points[frequency] = spl
-        if not points:
-            raise ValueError("target CSV has no finite positive-frequency points")
+        with path.open("rb") as handle:
+            csv_bytes = handle.read(MAX_TARGET_CSV_BYTES + 1)
+        if len(csv_bytes) > MAX_TARGET_CSV_BYTES:
+            raise ValueError("target CSV exceeds the 8 MiB size limit")
+        # The shared parser removes exactly one UTF-8 BOM, matching Python's
+        # legacy utf-8-sig decode at this boundary (including double-BOM files).
+        return _parse_native_target_csv(csv_bytes.decode("utf-8"))
     except (OSError, UnicodeError, ValueError) as error:
         print(f"Warning: Could not load target curve '{path}': {error}")
         return None
 
-    frequencies = sorted(points)
-    return {"freq": frequencies, "spl": [points[freq] for freq in frequencies]}
+
+def _captured_target_shape(data: dict):
+    """Return a frozen native target shape, or a sentinel for standalone data."""
+    snapshot = getattr(data, "native_target_snapshot", _NO_NATIVE_TARGET_SNAPSHOT)
+    if snapshot is _NO_NATIVE_TARGET_SNAPSHOT:
+        return _NO_NATIVE_TARGET_SNAPSHOT
+    if (
+        not isinstance(snapshot, dict)
+        or type(snapshot.get("schema_version")) is not int
+        or snapshot["schema_version"] != 1
+    ):
+        raise ValueError("Native report target snapshot has an unsupported schema")
+
+    state = snapshot.get("state")
+    if state == "not_configured":
+        return None
+    if state == "available":
+        if (
+            snapshot.get("source_verification") != "external_unverified"
+            or snapshot.get("source_integrity") != "stable_file_snapshot"
+            or not isinstance(snapshot.get("sha256"), str)
+            or len(snapshot["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in snapshot["sha256"])
+        ):
+            raise ValueError("Native report target snapshot is not immutable")
+        target = snapshot.get("target")
+        if not isinstance(target, dict):
+            raise ValueError("Native report target snapshot has no parsed target")
+        frequencies = target.get("freq")
+        levels = target.get("spl")
+        if not isinstance(frequencies, list) or not isinstance(levels, list):
+            raise ValueError("Native report target snapshot has invalid curve arrays")
+        if len(frequencies) != len(levels):
+            raise ValueError("Native report target snapshot curve arrays differ in length")
+        for frequency, level in zip(frequencies, levels):
+            if not _finite_real(frequency) or frequency <= 0.0 or not _finite_real(level):
+                raise ValueError("Native report target snapshot contains invalid samples")
+        return target
+    if state == "unavailable":
+        error = snapshot.get("error")
+        if not isinstance(error, str):
+            raise ValueError("Native report target snapshot has no failure detail")
+        if snapshot.get("error_kind") == "csv_error":
+            raise csv.Error(error)
+        if snapshot.get("error_kind") != "warning":
+            raise ValueError("Native report target snapshot has an unknown failure kind")
+        path = (
+            snapshot.get("selected_path")
+            or snapshot.get("resolved_path")
+            or snapshot.get("configured_path")
+            or "target curve"
+        )
+        print(f"Warning: Could not load target curve '{path}': {error}")
+        return None
+    raise ValueError("Native report target snapshot has an unknown state")
 
 
 def _interpolate_log_space(target: dict, frequencies: list[float]) -> list[float]:
-    source_freq = target["freq"]
-    source_spl = target["spl"]
-    source_log_freq = [math.log10(frequency) for frequency in source_freq]
-    result = []
-
-    for frequency in frequencies:
-        if frequency <= source_freq[0]:
-            result.append(source_spl[0])
-            continue
-        if frequency >= source_freq[-1]:
-            result.append(source_spl[-1])
-            continue
-
-        upper = bisect.bisect_right(source_freq, frequency)
-        lower = upper - 1
-        position = (math.log10(frequency) - source_log_freq[lower]) / (
-            source_log_freq[upper] - source_log_freq[lower]
-        )
-        result.append(
-            source_spl[lower] + position * (source_spl[upper] - source_spl[lower])
-        )
-
-    return result
+    return _target_overlay_helper(
+        "interpolate_log_space", target=target, frequencies=frequencies
+    )
 
 
 def band_mean_spl(
@@ -108,18 +138,9 @@ def band_mean_spl(
     max_freq: float,
 ) -> float | None:
     """Arithmetic mean of finite SPL samples inside ``[min_freq, max_freq]``."""
-    frequencies = curve.get("freq") or []
-    levels = curve.get("spl") or []
-    if len(frequencies) != len(levels):
-        return None
-    values = [
-        level
-        for frequency, level in zip(frequencies, levels, strict=True)
-        if min_freq <= frequency <= max_freq and math.isfinite(level)
-    ]
-    if not values:
-        return None
-    return sum(values) / len(values)
+    return _target_overlay_helper(
+        "band_mean_spl", curve=curve, min_hz=min_freq, max_hz=max_freq
+    )
 
 
 def shift_target_to_reference_band_mean(
@@ -135,26 +156,13 @@ def shift_target_to_reference_band_mean(
     the target mean over ``[min_freq, max_freq]`` equals the reference mean
     over the same band. Returns ``None`` when either band is empty.
     """
-    frequencies = list(reference.get("freq") or [])
-    reference_spl = list(reference.get("spl") or [])
-    if not frequencies or len(frequencies) != len(reference_spl):
-        return None
-    if not target.get("freq") or not target.get("spl"):
-        return None
-    target_spl = _interpolate_log_space(target, frequencies)
-    reference_mean = band_mean_spl(
-        {"freq": frequencies, "spl": reference_spl}, min_freq, max_freq
+    return _target_overlay_helper(
+        "shift_target_to_reference_band_mean",
+        target=target,
+        reference=reference,
+        min_hz=min_freq,
+        max_hz=max_freq,
     )
-    target_mean = band_mean_spl(
-        {"freq": frequencies, "spl": target_spl}, min_freq, max_freq
-    )
-    if reference_mean is None or target_mean is None:
-        return None
-    offset = reference_mean - target_mean
-    return {
-        "freq": frequencies,
-        "spl": [level + offset for level in target_spl],
-    }
 
 
 def global_target_offset_for_pair(
@@ -173,24 +181,14 @@ def global_target_offset_for_pair(
     differences. Unlike an L+R *sum* anchor, per-channel overlays land at
     the level of the per-channel data instead of 3-6 dB above it.
     """
-    if not isinstance(shape, dict) or not shape.get("freq") or not shape.get("spl"):
-        return None
-    if not isinstance(reference_l, dict) or not isinstance(reference_r, dict):
-        return None
-    mean_l = band_mean_spl(reference_l, min_freq, max_freq)
-    mean_r = band_mean_spl(reference_r, min_freq, max_freq)
-    if mean_l is None or mean_r is None:
-        return None
-    grid = list(reference_l.get("freq") or []) or list(reference_r.get("freq") or [])
-    if not grid:
-        return None
-    shape_mean = band_mean_spl(
-        {"freq": grid, "spl": _interpolate_log_space(shape, grid)},
-        min_freq, max_freq,
+    return _target_overlay_helper(
+        "global_target_offset_for_pair",
+        reference_l=reference_l,
+        reference_r=reference_r,
+        shape=shape,
+        min_hz=min_freq,
+        max_hz=max_freq,
     )
-    if shape_mean is None:
-        return None
-    return (mean_l + mean_r) / 2.0 - shape_mean
 
 
 def align_target_to_curve(
@@ -205,38 +203,13 @@ def align_target_to_curve(
     This is especially important for the LFE route, whose post-DSP response is
     intentionally low-passed.
     """
-    frequencies = list(reference.get("freq") or [])
-    reference_spl = list(reference.get("spl") or [])
-    if not frequencies or len(frequencies) != len(reference_spl):
-        return None
-
-    target_spl = _interpolate_log_space(target, frequencies)
-    band_levels = [
-        level
-        for frequency, level in zip(frequencies, reference_spl, strict=True)
-        if min_freq <= frequency <= max_freq and math.isfinite(level)
-    ]
-    if not band_levels:
-        return None
-    passband_floor = max(band_levels) - 30.0
-
-    offsets = [
-        measured - desired
-        for frequency, measured, desired in zip(
-            frequencies, reference_spl, target_spl, strict=True
-        )
-        if min_freq <= frequency <= max_freq
-        and math.isfinite(measured)
-        and measured >= passband_floor
-    ]
-    if not offsets:
-        return None
-
-    offset = sum(offsets) / len(offsets)
-    return {
-        "freq": frequencies,
-        "spl": [level + offset for level in target_spl],
-    }
+    return _target_overlay_helper(
+        "align_target_to_curve",
+        target=target,
+        reference=reference,
+        min_hz=min_freq,
+        max_hz=max_freq,
+    )
 
 
 def _target_shape_for_channel(
@@ -245,43 +218,8 @@ def _target_shape_for_channel(
     target: dict,
     reference: dict,
 ) -> dict:
-    """Apply programme-route band limiting to a logical LFE target."""
-    bass_management = ((data.get("metadata") or {}).get("bass_management") or {})
-    graph = bass_management.get("routing_graph") or {}
-    route = next(
-        (
-            candidate
-            for candidate in graph.get("routes", [])
-            if candidate.get("source_channel") == channel_name
-            and candidate.get("route_kind") == "lfe_lowpass_to_sub"
-        ),
-        None,
-    )
-    if route is None:
-        return target
-
-    cutoff_hz = route.get("low_pass_hz")
-    frequencies = list(reference.get("freq") or [])
-    if not isinstance(cutoff_hz, (int, float)) or cutoff_hz <= 0.0 or not frequencies:
-        return target
-
-    effective_config = (data.get("metadata") or {}).get("effective_config") or {}
-    sample_rate = float(effective_config.get("sample_rate", 48_000.0))
-    target_spl = _interpolate_log_space(target, frequencies)
-    response = _crossover_response(
-        str(route.get("crossover_type") or "LR24"),
-        "low",
-        float(cutoff_hz),
-        frequencies,
-        sample_rate,
-    )
-    return {
-        "freq": frequencies,
-        "spl": [
-            level + 20.0 * math.log10(max(abs(transfer), 1.0e-10))
-            for level, transfer in zip(target_spl, response, strict=True)
-        ],
-    }
+    """Apply the existing DSP crossover response through the shared producer."""
+    return _native_target_shape_for_channel(data, channel_name, target, reference)
 
 
 def _target_alignment_band_for_channel(
@@ -291,80 +229,29 @@ def _target_alignment_band_for_channel(
     max_freq: float,
 ) -> tuple[float, float]:
     """Match the routed optimizer's main-only target reference band."""
-    bass_management = ((data.get("metadata") or {}).get("bass_management") or {})
-    graph = bass_management.get("routing_graph") or {}
-    route = next(
-        (
-            candidate
-            for candidate in graph.get("routes", []) or []
-            if candidate.get("source_channel") == channel_name
-            and candidate.get("route_kind") == "redirected_bass_lowpass_to_sub"
-            and candidate.get("low_pass_hz") is not None
-        ),
-        None,
-    )
-    if route is None:
-        return min_freq, max_freq
-    crossover_hz = float(route["low_pass_hz"])
-    reference_min = max(min_freq, crossover_hz * 2.0)
-    reference_max = min(max_freq, crossover_hz * 8.0, 2_000.0)
-    if reference_min >= reference_max:
-        return min_freq, max_freq
-    return reference_min, reference_max
+    return tuple(_target_overlay_helper(
+        "target_alignment_band_for_channel",
+        data=data,
+        channel=channel_name,
+        min_hz=min_freq,
+        max_hz=max_freq,
+    ))
 
 
 def _global_anchor_offset(
     data: dict, reference_curves: dict[str, dict]
 ) -> float | None:
     """Mean-based offset for absolute targets; None without an L/R anchor."""
-    channels = data.get("channels") or {}
-    shape = (channels.get("L") or {}).get("target_curve") or (
-        channels.get("R") or {}
-    ).get("target_curve")
-    return global_target_offset_for_pair(
-        reference_curves.get("L"), reference_curves.get("R"), shape
+    return _target_overlay_helper(
+        "global_target_offset", data=data, reference_curves=reference_curves
     )
 
 
-def build_target_overlay_curves(
-    data: dict,
-    reference_curves: dict[str, dict],
-    json_path: Path | None = None,
-) -> dict[str, dict]:
-    """Absolute targets share one global level anchor; legacy targets align per channel."""
-    target = load_target_shape(data, json_path)
-
-    optimizer = (
-        ((data.get("metadata") or {}).get("effective_config") or {}).get("optimizer")
-        or {}
+def build_target_overlay_curves(data, reference_curves, json_path=None):
+    """Build overlays from captured native data or standalone files."""
+    target = _captured_target_shape(data)
+    if target is _NO_NATIVE_TARGET_SNAPSHOT:
+        target = load_target_shape(data, json_path)
+    return _build_native_target_overlay_curves(
+        data, reference_curves, target
     )
-    min_freq = float(optimizer.get("min_freq", 20.0))
-    max_freq = float(optimizer.get("max_freq", 20_000.0))
-
-    # Serialized absolute targets carry the design shape but not the measured
-    # level: shift every channel's overlay by the single L/R-anchored offset.
-    anchor = _global_anchor_offset(data, reference_curves)
-
-    result = {}
-    for channel_name, reference in reference_curves.items():
-        absolute_target = ((data.get("channels") or {}).get(channel_name) or {}).get("target_curve")
-        if absolute_target and absolute_target.get("freq") and absolute_target.get("spl"):
-            frequencies = list(reference.get("freq") or [])
-            if frequencies:
-                spl = _interpolate_log_space(absolute_target, frequencies)
-                if anchor is not None:
-                    spl = [level + anchor for level in spl]
-                result[channel_name] = {"freq": frequencies, "spl": spl}
-            continue
-        if target is None:
-            continue
-        channel_target = _target_shape_for_channel(data, channel_name, target, reference)
-        alignment_min, alignment_max = _target_alignment_band_for_channel(
-            data, channel_name, min_freq, max_freq
-        )
-        aligned = align_target_to_curve(
-            channel_target, reference, alignment_min, alignment_max
-        )
-        if aligned is not None:
-            result[channel_name] = aligned
-    return result

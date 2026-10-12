@@ -2,9 +2,9 @@
 //!
 //! The HTML shell inlines the generated glue plus the base64 `.wasm` and
 //! drives these functions: [`render_section`], [`legend_json`],
-//! [`toggle_series`], plus [`last_error`] and [`schema_version`]. All layout
-//! math lives in the shared [`autoeq_report_wasm::draw`] core (d3rs
-//! scales/geometry).
+//! [`toggle_series`], [`crossover_config_html`], and [`shared_sections_json`],
+//! plus [`last_error`] and [`schema_version`]. All layout math lives in the shared
+//! [`autoeq_report_wasm::draw`] core (d3rs scales/geometry).
 //!
 //! This crate is `cdylib`-only on purpose: the release profile sets
 //! `panic = "abort"` while test targets use `unwind`, so a `cdylib` + `rlib`
@@ -20,6 +20,8 @@ use std::sync::{Mutex, OnceLock};
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use autoeq_report_wasm::build_shared_sections as render_shared_sections;
+use autoeq_report_wasm::crossover_config_html as render_crossover_config_html;
 use autoeq_report_wasm::draw::{
     Ctx, DrawMeta, LegendEntry, PaintTriangle, PlotGeometry, TextAlign, draw_bar, draw_figure,
     draw_sankey, paint_triangles,
@@ -176,6 +178,50 @@ fn draw_error(canvas_id: &str, msg: &str) {
         backend.fill_text(msg, 12.0, 30.0, TextAlign::Left);
     }
     web_sys::console::error_1(&JsValue::from_str(&format!("report2d/{canvas_id}: {msg}")));
+}
+
+/// Builds the shared Crossover Configuration HTML section in WebAssembly.
+///
+/// `data_json` is a serialized RoomEQ result document. The returned string is
+/// the same escaped HTML fragment used by native report generation.
+///
+/// # Errors
+///
+/// Returns a JavaScript error when `data_json` is not valid JSON.
+#[wasm_bindgen]
+pub fn crossover_config_html(data_json: &str) -> Result<String, JsValue> {
+    let data: serde_json::Value = serde_json::from_str(data_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid crossover section JSON: {error}")))?;
+    Ok(render_crossover_config_html(&data))
+}
+
+/// Builds the canonical report fragments as one JSON object in WebAssembly.
+///
+/// The input is a serialized RoomEQ result document. HTML fragments are
+/// strings; signal-flow sections are ordinary report section objects.
+///
+/// # Errors
+///
+/// Returns a JavaScript error when `data_json` is not valid JSON.
+#[wasm_bindgen]
+pub fn shared_sections_json(data_json: &str) -> Result<String, JsValue> {
+    let data: serde_json::Value = serde_json::from_str(data_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid shared sections JSON: {error}")))?;
+    serde_json::to_string(&render_shared_sections(&data))
+        .map_err(|error| JsValue::from_str(&format!("could not encode shared sections: {error}")))
+}
+
+/// Dispatches one canonical report producer request in WebAssembly.
+///
+/// Section results are serialized JSON; the assembly operation returns HTML.
+///
+/// # Errors
+/// Returns an error for invalid JSON, unsupported operations, or invalid request fields.
+#[wasm_bindgen]
+pub fn produce_json(request_json: &str) -> Result<String, JsValue> {
+    let request: serde_json::Value = serde_json::from_str(request_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid report request JSON: {error}")))?;
+    autoeq_report_wasm::producer::produce(&request).map_err(|error| JsValue::from_str(&error))
 }
 
 /// Render one payload section into a canvas.

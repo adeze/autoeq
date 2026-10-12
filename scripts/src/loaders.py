@@ -35,6 +35,12 @@ class RoomEqData(dict):
         # when empty and the ledger binds the slim saved bytes.
         self.deployed_source_curves_created = False
 
+        # Native report replay is attached out-of-band by the host adapter.
+        # These fields never participate in graph serialization or provenance.
+        self.native_dsp_replay_present = False
+        self.native_dsp_replay = None
+        self.native_playback_sample_rate = None
+
     def close(self):
         """Release the private manifested-bundle snapshot when no longer needed."""
         owner = getattr(self, "_bundle_snapshot_owner", None)

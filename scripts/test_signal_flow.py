@@ -1,4 +1,8 @@
 import unittest
+import json
+import html
+from pathlib import Path
+import re
 
 from scripts.src.signal_flow import signal_flow_sections
 
@@ -8,6 +12,48 @@ def plugin(kind, **params):
 
 
 class SignalFlowTests(unittest.TestCase):
+    @staticmethod
+    def normalize_parameter_json(sections):
+        """Ignore JSON object key order inside the saved-parameter HTML only."""
+        normalized = []
+        for section in sections:
+            item = dict(section)
+            if item.get("kind") == "html":
+                item["html"] = re.sub(
+                    r"<pre>(.*?)</pre>",
+                    lambda match: "<pre>" + html.escape(json.dumps(
+                        json.loads(html.unescape(match.group(1))),
+                        ensure_ascii=False, indent=2, sort_keys=True
+                    )) + "</pre>",
+                    item["html"],
+                )
+            normalized.append(item)
+        return normalized
+
+    def test_rust_signal_flow_matches_pre_port_python_goldens(self):
+        fixtures = Path(__file__).parent / "tests" / "fixtures"
+        for name in ("unrouted_serial", "routed_sum", "ambiguous_owner"):
+            with self.subTest(name=name):
+                expected = json.loads((fixtures / f"signal_flow_{name}.json").read_text())
+                source = {
+                    "unrouted_serial": {"channels": {
+                        "L": {"plugins": [plugin("gain", gain_db=-2), plugin("eq", label="golden Ω")]},
+                        "R": {"plugins": []}}},
+                    "routed_sum": {"channels": {
+                        "L": {"plugins": [plugin("eq", room_eq_stage="pre_route")]},
+                        "R": {"plugins": []},
+                        "Sub": {"plugins": [plugin("eq", room_eq_stage="post_route"), plugin("limiter", room_eq_stage="post_route")]}},
+                        "metadata": {"bass_management": {"routing_graph": {"routes": [
+                            {"source_channel": "L", "destination": "Sub", "gain_db": -3, "low_pass_hz": 80},
+                            {"source_channel": "R", "destination": "Sub", "gain_db": -3, "low_pass_hz": 80}]}}}},
+                    "ambiguous_owner": {"channels": {"L": {"plugins": [plugin("eq")]}},
+                        "metadata": {"bass_management": {"routing_graph": {"routes": [
+                            {"source_channel": "L", "destination": "L"}]}}}},
+                }[name]
+                actual = signal_flow_sections(source)
+                self.assertEqual(self.normalize_parameter_json(actual),
+                                 self.normalize_parameter_json(expected))
+
     def charts(self, data):
         return [s["chart"] for s in signal_flow_sections(data)
                 if s["kind"] == "sankey" and s["tab"] != "All channels"]

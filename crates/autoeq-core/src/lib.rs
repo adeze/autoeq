@@ -18,12 +18,14 @@ pub mod direct_sound;
 pub mod dsp_conventions;
 pub mod error;
 pub mod evidence;
+pub mod fir_response;
 pub mod measurement_contracts;
 pub mod measurement_quality;
 pub mod param_utils;
 pub mod peq_model;
 pub mod phase_utils;
 pub mod response;
+pub mod serialized_dsp;
 pub mod x2peq;
 
 #[cfg(test)]
@@ -59,3 +61,11 @@ pub use measurement_quality::{
 };
 pub use param_utils::{FilterParams, ParamLayout, PeqLayout};
 pub use peq_model::PeqModel;
+
+pub mod serialized_plugins;
+
+pub mod serialized_chain;
+
+pub mod crossover;
+
+pub mod runtime_limiter;

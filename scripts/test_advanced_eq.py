@@ -88,17 +88,36 @@ class AdvancedEqTests(unittest.TestCase):
             assert section is not None
             series = section["figure"]["series"]
             # Combined EQ, per-filter decomposition, 0 dB reference.
+            self.assertEqual([item["name"] for item in series], [
+                "Combined EQ", "KAUTZ bank (unity + weighted basis)", "0 dB"
+            ])
+            self.assertAlmostEqual(max(series[0]["x"]), min(20000.0, rate / 2))
             expected = compute_eq_response([filt], list(series[0]["x"]), rate)
-            self.assertEqual(list(series[0]["y"]), expected)
-            self.assertEqual(list(series[1]["y"]), expected)
+            for actual_series in series[:2]:
+                self.assertEqual(len(actual_series["y"]), len(expected))
+                for actual, wanted in zip(actual_series["y"], expected):
+                    # Values cross the shared JSON producer boundary, so allow
+                    # only the sub-ULP decimal parse difference from Python floats.
+                    self.assertAlmostEqual(actual, wanted, delta=1e-12)
             self.assertIn("KAUTZ bank", series[1]["name"])
             self.assertNotIn("dB", series[1]["name"])
+            if rate != 48000.0:
+                default_response = compute_eq_response([filt], list(series[0]["x"]), 48000.0)
+                self.assertTrue(any(
+                    abs(actual - default) > 1e-8
+                    for actual, default in zip(expected, default_response)
+                ))
             channel = {"plugins": [{"plugin_type": "eq", "parameters": {"filters": [filt]}}]}
             multipass = create_multipass_eq_figure("L", channel, sample_rate=rate)
             assert multipass is not None
-            repass = compute_eq_response(
-                [filt], list(multipass["figure"]["series"][0]["x"]), rate)
-            self.assertEqual(list(multipass["figure"]["series"][0]["y"]), repass)
+            pass_series = multipass["figure"]["series"]
+            self.assertEqual([item["name"] for item in pass_series], [
+                "Combined EQ", "KAUTZ bank (unity + weighted basis)", "0 dB"
+            ])
+            self.assertAlmostEqual(max(pass_series[0]["x"]), min(20000.0, rate / 2))
+            repass = compute_eq_response([filt], list(pass_series[0]["x"]), rate)
+            for actual, wanted in zip(pass_series[0]["y"], repass):
+                self.assertAlmostEqual(actual, wanted, delta=1e-12)
 
     def check_response(self, filt, rate, frequencies, expected):
         db = compute_eq_response([filt], frequencies, rate)

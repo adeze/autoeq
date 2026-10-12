@@ -541,10 +541,13 @@ dependencies = [
 
 [[package]]
 name = "autoeq-report-wasm"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
+ "autoeq-core",
  "base64",
+ "csv",
  "gpui-d3rs",
+ "rustfft",
  "serde",
  "serde_json",
 ]
@@ -2901,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "math-dsp"
-version = "0.5.32"
+version = "0.5.33"
 dependencies = [
  "clap",
  "hound",

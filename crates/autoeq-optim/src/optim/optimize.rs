@@ -80,11 +80,11 @@ fn finalize_dispatch_winner(
     upper_bounds: &[f64],
     data: &ObjectiveData,
     params: &crate::OptimParams,
-    result: Result<(String, f64), (String, f64)>,
-) -> Result<(String, f64), (String, f64)> {
+    result: crate::optim::OptimizerOutcome,
+) -> crate::optim::OptimizerOutcome {
     let (algo, _) = result?;
     let failed =
-        |reason: String| -> Result<(String, f64), (String, f64)> { Err((reason, f64::INFINITY)) };
+        |reason: String| -> crate::optim::OptimizerOutcome { Err((reason, f64::INFINITY)) };
     let owned = match super::constraint_envelope::OwnedConstraintSpec::from_params(params) {
         Ok(owned) => owned,
         Err(reason) => return failed(reason),
@@ -323,7 +323,7 @@ pub struct OptimizerRunEvidence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlledOptimizerRun {
     /// Legacy backend result, including its unchanged raw status text.
-    pub result: Result<(String, f64), (String, f64)>,
+    pub result: crate::optim::OptimizerOutcome,
     /// Structured evidence after applying the final run-control snapshot.
     pub evidence: OptimizerRunEvidence,
     /// Counters and stop causes captured after finalization completed.
@@ -342,7 +342,7 @@ impl OptimizerRunEvidence {
     #[allow(clippy::too_many_arguments)]
     pub fn from_backend_result(
         algorithm: &str,
-        result: Result<(String, f64), (String, f64)>,
+        result: crate::optim::OptimizerOutcome,
         parameters: &[f64],
         lower_bounds: &[f64],
         upper_bounds: &[f64],
@@ -586,8 +586,8 @@ fn max_bound_violation(parameters: &[f64], lower_bounds: &[f64], upper_bounds: &
 }
 
 fn validation_refusal_caused_by_stop(
-    backend_result: &Result<(String, f64), (String, f64)>,
-    finalized_result: &Result<(String, f64), (String, f64)>,
+    backend_result: &crate::optim::OptimizerOutcome,
+    finalized_result: &crate::optim::OptimizerOutcome,
     parameters: &[f64],
     bounds: (&[f64], &[f64]),
     snapshots: (
@@ -641,7 +641,7 @@ pub fn optimize_filters(
     upper_bounds: &[f64],
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_with_algo_override(x, lower_bounds, upper_bounds, objective_data, params, None)
 }
 
@@ -792,7 +792,7 @@ pub fn optimize_filters_with_run_control(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     run_control: &OptimizerRunControl,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     optimize_filters_with_run_control_dispatch(
         x,
         lower_bounds,
@@ -809,7 +809,7 @@ pub fn optimize_filters_with_run_control(
 }
 
 struct ControlledOptimizationDispatch {
-    result: Result<(String, f64), (String, f64)>,
+    result: crate::optim::OptimizerOutcome,
     dispatch: OptimizerDispatchOutcome,
     evaluation_limit: usize,
     validation_stop_refusal: bool,
@@ -819,7 +819,7 @@ struct ControlledOptimizationDispatch {
 }
 
 struct NormalizedBackendOutput {
-    result: Result<(String, f64), (String, f64)>,
+    result: crate::optim::OptimizerOutcome,
     pareto_report: Option<roomeq_model::ParetoDispatchReport>,
     validation_stop_refusal: bool,
     search_evidence: Option<super::backend::BackendSearchEvidence>,
@@ -1290,7 +1290,7 @@ pub fn optimize_filters_with_algo_override(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     algo_override: Option<&str>,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     let algo = algo_override.unwrap_or(&params.algo);
     let backend = super::registry::resolve(algo)
         .ok_or_else(|| (format!("Unknown algorithm: {}", algo), f64::INFINITY))?;
@@ -1322,7 +1322,7 @@ pub fn optimize_filters_with_callback(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
     callback: OptimProgressCallback,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     let backend = super::registry::resolve(&params.algo)
         .ok_or_else(|| (format!("Unknown algorithm: {}", params.algo), f64::INFINITY))?;
 

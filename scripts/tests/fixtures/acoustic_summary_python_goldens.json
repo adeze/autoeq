@@ -1,0 +1,637 @@
+{
+  "schema": "autoeq-operational-summary-python-golden-v1",
+  "cases": {
+    "legacy_decisions": {
+      "input": {
+        "channels": {
+          "L": {},
+          "R": {},
+          "C": {}
+        },
+        "correction_decisions": {
+          "decisions": [
+            {
+              "decision_id": "d-1",
+              "stage": "final",
+              "action": "equalize",
+              "status": "applied",
+              "logical_input": "L",
+              "physical_output": "L",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": []
+            },
+            {
+              "decision_id": "d-2",
+              "stage": "final",
+              "action": "equalize",
+              "status": "unresolved",
+              "logical_input": "L",
+              "physical_output": "L",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": []
+            },
+            {
+              "decision_id": "d-3",
+              "stage": "final",
+              "action": "equalize",
+              "status": "constrained",
+              "logical_input": "R",
+              "physical_output": "R",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": []
+            },
+            {
+              "decision_id": "d-4",
+              "stage": "provisional",
+              "action": "equalize",
+              "status": "applied",
+              "logical_input": "R",
+              "physical_output": "R",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": []
+            },
+            {
+              "decision_id": "d-5",
+              "stage": "final",
+              "action": "equalize",
+              "status": "applied",
+              "logical_input": "R",
+              "physical_output": "R",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": [
+                "d-3"
+              ]
+            },
+            {
+              "decision_id": "d-6",
+              "stage": "final",
+              "action": "equalize",
+              "status": "already_acceptable",
+              "logical_input": "C",
+              "physical_output": "C",
+              "final_graph_identity": "  ",
+              "supersedes_ids": []
+            },
+            {
+              "decision_id": "d-7",
+              "stage": "final",
+              "action": "trim",
+              "status": "already_acceptable",
+              "logical_input": "C",
+              "physical_output": "C",
+              "final_graph_identity": "graph-1",
+              "supersedes_ids": []
+            }
+          ]
+        }
+      },
+      "summaries": {
+        "L": [
+          50.0,
+          2,
+          1
+        ],
+        "R": [
+          100.0,
+          1,
+          1
+        ]
+      },
+      "cells": {
+        "L": "<td style=\"background:#e74c3c33\" title=\"operational room response: 1/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">50.0</td>",
+        "R": "<td style=\"background:#2ecc7133\" title=\"operational room response: 1/1 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td>",
+        "C": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>"
+      },
+      "summary_table_html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#e74c3c33\" title=\"operational room response: 1/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">50.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>R</td><td style=\"background:#2ecc7133\" title=\"operational room response: 1/1 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n</tbody></table></div>\n"
+    },
+    "emitted_summaries": {
+      "input": {
+        "channels": {
+          "L": {},
+          "R": {},
+          "C": {},
+          "D": {}
+        },
+        "correction_decisions": {
+          "channel_summaries": [
+            {
+              "channel": "L",
+              "operational_response_pct": 100.0,
+              "decided_equalize": 2,
+              "delivered_equalize": 2
+            },
+            {
+              "channel": "R",
+              "operational_response_pct": 50.0,
+              "decided_equalize": 2,
+              "delivered_equalize": 1
+            },
+            {
+              "channel": "C",
+              "operational_response_pct": true,
+              "decided_equalize": 4,
+              "delivered_equalize": 4
+            },
+            {
+              "channel": "D",
+              "operational_response_pct": 0.0,
+              "decided_equalize": true,
+              "delivered_equalize": false
+            },
+            {
+              "channel": "",
+              "operational_response_pct": 99.0,
+              "decided_equalize": 1,
+              "delivered_equalize": 1
+            },
+            {
+              "channel": "R",
+              "operational_response_pct": 80.0,
+              "decided_equalize": "n/a",
+              "delivered_equalize": null
+            }
+          ]
+        }
+      },
+      "summaries": {
+        "L": [
+          100.0,
+          2,
+          2
+        ],
+        "R": [
+          80.0,
+          "n/a",
+          null
+        ],
+        "D": [
+          0.0,
+          true,
+          false
+        ]
+      },
+      "cells": {
+        "L": "<td style=\"background:#2ecc7133\" title=\"operational room response: 2/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td>",
+        "R": "<td style=\"background:#f1c40f33\" title=\"operational room response: final EQ scope share (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">80.0</td>",
+        "C": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>",
+        "D": "<td style=\"background:#e74c3c33\" title=\"operational room response: False/True final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td>"
+      },
+      "summary_table_html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>D</td><td style=\"background:#e74c3c33\" title=\"operational room response: False/True final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#2ecc7133\" title=\"operational room response: 2/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>R</td><td style=\"background:#f1c40f33\" title=\"operational room response: final EQ scope share (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">80.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n</tbody></table></div>\n"
+    },
+    "thresholds": {
+      "input": {
+        "channels": {
+          "P0": {},
+          "P1": {},
+          "P2": {},
+          "P3": {},
+          "P4": {},
+          "P5": {},
+          "P6": {}
+        },
+        "correction_decisions": {
+          "channel_summaries": [
+            {
+              "channel": "P0",
+              "operational_response_pct": 100.0,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P1",
+              "operational_response_pct": 90.1,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P2",
+              "operational_response_pct": 90.0,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P3",
+              "operational_response_pct": 85.0,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P4",
+              "operational_response_pct": 80.0,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P5",
+              "operational_response_pct": 79.9,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            },
+            {
+              "channel": "P6",
+              "operational_response_pct": 0.0,
+              "decided_equalize": 4,
+              "delivered_equalize": 3
+            }
+          ]
+        }
+      },
+      "summaries": {
+        "P0": [
+          100.0,
+          4,
+          3
+        ],
+        "P1": [
+          90.1,
+          4,
+          3
+        ],
+        "P2": [
+          90.0,
+          4,
+          3
+        ],
+        "P3": [
+          85.0,
+          4,
+          3
+        ],
+        "P4": [
+          80.0,
+          4,
+          3
+        ],
+        "P5": [
+          79.9,
+          4,
+          3
+        ],
+        "P6": [
+          0.0,
+          4,
+          3
+        ]
+      },
+      "cells": {
+        "P0": "<td style=\"background:#2ecc7133\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td>",
+        "P1": "<td style=\"background:#2ecc7133\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.1</td>",
+        "P2": "<td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.0</td>",
+        "P3": "<td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">85.0</td>",
+        "P4": "<td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">80.0</td>",
+        "P5": "<td style=\"background:#e74c3c33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">79.9</td>",
+        "P6": "<td style=\"background:#e74c3c33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td>"
+      },
+      "summary_table_html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>P0</td><td style=\"background:#2ecc7133\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">100.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P1</td><td style=\"background:#2ecc7133\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.1</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P2</td><td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P3</td><td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">85.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P4</td><td style=\"background:#f1c40f33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">80.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P5</td><td style=\"background:#e74c3c33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">79.9</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>P6</td><td style=\"background:#e74c3c33\" title=\"operational room response: 3/4 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n</tbody></table></div>\n"
+    },
+    "composed_report": {
+      "input": {
+        "channels": {
+          "L": {
+            "final_curve": {
+              "freq": [
+                63.0,
+                100.0,
+                250.0,
+                500.0,
+                1000.0,
+                2000.0,
+                3000.0,
+                8000.0,
+                16000.0
+              ],
+              "spl": [
+                -12.0,
+                -10.0,
+                -4.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                -2.0
+              ]
+            },
+            "early_late_curves": {
+              "method": "incoherent_band_energy",
+              "reference": "full_peak_band",
+              "smoothing": "third_octave",
+              "split_ms": 20.0,
+              "full": {
+                "freq": [
+                  1000.0,
+                  2000.0,
+                  4000.0,
+                  8000.0
+                ],
+                "spl": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "early": {
+                "freq": [
+                  1000.0,
+                  2000.0,
+                  4000.0,
+                  8000.0
+                ],
+                "spl": [
+                  -1.0,
+                  -1.0,
+                  -1.0,
+                  -1.0
+                ]
+              },
+              "late": {
+                "freq": [
+                  1000.0,
+                  2000.0,
+                  4000.0,
+                  8000.0
+                ],
+                "spl": [
+                  -7.0,
+                  -7.0,
+                  -7.0,
+                  -7.0
+                ]
+              }
+            },
+            "early_reflections": {
+              "basis": "measured_room_ir",
+              "method": "bandlimited_early_reflection_table_v1",
+              "band_hz": [
+                1000.0,
+                8000.0
+              ],
+              "threshold_dbfs": -15.0,
+              "direct_reference": "broadband envelope peak",
+              "pre": [],
+              "post": [
+                {
+                  "gain_dbfs": -8.0,
+                  "time_ms": 5.0,
+                  "distance_cm": 171.5,
+                  "first_dip_hz": 100.0,
+                  "ripple_db": 7.3
+                }
+              ]
+            },
+            "t60_octaves": {
+              "basis": "measured_room_ir",
+              "min_r2": 0.9,
+              "bands": [
+                {
+                  "centre_hz": 63,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 125,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 250,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 500,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 1000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 2000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 4000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 8000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 16000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                }
+              ]
+            }
+          },
+          "R": {
+            "final_curve": {
+              "freq": [
+                63.0,
+                100.0,
+                250.0,
+                500.0,
+                1000.0,
+                2000.0,
+                3000.0,
+                8000.0,
+                16000.0
+              ],
+              "spl": [
+                -20.0,
+                -8.0,
+                -4.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                -2.0
+              ]
+            },
+            "t60_octaves": {
+              "basis": "measured_room_ir",
+              "min_r2": 0.9,
+              "bands": [
+                {
+                  "centre_hz": 63,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 125,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 250,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 500,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 1000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 2000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 4000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 8000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                },
+                {
+                  "centre_hz": 16000,
+                  "t60_s": 0.25,
+                  "fit_range": "T30",
+                  "r2": 0.96,
+                  "valid": true,
+                  "reason": ""
+                }
+              ]
+            }
+          },
+          "C": {}
+        },
+        "metadata": {
+          "t60_flatness_tolerance_s": 0.05,
+          "effective_config": {
+            "recording_config": {
+              "room_dimensions": {
+                "length": 5,
+                "width": 4,
+                "height": 5
+              }
+            }
+          }
+        },
+        "correction_decisions": {
+          "channel_summaries": [
+            {
+              "channel": "L",
+              "operational_response_pct": 90.0,
+              "decided_equalize": 10,
+              "delivered_equalize": 9
+            },
+            {
+              "channel": "R",
+              "operational_response_pct": 0.0,
+              "decided_equalize": 2,
+              "delivered_equalize": 0
+            }
+          ]
+        }
+      },
+      "summaries": {
+        "L": [
+          90.0,
+          10,
+          9
+        ],
+        "R": [
+          0.0,
+          2,
+          0
+        ]
+      },
+      "cells": {
+        "L": "<td style=\"background:#f1c40f33\" title=\"operational room response: 9/10 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.0</td>",
+        "R": "<td style=\"background:#e74c3c33\" title=\"operational room response: 0/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td>",
+        "C": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>"
+      },
+      "summary_table_html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#f1c40f33\" title=\"operational room response: 9/10 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">90.0</td><td style=\"background:#f1c40f33\" title=\"strongest emitted post-correction 1–8 kHz reflection, dB relative to direct\">-8.0</td><td style=\"background:#2ecc7133\" title=\"arithmetic mean of early minus late dB at emitted 1–8 kHz third-octave centers\">+6.0</td><td style=\"background:#2ecc7133\" title=\"nine measured octave fits within declared ±0.05 s of the complete-channel room mean\">100.0</td><td style=\"background:#2ecc7133\" title=\"8/8 octave centers within ITU-R BS.1116-3 Figure 1 limits around the volume recommendation; 63 Hz has only an upper bound; 4 kHz uses the midband limits; 16 kHz is excluded. Not overall room compliance.\">100.0</td><td style=\"background:#f1c40f33\">-12.0</td></tr>\n<tr><td>R</td><td style=\"background:#e74c3c33\" title=\"operational room response: 0/2 final EQ scope delivered (share of decided final equalization records delivered: Applied/AlreadyAcceptable/Constrained; empty scope stays pending, never 100%)\">0.0</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#2ecc7133\" title=\"nine measured octave fits within declared ±0.05 s of the complete-channel room mean\">100.0</td><td style=\"background:#2ecc7133\" title=\"8/8 octave centers within ITU-R BS.1116-3 Figure 1 limits around the volume recommendation; 63 Hz has only an upper bound; 4 kHz uses the midband limits; 16 kHz is excluded. Not overall room compliance.\">100.0</td><td style=\"background:#f1c40f33\">-20.0</td></tr>\n</tbody></table></div>\n"
+    },
+    "escaped_channel_name": {
+      "input": {
+        "channels": {
+          "<script>&\"'": {},
+          "L": {}
+        },
+        "correction_decisions": {}
+      },
+      "summaries": {},
+      "cells": {
+        "<script>&\"'": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>",
+        "L": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>"
+      },
+      "summary_table_html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>&lt;script&gt;&amp;&quot;&#x27;</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n</tbody></table></div>\n"
+    }
+  },
+  "pending_cell": {
+    "field": "<ledger>&\"'",
+    "html": "<td style=\"background:#eee;color:#888\" title=\"needs roomeq field: &lt;ledger&gt;&amp;&quot;&#x27;\">pending</td>"
+  },
+  "unmatched_cell": "<td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td>"
+}
