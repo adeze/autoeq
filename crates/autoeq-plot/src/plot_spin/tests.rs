@@ -121,12 +121,12 @@ fn test_create_cea2034_with_eq_combined_series_counts_and_names() {
     let series = create_cea2034_with_eq_combined_series(&curves, &eq);
     assert_eq!(series.len(), 6);
     let names: Vec<&str> = series.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.iter().any(|n| *n == "ON w/EQ"));
-    assert!(names.iter().any(|n| *n == "LW w/EQ"));
-    assert!(names.iter().any(|n| *n == "ER w/EQ"));
-    assert!(names.iter().any(|n| *n == "SP w/EQ"));
-    assert!(names.iter().any(|n| *n == "ERDI"));
-    assert!(names.iter().any(|n| *n == "SPDI"));
+    assert!(names.contains(&"ON w/EQ"));
+    assert!(names.contains(&"LW w/EQ"));
+    assert!(names.contains(&"ER w/EQ"));
+    assert!(names.contains(&"SP w/EQ"));
+    assert!(names.contains(&"ERDI"));
+    assert!(names.contains(&"SPDI"));
     // EQ shifts the primary values but leaves DI untouched.
     let on = series.iter().find(|s| s.name == "ON w/EQ").unwrap();
     assert_eq!(on.y, vec![Some(81.0), Some(84.0), Some(82.5)]);
