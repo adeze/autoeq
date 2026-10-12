@@ -131,10 +131,11 @@ class BoundCaptureReportTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("Capture acceptance diagnostics", html)
-            # A raw standalone dictionary has a recomputable payload binding,
-            # but no frozen source-byte identity or host-verified view-binding
-            # wrapper. Keep the diagnostics visible and fail closed on plots.
-            self.assertIn("saved optimization graph binding is invalid", html)
+            # The saved graph binding recomputes over loader-sealed bytes, so
+            # the report verifies the saved graph; the synthetic capture has
+            # no host-verified view bindings. Keep the diagnostics visible and
+            # fail closed on plots.
+            self.assertIn("capture-view payload verification is unavailable", html)
             self.assertNotIn("Matched IR evidence: synthetic_capture_pair", html)
             embedded = re.search(r'<script id="report-payload" type="application/json">(.*?)</script>', html, re.S)
             self.assertIsNotNone(embedded, "report omitted its embedded payload")
@@ -162,6 +163,18 @@ class BoundCaptureReportTests(unittest.TestCase):
             create_html_report(data, html_path, capture_verification=capture)
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("saved optimization graph binding is invalid", html)
+            self.assertNotIn("Matched IR evidence", html)
+
+    def test_verified_graph_with_mismatched_capture_graph_reports_mismatch(self):
+        data = RoomEqData(self._bound_output(), Path("."))
+        capture = capture_verification_fixture()
+        capture["graph_id"] = "other"
+        with tempfile.TemporaryDirectory() as directory:
+            html_path = Path(directory) / "report.html"
+            create_html_report(data, html_path, capture_verification=capture)
+            html = html_path.read_text(encoding="utf-8")
+            self.assertIn("Delivered payload: verified", html)
+            self.assertIn("verification candidate graph does not match", html)
             self.assertNotIn("Matched IR evidence", html)
 
 

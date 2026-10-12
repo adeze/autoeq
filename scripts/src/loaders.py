@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Union
 
+from .payload_binding import frozen_slim_provenance
+
 
 class RoomEqData(dict):
     """Keep the source directory outside the serialized payload being verified."""
@@ -40,6 +42,11 @@ class RoomEqData(dict):
         self.native_dsp_replay_present = False
         self.native_dsp_replay = None
         self.native_playback_sample_rate = None
+        # Frozen slim-graph identity captured at wrap time. The report
+        # composer recomputes it over the live graph and refuses to verify
+        # when the two diverge (post-load mutation). Loader-only replay
+        # caches are attributes, never dict keys, so they do not affect it.
+        self.native_report_provenance = frozen_slim_provenance(self)
 
     def close(self):
         """Release the private manifested-bundle snapshot when no longer needed."""
@@ -774,4 +781,7 @@ def load_roomeq_json(filepath: Path) -> dict:
                         resolved = resolve_asset(filepath, parameters["ir_file"])
                         rate, taps = read_fir_wav(resolved)
                     plugin["parameters"] = FirParameters(parameters, rate, taps)
+    # Re-freeze after overlay injection and FIR binding above: those mutate
+    # the wrapped dict after construction, so the wrap-time identity is stale.
+    data.native_report_provenance = frozen_slim_provenance(data)
     return data

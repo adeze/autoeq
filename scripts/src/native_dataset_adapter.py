@@ -229,23 +229,73 @@ def _legacy_driver_eq_curves(data: Any) -> dict:
     return result
 
 
+def _acceptance_evidence_option(data: Any, graph_identity: Any) -> tuple[bool, str]:
+    """Verify the acceptance-evidence binding triple (legacy parity).
+
+    Structural coverage (channel set, source classification, per-view
+    provenance) stays with the Rust composer; this gate only binds the
+    recorded evidence payload to the verified graph identity.
+    """
+    from .payload_binding import ALGORITHM, payload_digest
+
+    evidence = (data.get("correction_decisions") or {}).get("acceptance_evidence")
+    if evidence is None:
+        return False, "no production acceptance views were recorded (legacy or unfinalized output)."
+    if evidence.get("version") != "acceptance-evidence-v1":
+        return False, "unsupported acceptance-evidence version"
+    acceptance_binding = evidence.get("binding") or {}
+    try:
+        digest = payload_digest(evidence.get("payload"), graph_identity)
+    except (ValueError, TypeError, AttributeError, OverflowError, RecursionError) as error:
+        return False, f"acceptance-evidence verification unavailable: {error}."
+    if (
+        acceptance_binding.get("algorithm") != ALGORITHM
+        or acceptance_binding.get("graph_identity") != graph_identity
+        or digest != acceptance_binding.get("sha256")
+    ):
+        return False, "acceptance-view payload or graph binding changed"
+    return True, "acceptance evidence binding verified (not acoustic verification)."
+
+
 def _binding_option(data: Any, provenance: dict) -> dict:
-    from .payload_binding import verify_payload_binding
+    from .payload_binding import slim_graph_digest, verify_payload_binding
 
     verified, reason, identity = verify_payload_binding(data)
     binding = ((data.get("correction_decisions") or {}).get("payload_binding") or {})
-    option = {
+    frozen = provenance.get("slim_graph_sha256")
+    try:
+        fresh = slim_graph_digest(data)
+    except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+        fresh = None
+    if verified:
+        if not frozen:
+            verified, reason = (
+                False,
+                "loaded report graph has no frozen slim-graph identity (legacy or unwrapped input).",
+            )
+        elif fresh is None:
+            verified, reason = False, "slim-graph digest recomputation unavailable for this report input."
+        elif fresh != frozen:
+            verified, reason = (
+                False,
+                "report input changed after load; recorded decisions are stale "
+                "(they describe different bytes — re-load before rendering).",
+            )
+        elif not binding.get("sha256"):
+            verified, reason = False, "verified payload binding has no canonical payload digest"
+    if verified:
+        acceptance_verified, acceptance_reason = _acceptance_evidence_option(data, identity)
+    else:
+        acceptance_verified, acceptance_reason = False, "acceptance evidence was not verified"
+    return {
         "verified": bool(verified),
         "reason": reason,
         "graph_identity": identity,
-        "slim_graph_sha256": provenance.get("slim_graph_sha256"),
+        "slim_graph_sha256": fresh,
         "canonical_payload_sha256": binding.get("sha256"),
-        "acceptance_evidence_verified": False,
-        "acceptance_evidence_reason": "acceptance evidence was not verified",
+        "acceptance_evidence_verified": acceptance_verified,
+        "acceptance_evidence_reason": acceptance_reason,
     }
-    if not option["slim_graph_sha256"] or not option["canonical_payload_sha256"]:
-        option["verified"] = False
-    return option
 
 
 def prepare_dataset_input(

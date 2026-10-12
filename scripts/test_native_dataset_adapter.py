@@ -8,7 +8,8 @@ from unittest.mock import patch
 from scripts.src import report
 from scripts.src.native_report import using_producer
 from scripts.src.loaders import RoomEqData
-from scripts.src.native_dataset_adapter import prepare_dataset_input
+from scripts.src.native_dataset_adapter import _binding_option, prepare_dataset_input
+from scripts.src.payload_binding import ALGORITHM, payload_digest
 
 
 class NativeDatasetAdapterTests(unittest.TestCase):
@@ -99,6 +100,91 @@ class NativeDatasetAdapterTests(unittest.TestCase):
             prepared, _, _ = prepare_dataset_input(data)
 
         self.assertNotIn("complex_spl", prepared["symmetric_pairs"]["L+R"])
+
+
+class BindingOptionTests(unittest.TestCase):
+    def _sealed_fixture(self):
+        identity = "test-graph-identity"
+        slim = {"channels": {"L": {"gain_db": -1.0}}, "metadata": {}, "global_plugins": []}
+        acceptance_payload = {"channels": {"L": {"source_id": "L"}}}
+        return RoomEqData(
+            {
+                **slim,
+                "correction_decisions": {
+                    "ledger_version": "1.0.0",
+                    "payload_binding": {
+                        "algorithm": ALGORITHM,
+                        "graph_identity": identity,
+                        "sha256": payload_digest(dict(slim), identity),
+                    },
+                    "decisions": [],
+                    "acceptance_evidence": {
+                        "version": "acceptance-evidence-v1",
+                        "payload": acceptance_payload,
+                        "binding": {
+                            "algorithm": ALGORITHM,
+                            "graph_identity": identity,
+                            "sha256": payload_digest(dict(acceptance_payload), identity),
+                        },
+                    },
+                },
+            },
+            Path("."),
+        )
+
+    def _option(self, data):
+        provenance = getattr(data, "native_report_provenance", None) or {}
+        return _binding_option(data, provenance)
+
+    def test_sealed_binding_verifies_with_acceptance(self):
+        data = self._sealed_fixture()
+        option = self._option(data)
+        self.assertTrue(option["verified"], option["reason"])
+        self.assertIn("verified", option["reason"])
+        self.assertEqual(
+            option["slim_graph_sha256"], data.native_report_provenance["slim_graph_sha256"]
+        )
+        self.assertTrue(option["acceptance_evidence_verified"], option["acceptance_evidence_reason"])
+
+    def test_post_seal_payload_tamper_is_rejected(self):
+        data = self._sealed_fixture()
+        data["channels"]["L"]["gain_db"] = 99.0
+        option = self._option(data)
+        self.assertFalse(option["verified"])
+        self.assertIn("Delivered payload changed", option["reason"])
+
+    def test_resealed_ledger_after_mutation_still_flags_load_skew(self):
+        data = self._sealed_fixture()
+        data["channels"]["L"]["gain_db"] = 99.0
+        identity = data["correction_decisions"]["payload_binding"]["graph_identity"]
+        slim = {key: value for key, value in data.items() if key != "correction_decisions"}
+        data["correction_decisions"]["payload_binding"]["sha256"] = payload_digest(slim, identity)
+        option = self._option(data)
+        self.assertFalse(option["verified"])
+        self.assertIn("changed after load", option["reason"])
+
+    def test_unsealed_legacy_input_stays_unverified(self):
+        data = dict(self._sealed_fixture())
+        option = self._option(data)
+        self.assertFalse(option["verified"])
+        self.assertIn("no frozen slim-graph identity", option["reason"])
+
+    def test_acceptance_tamper_rejects_evidence_only(self):
+        data = self._sealed_fixture()
+        evidence = data["correction_decisions"]["acceptance_evidence"]
+        evidence["payload"]["channels"]["L"]["injected"] = True
+        option = self._option(data)
+        self.assertTrue(option["verified"], option["reason"])
+        self.assertFalse(option["acceptance_evidence_verified"])
+        self.assertIn("acceptance-view payload or graph binding changed", option["acceptance_evidence_reason"])
+
+    def test_missing_acceptance_evidence_stays_precise(self):
+        data = self._sealed_fixture()
+        del data["correction_decisions"]["acceptance_evidence"]
+        option = self._option(data)
+        self.assertTrue(option["verified"], option["reason"])
+        self.assertFalse(option["acceptance_evidence_verified"])
+        self.assertIn("no production acceptance views were recorded", option["acceptance_evidence_reason"])
 
 
 if __name__ == "__main__":

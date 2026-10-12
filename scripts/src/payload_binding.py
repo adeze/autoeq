@@ -72,6 +72,63 @@ def payload_digest(payload, graph_identity):
     return digest.hexdigest()
 
 
+def _slim_payload(data):
+    """Live slim graph: ledger excluded, loader overlays stripped.
+
+    The ledger binds the slim saved bytes. Measurement overlays
+    re-injected from `<stem>_files/` are excluded via the loader's index,
+    which records exactly which fields came from external files.
+    """
+    payload = {key: value for key, value in data.items() if key != "correction_decisions"}
+    overlay = getattr(data, "measurement_index", None)
+    if isinstance(overlay, dict) and overlay:
+        import copy
+
+        payload = copy.deepcopy(payload)
+        for channel_name, fields in overlay.items():
+            if channel_name == "deployed_source_curves":
+                deployed = payload.get("deployed_source_curves")
+                if isinstance(deployed, dict) and isinstance(fields, dict):
+                    for name in fields:
+                        deployed.pop(name, None)
+                    if not deployed and getattr(data, "deployed_source_curves_created", False):
+                        payload.pop("deployed_source_curves", None)
+                continue
+            if not isinstance(fields, dict):
+                continue
+            channel = (payload.get("channels") or {}).get(channel_name)
+            if not isinstance(channel, dict):
+                continue
+            for field in fields:
+                if field in channel:
+                    channel.pop(field, None)
+                elif field.endswith("_initial_curve"):
+                    for driver in channel.get("drivers") or []:
+                        if isinstance(driver, dict):
+                            driver.pop("initial_curve", None)
+    return payload
+
+
+def slim_graph_digest(data):
+    """Fresh canonical digest of the live slim graph (ledger excluded).
+
+    Raises on unhashable content; callers fail closed.
+    """
+    binding = ((data.get("correction_decisions") or {}).get("payload_binding") or {})
+    return payload_digest(_slim_payload(data), binding.get("graph_identity"))
+
+
+def frozen_slim_provenance(data):
+    """Capture the load-time slim-graph identity, or None when unhashable.
+
+    Never raises: unhashable content simply leaves the report unverified.
+    """
+    try:
+        return {"slim_graph_sha256": slim_graph_digest(data)}
+    except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+        return None
+
+
 def _convolution_references(data):
     plugins = list(data.get("global_plugins") or [])
     for channel in (data.get("channels") or {}).values():
@@ -101,37 +158,7 @@ def verify_payload_binding(data):
         if not isinstance(identity, str) or not identity.strip():
             return False, "Payload binding has no graph identity.", None
         # Loader-only replay caches are attributes, not serialized dict keys.
-        # Measurement overlays re-injected from `<stem>_files/` are also
-        # excluded: the ledger binds the slim saved bytes, and the overlay
-        # index records exactly which fields came from external files.
-        payload = {key: value for key, value in data.items() if key != "correction_decisions"}
-        overlay = getattr(data, "measurement_index", None)
-        if isinstance(overlay, dict) and overlay:
-            import copy
-
-            payload = copy.deepcopy(payload)
-            for channel_name, fields in overlay.items():
-                if channel_name == "deployed_source_curves":
-                    deployed = payload.get("deployed_source_curves")
-                    if isinstance(deployed, dict) and isinstance(fields, dict):
-                        for name in fields:
-                            deployed.pop(name, None)
-                        if not deployed and getattr(data, "deployed_source_curves_created", False):
-                            payload.pop("deployed_source_curves", None)
-                    continue
-                if not isinstance(fields, dict):
-                    continue
-                channel = (payload.get("channels") or {}).get(channel_name)
-                if not isinstance(channel, dict):
-                    continue
-                for field in fields:
-                    if field in channel:
-                        channel.pop(field, None)
-                    elif field.endswith("_initial_curve"):
-                        for driver in channel.get("drivers") or []:
-                            if isinstance(driver, dict):
-                                driver.pop("initial_curve", None)
-        if payload_digest(payload, identity) != binding.get("sha256"):
+        if payload_digest(_slim_payload(data), identity) != binding.get("sha256"):
             return False, ("Delivered payload changed; recorded decisions are stale "
                            "(they describe different bytes — re-finalize before playback)."), identity
         decisions = ledger.get("decisions") or []
