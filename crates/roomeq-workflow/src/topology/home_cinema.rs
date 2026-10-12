@@ -5412,22 +5412,25 @@ mod post_dsp_level_tests {
         let mut frozen = FrozenIrs {
             requests: Vec::new(),
         };
-        let mut provider = Some(&mut frozen);
         let input = curve(0.0);
-        let output = super::apply_reconstruction_chain(
-            &dsp_chain,
-            &input,
-            48_000.0,
-            std::path::Path::new("/must/not/be/read"),
-            Some(&[9.0]),
-            &mut provider,
-        )
-        .expect("both exact frozen IR keys are resolved by the provider");
+        let output = {
+            let mut provider = Some(&mut frozen);
+            super::apply_reconstruction_chain(
+                &dsp_chain,
+                &input,
+                48_000.0,
+                std::path::Path::new("/must/not/be/read"),
+                Some(&[9.0]),
+                &mut provider,
+            )
+            .expect("both exact frozen IR keys are resolved by the provider")
+        };
 
-        drop(provider);
         assert!(frozen.requests.len() >= 2);
         assert_eq!(frozen.requests.len() % 2, 0);
-        for pair in frozen.requests.chunks_exact(2) {
+        let (pairs, remainder) = frozen.requests.as_chunks::<2>();
+        assert!(remainder.is_empty());
+        for pair in pairs {
             assert_eq!(pair[0], ("frozen/main.wav".into(), 48_000));
             assert_eq!(pair[1], ("frozen/sub.wav".into(), 48_000));
         }
