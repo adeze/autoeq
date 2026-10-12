@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import math
 from pathlib import Path
 
 from .native_target_overlay import (
@@ -19,6 +21,16 @@ TARGET_LEVEL_MATCH_BAND_HZ = (100.0, 10_000.0)
 # Target files are small response tables; bounding reads also bounds the JSON
 # request copied into native/WASM report transport.
 MAX_TARGET_CSV_BYTES = 8 * 1024 * 1024
+_NO_NATIVE_TARGET_SNAPSHOT = object()
+
+
+def _finite_real(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _configured_target_path(data: dict, json_path: Path | None) -> Path | None:
@@ -45,16 +57,73 @@ def load_target_shape(data: dict, json_path: Path | None = None) -> dict | None:
     path = _configured_target_path(data, json_path)
     if path is None:
         return None
-
     try:
         with path.open("rb") as handle:
             csv_bytes = handle.read(MAX_TARGET_CSV_BYTES + 1)
         if len(csv_bytes) > MAX_TARGET_CSV_BYTES:
             raise ValueError("target CSV exceeds the 8 MiB size limit")
-        return _parse_native_target_csv(csv_bytes.decode("utf-8-sig"))
+        # The shared parser removes exactly one UTF-8 BOM, matching Python's
+        # legacy utf-8-sig decode at this boundary (including double-BOM files).
+        return _parse_native_target_csv(csv_bytes.decode("utf-8"))
     except (OSError, UnicodeError, ValueError) as error:
         print(f"Warning: Could not load target curve '{path}': {error}")
         return None
+
+
+def _captured_target_shape(data: dict):
+    """Return a frozen native target shape, or a sentinel for standalone data."""
+    snapshot = getattr(data, "native_target_snapshot", _NO_NATIVE_TARGET_SNAPSHOT)
+    if snapshot is _NO_NATIVE_TARGET_SNAPSHOT:
+        return _NO_NATIVE_TARGET_SNAPSHOT
+    if (
+        not isinstance(snapshot, dict)
+        or type(snapshot.get("schema_version")) is not int
+        or snapshot["schema_version"] != 1
+    ):
+        raise ValueError("Native report target snapshot has an unsupported schema")
+
+    state = snapshot.get("state")
+    if state == "not_configured":
+        return None
+    if state == "available":
+        if (
+            snapshot.get("source_verification") != "external_unverified"
+            or snapshot.get("source_integrity") != "stable_file_snapshot"
+            or not isinstance(snapshot.get("sha256"), str)
+            or len(snapshot["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in snapshot["sha256"])
+        ):
+            raise ValueError("Native report target snapshot is not immutable")
+        target = snapshot.get("target")
+        if not isinstance(target, dict):
+            raise ValueError("Native report target snapshot has no parsed target")
+        frequencies = target.get("freq")
+        levels = target.get("spl")
+        if not isinstance(frequencies, list) or not isinstance(levels, list):
+            raise ValueError("Native report target snapshot has invalid curve arrays")
+        if len(frequencies) != len(levels):
+            raise ValueError("Native report target snapshot curve arrays differ in length")
+        for frequency, level in zip(frequencies, levels):
+            if not _finite_real(frequency) or frequency <= 0.0 or not _finite_real(level):
+                raise ValueError("Native report target snapshot contains invalid samples")
+        return target
+    if state == "unavailable":
+        error = snapshot.get("error")
+        if not isinstance(error, str):
+            raise ValueError("Native report target snapshot has no failure detail")
+        if snapshot.get("error_kind") == "csv_error":
+            raise csv.Error(error)
+        if snapshot.get("error_kind") != "warning":
+            raise ValueError("Native report target snapshot has an unknown failure kind")
+        path = (
+            snapshot.get("selected_path")
+            or snapshot.get("resolved_path")
+            or snapshot.get("configured_path")
+            or "target curve"
+        )
+        print(f"Warning: Could not load target curve '{path}': {error}")
+        return None
+    raise ValueError("Native report target snapshot has an unknown state")
 
 
 def _interpolate_log_space(target: dict, frequencies: list[float]) -> list[float]:
@@ -179,7 +248,10 @@ def _global_anchor_offset(
 
 
 def build_target_overlay_curves(data, reference_curves, json_path=None):
-    """Build overlays through the shared Rust producer using resolved target data."""
+    """Build overlays from captured native data or standalone files."""
+    target = _captured_target_shape(data)
+    if target is _NO_NATIVE_TARGET_SNAPSHOT:
+        target = load_target_shape(data, json_path)
     return _build_native_target_overlay_curves(
-        data, reference_curves, load_target_shape(data, json_path)
+        data, reference_curves, target
     )

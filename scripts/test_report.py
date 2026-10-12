@@ -131,14 +131,18 @@ class BoundCaptureReportTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             html = html_path.read_text(encoding="utf-8")
             self.assertIn("Capture acceptance diagnostics", html)
-            self.assertIn("Matched IR evidence: synthetic_capture_pair", html)
+            # A raw standalone dictionary has a recomputable payload binding,
+            # but no frozen source-byte identity or host-verified view-binding
+            # wrapper. Keep the diagnostics visible and fail closed on plots.
+            self.assertIn("saved optimization graph binding is invalid", html)
+            self.assertNotIn("Matched IR evidence: synthetic_capture_pair", html)
             embedded = re.search(r'<script id="report-payload" type="application/json">(.*?)</script>', html, re.S)
             self.assertIsNotNone(embedded, "report omitted its embedded payload")
             payload = json.loads(embedded.group(1))
             capture_sections = [section.get("html", "") for section in payload["sections"]
                                 if "Capture acceptance diagnostics" in section.get("html", "")]
             self.assertTrue(capture_sections, "report omitted capture diagnostics")
-            self.assertIn("&lt;source&gt; / seat", "".join(capture_sections))
+            self.assertNotIn("&lt;source&gt; / seat", "".join(capture_sections))
             self.assertNotIn("<source> / seat", "".join(capture_sections))
 
     def test_mismatched_or_tampered_graph_cannot_display_capture_views(self):
@@ -149,7 +153,7 @@ class BoundCaptureReportTests(unittest.TestCase):
             capture["graph_id"] = "other"
             create_html_report(data, html_path, capture_verification=capture)
             html = html_path.read_text(encoding="utf-8")
-            self.assertIn("verification candidate graph does not match", html)
+            self.assertIn("saved optimization graph binding is invalid", html)
             self.assertNotIn("Matched IR evidence", html)
             capture["graph_id"] = "candidate"
             data["channels"]["LFE"]["plugins"].append(
@@ -370,13 +374,32 @@ class SubDriverTabTests(unittest.TestCase):
 
         # Per-channel tabs are shell tabs now (no tab buttons in the file):
         # sections carry the tab label in the payload.
-        self.assertIn('"tab": "Left Sub"', html)
-        self.assertIn('"tab": "Right Sub"', html)
-        self.assertNotIn('"tab": "LFE"', html)
-        self.assertIn("<h2>Channel: Left Sub</h2>", html)
+        payload = json.loads(html)
+        self.assertIn("Left Sub", {section.get("tab") for section in payload["sections"]})
+        self.assertIn("Right Sub", {section.get("tab") for section in payload["sections"]})
+        self.assertNotIn("LFE", {section.get("tab") for section in payload["sections"]})
+        for tab, expected in {
+            "Left Sub": [13.03152391518231, 10.36686630678699, 5.485827006400306, -23.19556114805409],
+            "Right Sub": [5.044230764660753, 2.5609780584658086, -0.7068392254840254, -27.405418527554552],
+        }.items():
+            with self.subTest(tab=tab):
+                figures = [
+                    section["figure"]
+                    for section in payload["sections"]
+                    if section.get("tab") == tab and section.get("kind") == "figure"
+                ]
+                self.assertTrue(any(figure["title"].endswith("(Full Range)") for figure in figures))
+                combined_eq = next(
+                    series
+                    for figure in figures
+                    for series in figure["series"]
+                    if series.get("name") == "Combined EQ"
+                )
+                self.assertEqual(combined_eq["x"], [20.0, 40.0, 80.0, 160.0])
+                self.assertEqual(combined_eq["y_axis"], 1)
+                for actual, wanted in zip(combined_eq["y"], expected):
+                    self.assertAlmostEqual(actual, wanted, places=10)
         self.assertIn("Sub DSP Chain", html)
-        self.assertIn("EQ: Left Sub", html)
-        self.assertIn("EQ: Right Sub", html)
 
 
 class DriverEqFilterSplitTests(unittest.TestCase):
@@ -1193,7 +1216,7 @@ class AcousticReportTests(unittest.TestCase):
                          "1–8 kHz early reflections: L",
                          "First dip (Hz)",
                          "Early vs late sound: pending roomeq field",
-                         "Room mean: measured octave-band T60",
+            "Room mean: measured octave-band T60",
                          "Room T60 contributing speakers by octave: 63 Hz: 1"):
             self.assertIn(expected, html)
         # Removed duplications: no repeated Section 4 heading, no per-channel

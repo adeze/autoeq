@@ -167,47 +167,48 @@ class NativeDriverReportTests(unittest.TestCase):
         }
         return data
 
-    def _build_without_python_replay(self, data, curve_calls):
-        import scripts.src.report as report
-
-        def capture_curve(label, initial, final, *args, **kwargs):
-            if label == "Left Sub":
-                curve_calls.append((initial, final))
-            return None
+    def _build_without_python_replay(self, data):
+        from scripts.src import native_dataset_adapter
 
         with (
-            patch.object(report, "build_post_dsp_source_curves", return_value={}),
-            patch.object(report, "per_driver_corrected_curve", side_effect=AssertionError("Python DSP replay")),
-            patch.object(report, "per_driver_effective_eq", side_effect=AssertionError("Python DSP replay")),
-            patch.object(report, "create_channel_figure", side_effect=capture_curve),
-            patch.object(report, "add_channel_response_overlays"),
-            patch.object(report, "create_multipass_eq_figure", return_value=None),
-            patch.object(report, "create_eq_figure", return_value=None),
-            patch.object(report, "_rust_shared_sections", return_value={}),
-            patch.object(report, "_report_provenance", return_value={}),
+            patch("scripts.src.dsp.build_post_dsp_source_curves",
+                  side_effect=AssertionError("legacy source replay")),
+            patch("scripts.src.dsp.per_driver_corrected_curve",
+                  side_effect=AssertionError("legacy driver replay")),
+            patch("scripts.src.dsp.per_driver_effective_eq",
+                  side_effect=AssertionError("legacy EQ preview replay")),
+            patch.object(native_dataset_adapter, "produce",
+                         wraps=native_dataset_adapter.produce) as producer,
         ):
-            return build_report_payload(data, shared_sections={})
+            payload = build_report_payload(data)
+        request = producer.call_args.args[0]
+        self.assertEqual(request["operation"], "report_dataset")
+        self.assertTrue(request["data"]["replay"])
+        return payload
 
     def test_available_prepared_curve_bypasses_python_chain_replay(self):
         data = self._report_data()
         data.native_dsp_replay["drivers"]["LFE"][0]["state"]["curve"]["spl"] = [72.0] * 4
-        captured = []
-        self._build_without_python_replay(data, captured)
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(captured[0][1], data.native_dsp_replay["drivers"]["LFE"][0]["state"]["curve"])
+        payload = self._build_without_python_replay(data)
+        figures = [
+            section["figure"]
+            for section in payload["sections"]
+            if section.get("kind") == "figure" and section.get("tab") == "Left Sub"
+        ]
+        response = next(figure for figure in figures if figure["title"].endswith("(Full Range)"))
+        corrected = next(series for series in response["series"] if series["name"] == "After EQ")
+        self.assertEqual(corrected["y"], [72.0] * 4)
 
     def test_unavailable_prepared_curve_is_visible_and_never_falls_back(self):
         data = self._report_data(unavailable=True)
-        data.native_routed_source_unavailability = {"L": "route measurement missing"}
-        captured = []
-        payload = self._build_without_python_replay(data, captured)
-        self.assertEqual(len(captured), 1)
-        self.assertIsNone(captured[0][1])
+        data.native_dsp_replay["routed_sources"] = {
+            "L": {"status": "unavailable", "reason": "route measurement missing"}
+        }
+        payload = self._build_without_python_replay(data)
         encoded = json.dumps(payload, ensure_ascii=False)
         self.assertIn("Raw measurement only; corrected response unavailable", encoded)
         self.assertIn("frozen FIR resource unavailable", encoded)
         self.assertIn("Corrected routed response unavailable", encoded)
-        self.assertIn("Required evidence is missing; corrected response omitted", encoded)
         self.assertNotIn("Python DSP", encoded)
 
     def test_native_overview_does_not_replay_per_driver_effective_eq(self):

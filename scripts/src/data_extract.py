@@ -126,24 +126,13 @@ def channel_has_eq(channel_data):
 
 
 def display_channel_entries(data: dict) -> list[dict]:
-    """Expand multi-driver channels into per-driver display entries.
+    """Return canonical ordered channel and plottable-driver tab entries."""
+    return _native_helper("channel_display_entries", data=data)
 
-    Returns ordered ``{"label", "channel", "driver"}`` dicts where
-    ``driver`` is the driver index or `None` for whole-channel entries.
-    Channels without plottable drivers yield a single entry labeled with
-    the channel name, preserving legacy behavior.
-    """
-    channels = data.get("channels") or {}
-    entries: list[dict] = []
-    for name in sorted(channels.keys(), key=get_channel_sort_key):
-        channel = channels[name]
-        drivers = get_plottable_drivers(channel)
-        if not drivers:
-            entries.append({"label": name, "channel": name, "driver": None})
-            continue
-        for index, label in enumerate(driver_display_names(data, name)):
-            entries.append({"label": label, "channel": name, "driver": index})
-    return entries
+
+def driver_display_entries(data: dict) -> list[dict]:
+    """Return tab entries with stable raw driver positions and identities."""
+    return _native_helper("driver_display_entries", data=data)
 
 
 def extract_eq_passes(channel_data: dict) -> list[dict]:

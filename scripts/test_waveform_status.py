@@ -1,5 +1,7 @@
 """Saved waveform reasons are visible without implying acoustic acceptance."""
 
+import json
+import re
 import unittest
 from copy import deepcopy
 import tempfile
@@ -36,7 +38,22 @@ class WaveformStatusTests(unittest.TestCase):
             for output in (main, comparison):
                 html = output.read_text()
                 self.assertIn("Waveform-view availability", html)
-                self.assertIn("driver &lt;woofer&gt;: phase unavailable", html)
+                match = re.search(
+                    r'<script id="report-payload" type="application/json">(.*?)</script>',
+                    html,
+                    re.S,
+                )
+                self.assertIsNotNone(match, "report omitted its embedded payload")
+                payload = json.loads(match.group(1))
+                sections = [
+                    section.get("html", "")
+                    for section in payload["sections"]
+                    if "Waveform-view availability" in section.get("html", "")
+                ]
+                self.assertTrue(sections, "report omitted waveform availability details")
+                self.assertIn(
+                    "driver &lt;woofer&gt;: phase unavailable", "".join(sections)
+                )
 
     def fixture(self):
         return {"channels": {"L": {"pre_ir": {"amplitude": [1.0]}}},
