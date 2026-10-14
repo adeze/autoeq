@@ -38,6 +38,7 @@ pub(super) fn enable_multi_measurement_paths(
                 measurements,
                 speaker_name: None,
                 provenance: Default::default(),
+                estimated_position: None,
             })
         } else if measurements.len() == 1 {
             MeasurementSource::Single(MeasurementSingle {
@@ -107,6 +108,7 @@ pub(super) fn enable_multisub_multi_seat_paths(
                     measurements,
                     speaker_name: None,
                     provenance: Default::default(),
+                    estimated_position: None,
                 });
             }
         }

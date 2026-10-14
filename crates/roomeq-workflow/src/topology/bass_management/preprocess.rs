@@ -754,6 +754,7 @@ mod tests {
                 timing_reference_id: Some("synthetic-common-reference".into()),
                 ..Default::default()
             },
+            estimated_position: None,
         });
         let group = MultiSubGroup {
             name: "subs".into(),
@@ -1000,6 +1001,7 @@ mod tests {
                 timing_reference_id: Some("analytic-common-time-origin".into()),
                 ..Default::default()
             },
+            estimated_position: None,
         });
         let group = MultiSubGroup {
             name: "subs".into(),

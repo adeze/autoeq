@@ -263,6 +263,21 @@ pub fn prepare_channel_input_with_frequency_samples(
         // with observed gap leakage.
         prepared = prepared.with_valid_bands_hz(&bands)?;
     }
+    if let Some(block) = source.estimated_position() {
+        // Capture-estimated speaker position: delay alignment consumes
+        // it only when gated, otherwise declared geometry stands with
+        // the named fallback reason logged.
+        match block.gated() {
+            Ok(_) => {
+                prepared = prepared.with_estimated_position(block.clone());
+            }
+            Err(reason) => {
+                debug!(
+                    "  estimated position for '{channel_name}' falls back to declared geometry ({reason})"
+                );
+            }
+        }
+    }
     Ok(prepared)
 }
 

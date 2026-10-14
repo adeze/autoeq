@@ -973,6 +973,7 @@ mod tests {
                     measurements: vec![reference],
                     speaker_name: Some("speaker".into()),
                     provenance: provenance.clone(),
+                    estimated_position: None,
                 })
             } else {
                 MeasurementSource::Single(MeasurementSingle {
@@ -1250,6 +1251,7 @@ mod tests {
                 valid_band_hz: Some(band),
                 ..Default::default()
             },
+            estimated_position: None,
         })
     }
 
@@ -1771,11 +1773,13 @@ mod tests {
             measurements: vec![inline(&c1.freq, &c1.spl), inline(&c2.freq, &c2.spl)],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         let backward = MeasurementSource::Multiple(MeasurementMultiple {
             measurements: vec![inline(&c2.freq, &c2.spl), inline(&c1.freq, &c1.spl)],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         // Physical intersection is [120, 9000]; the shared grid is the
         // sorted union clipped to it — identical for both curve orders.
@@ -1970,11 +1974,13 @@ mod tests {
             ],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         let reversed = MeasurementSource::Multiple(MeasurementMultiple {
             measurements: vec![MeasurementRef::Path(path_b), MeasurementRef::Path(path_a)],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         for source in [source, reversed] {
             let loaded = load_source_individual(&source).unwrap();
@@ -2000,6 +2006,7 @@ mod tests {
             measurements: vec![MeasurementRef::Path(low), MeasurementRef::Path(high)],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         let error = load_source_individual(&source).unwrap_err();
         assert!(
@@ -2030,6 +2037,7 @@ mod tests {
             measurements: vec![],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         assert!(load_source_individual(&source).is_err());
     }
@@ -2043,6 +2051,7 @@ mod tests {
             ],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         for error in [
             load_source(&source).unwrap_err(),

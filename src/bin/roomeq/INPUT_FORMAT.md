@@ -30,6 +30,23 @@ review/selection projection before correction. Hashes detect changed bytes;
 physical calibration, coherent phase and device accuracy still need their own
 evidence. Legacy recording imports remain available with their stated unknowns.
 
+### Capture-estimated speaker positions
+
+Each `Multiple` measurement set may carry an `estimated_position` block
+projected by sotf-capture from its localization report: the estimated
+acoustic-centre position with per-axis sigmas, the fit RMS residual, a
+mirror-ambiguity flag, an upstream refusal reason, and the full range
+row (one cell per recording microphone). This is a consumed value, not
+display evidence: delay alignment calls `EstimatedPosition::gated` and
+consumes the position only when the block passes — upstream refusal,
+missing position, non-finite values, mirror ambiguity, RMS residual
+above 5 mm, or any per-axis sigma above 10 mm all keep declared
+geometry with the named fallback reason (`refused_upstream`,
+`position_missing`, `non_finite`, `mirror_ambiguous`,
+`residual_high`, `sigma_high`). Estimates never silently replace
+declared values. Sources without the block (other measurement shapes,
+legacy imports) behave exactly as before.
+
 ## Legacy recording import
 
 `convert_recording input.json output.json` preserves recorded response arrays,

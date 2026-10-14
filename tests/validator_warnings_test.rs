@@ -30,6 +30,7 @@ fn multi_speaker(paths: &[&str]) -> SpeakerConfig {
             .collect(),
         speaker_name: None,
         provenance: Default::default(),
+        estimated_position: None,
     }))
 }
 
@@ -400,6 +401,7 @@ fn b10_weights_mismatch_inside_speaker_group() {
             ],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         })],
         crossover: None,
     });

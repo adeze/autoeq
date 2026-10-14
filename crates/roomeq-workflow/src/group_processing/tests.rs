@@ -178,6 +178,7 @@ fn analytic_sub_seats(curves: Vec<Curve>) -> MeasurementSource {
         measurements,
         speaker_name: None,
         provenance: Default::default(),
+        estimated_position: None,
     };
     source.provenance.capture_kind = autoeq_core::ProvenanceCaptureKind::StationaryIr;
     source.provenance.timing_reference_id = Some("analytic-common-time-origin".to_string());

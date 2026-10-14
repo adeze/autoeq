@@ -499,6 +499,7 @@ mod tests {
             measurements: names.iter().map(|name| named_inline(name)).collect(),
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         })
     }
 

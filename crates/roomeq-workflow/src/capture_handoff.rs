@@ -353,6 +353,7 @@ mod tests {
                         }),
                         ..Default::default()
                     },
+                    estimated_position: None,
                 })),
             )]),
             recording_config: Some(RecordingConfiguration {

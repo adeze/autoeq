@@ -811,6 +811,7 @@ mod tests {
                     measurements: vec![single.measurement, second],
                     speaker_name: None,
                     provenance: single.provenance,
+                    estimated_position: None,
                 })
             };
             let mut config = room_config_with_speakers(HashMap::from([

@@ -728,6 +728,7 @@ pub(super) fn generate_random_source(
                     .collect(),
                 speaker_name: Some(random_speaker_name(rng)),
                 provenance: Default::default(),
+                estimated_position: None,
             }),
             paths,
         ))

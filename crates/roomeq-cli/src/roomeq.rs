@@ -3659,6 +3659,7 @@ mod tests {
             ],
             speaker_name: None,
             provenance: Default::default(),
+            estimated_position: None,
         });
         let entries = resolve_seat_sources("R", &SpeakerConfig::Group(group_of(source)));
         let seats: Vec<&str> = entries.iter().map(|entry| entry.seat.as_str()).collect();
@@ -3717,6 +3718,7 @@ mod tests {
                     .collect(),
                 speaker_name: None,
                 provenance: Default::default(),
+                estimated_position: None,
             })
         };
         roomeq_model::SpeakerConfig::MultiSub(roomeq_model::config::MultiSubGroup {

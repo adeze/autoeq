@@ -8462,10 +8462,10 @@ mod post_dsp_level_tests {
             result.channels["L"]
                 .plugins
                 .iter()
-                .filter_map(|plugin| {
-                    (plugin.parameters["label"] == "post_dsp_output_headroom_safety")
-                        .then(|| -plugin.parameters["gain_db"].as_f64().unwrap())
+                .filter(|plugin| {
+                    plugin.parameters["label"] == "post_dsp_output_headroom_safety"
                 })
+                .map(|plugin| -plugin.parameters["gain_db"].as_f64().unwrap())
                 .sum::<f64>()
         };
         let mut full = original.clone();
@@ -10780,6 +10780,7 @@ mod tests {
                     capture: Some(capture),
                     ..Default::default()
                 },
+                estimated_position: None,
             })
         };
         let sys = home_cinema_sys_with_sub();

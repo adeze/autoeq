@@ -53,8 +53,9 @@ pub use evidence::{
     EvidenceEnvelope, Uncertainty, UncertaintyKind,
 };
 pub use measurement_contracts::{
-    InlineMeasurement, MeasurementMultiple, MeasurementProvenance, MeasurementRef,
-    MeasurementSingle, MeasurementSource, ProvenanceCaptureKind, SpinoramaBundle,
+    ESTIMATED_POSITION_MAX_RMS_M, ESTIMATED_POSITION_MAX_SIGMA_M, EstimatedPosition,
+    EstimatedRangeCell, InlineMeasurement, MeasurementMultiple, MeasurementProvenance,
+    MeasurementRef, MeasurementSingle, MeasurementSource, ProvenanceCaptureKind, SpinoramaBundle,
 };
 pub use measurement_quality::{
     MeasurementQuality, MeasurementQualityReport, assess_measurement_quality,

@@ -194,6 +194,7 @@ mod physical_seat_identity_tests {
                 ),
                 ..Default::default()
             },
+            estimated_position: None,
         })
     }
 

@@ -403,6 +403,101 @@ pub struct MeasurementMultiple {
     /// Declared acquisition provenance shared by the set (default unknown).
     #[serde(default, skip_serializing_if = "is_default_provenance")]
     pub provenance: MeasurementProvenance,
+    /// Capture-estimated speaker position (Phase 5 handoff). Delay
+    /// alignment consumes it only when [`EstimatedPosition::gated`]
+    /// accepts; anything else keeps declared geometry with the
+    /// named fallback reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_position: Option<EstimatedPosition>,
+}
+
+/// Maximum RMS residual for a consumed estimated position: 5 mm.
+pub const ESTIMATED_POSITION_MAX_RMS_M: f64 = 0.005;
+
+/// Maximum per-axis sigma for a consumed estimated position: 10 mm.
+pub const ESTIMATED_POSITION_MAX_SIGMA_M: f64 = 0.010;
+
+/// Capture-estimated speaker position for delay alignment.
+///
+/// Emitted by sotf-capture's `recording_configuration` from its
+/// localization report (one block per speaker plus its full range
+/// row). This is a consumed value, not display evidence: RoomEQ delay
+/// alignment must call [`Self::gated`] and keep declared geometry on
+/// any fallback reason — estimates never silently replace it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EstimatedPosition {
+    /// Estimated acoustic-centre position in meters, chirp band;
+    /// `None` when refused upstream (see `reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_m: Option<[f64; 3]>,
+    /// Per-axis one-sigma uncertainty in meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigma_m: Option<[f64; 3]>,
+    /// RMS range residual of the multilateration fit in meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms_residual_m: Option<f64>,
+    /// True when coplanar anchors leave a mirror solution; never consumed.
+    #[serde(default)]
+    pub mirror_ambiguous: bool,
+    /// Stable machine token explaining a missing position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Full range row: one cell per recording microphone, plan order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<EstimatedRangeCell>,
+}
+
+/// One source/microphone range cell of an estimated position.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EstimatedRangeCell {
+    /// Microphone identity from the session declaration.
+    pub microphone_id: String,
+    /// Absolute distance in meters; `None` means refused, see `reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f64>,
+    /// One-sigma range uncertainty in meters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigma_m: Option<f64>,
+    /// Stable machine token explaining a refused cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl EstimatedPosition {
+    /// Delay-alignment gate: the estimated position when it qualifies
+    /// as consumed input, else the named fallback reason.
+    ///
+    /// Refusals (upstream token, missing position), mirror ambiguity,
+    /// non-finite values, RMS residual above
+    /// [`ESTIMATED_POSITION_MAX_RMS_M`], and any per-axis sigma above
+    /// [`ESTIMATED_POSITION_MAX_SIGMA_M`] all fall back to declared
+    /// geometry — the caller's ruling, never silent replacement.
+    pub fn gated(&self) -> Result<[f64; 3], &'static str> {
+        if self.reason.is_some() {
+            return Err("refused_upstream");
+        }
+        let Some(position) = self.position_m else {
+            return Err("position_missing");
+        };
+        if !position.iter().all(|c| c.is_finite()) {
+            return Err("non_finite");
+        }
+        if self.mirror_ambiguous {
+            return Err("mirror_ambiguous");
+        }
+        match self.rms_residual_m {
+            Some(rms) if rms.is_finite() && rms <= ESTIMATED_POSITION_MAX_RMS_M => {}
+            _ => return Err("residual_high"),
+        }
+        match self.sigma_m {
+            Some(sigma)
+                if sigma
+                    .iter()
+                    .all(|s| s.is_finite() && *s <= ESTIMATED_POSITION_MAX_SIGMA_M) => {}
+            _ => return Err("sigma_high"),
+        }
+        Ok(position)
+    }
 }
 
 /// True when a provenance declaration carries no information.
@@ -434,6 +529,18 @@ impl MeasurementSource {
             Self::Single(single) => single.speaker_name.as_deref(),
             Self::Multiple(multiple) => multiple.speaker_name.as_deref(),
             Self::InMemory(_) | Self::InMemoryMultiple(_) => None,
+        }
+    }
+
+    /// Capture-estimated speaker position, if this source carries one.
+    ///
+    /// Only `Multiple` (the capture projection shape) carries the
+    /// block; every other variant reports `None` and alignment keeps
+    /// declared geometry.
+    pub fn estimated_position(&self) -> Option<&EstimatedPosition> {
+        match self {
+            Self::Multiple(multiple) => multiple.estimated_position.as_ref(),
+            Self::Single(_) | Self::InMemory(_) | Self::InMemoryMultiple(_) => None,
         }
     }
 
@@ -521,6 +628,74 @@ impl MeasurementSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gated_position() -> EstimatedPosition {
+        EstimatedPosition {
+            position_m: Some([2.3, -1.1, 0.7]),
+            sigma_m: Some([0.004, 0.005, 0.006]),
+            rms_residual_m: Some(0.003),
+            mirror_ambiguous: false,
+            reason: None,
+            ranges: vec![EstimatedRangeCell {
+                microphone_id: "mic-0".into(),
+                distance_m: Some(2.55),
+                sigma_m: Some(0.002),
+                reason: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn estimated_position_gate_accepts_tight_estimate() {
+        assert_eq!(
+            gated_position().gated(),
+            Ok([2.3, -1.1, 0.7]),
+            "a clean estimate is consumed"
+        );
+    }
+
+    #[test]
+    fn estimated_position_gate_names_every_fallback() {
+        let mut refused = gated_position();
+        refused.reason = Some("solve_failed".into());
+        assert_eq!(refused.gated(), Err("refused_upstream"));
+
+        let mut missing = gated_position();
+        missing.position_m = None;
+        assert_eq!(missing.gated(), Err("position_missing"));
+
+        let mut non_finite = gated_position();
+        non_finite.position_m = Some([f64::NAN, 0.0, 0.0]);
+        assert_eq!(non_finite.gated(), Err("non_finite"));
+
+        let mut mirror = gated_position();
+        mirror.mirror_ambiguous = true;
+        assert_eq!(mirror.gated(), Err("mirror_ambiguous"));
+
+        let mut rms = gated_position();
+        rms.rms_residual_m = Some(0.006);
+        assert_eq!(rms.gated(), Err("residual_high"));
+
+        let mut rms_missing = gated_position();
+        rms_missing.rms_residual_m = None;
+        assert_eq!(rms_missing.gated(), Err("residual_high"));
+
+        let mut sigma = gated_position();
+        sigma.sigma_m = Some([0.004, 0.011, 0.006]);
+        assert_eq!(sigma.gated(), Err("sigma_high"));
+
+        let mut sigma_missing = gated_position();
+        sigma_missing.sigma_m = None;
+        assert_eq!(sigma_missing.gated(), Err("sigma_high"));
+    }
+
+    #[test]
+    fn estimated_position_gate_holds_at_threshold() {
+        let mut block = gated_position();
+        block.rms_residual_m = Some(ESTIMATED_POSITION_MAX_RMS_M);
+        block.sigma_m = Some([ESTIMATED_POSITION_MAX_SIGMA_M; 3]);
+        assert!(block.gated().is_ok(), "at-threshold estimates pass");
+    }
 
     fn inline(wav_path: Option<&str>) -> MeasurementRef {
         MeasurementRef::Inline(InlineMeasurement {
@@ -680,6 +855,7 @@ mod tests {
             measurements: vec![inline(Some("first.wav")), inline(Some("second.wav"))],
             speaker_name: None,
             provenance: MeasurementProvenance::default(),
+            estimated_position: None,
         });
         assert_eq!(multiple.wav_path(), Some("first.wav"));
         assert!(

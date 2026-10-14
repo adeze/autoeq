@@ -203,6 +203,7 @@ fn load_source_individual_multiple_empty_errors() {
         measurements: vec![],
         speaker_name: None,
         provenance: Default::default(),
+        estimated_position: None,
     });
     assert!(load_source_individual(&source).is_err());
 }

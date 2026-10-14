@@ -1,6 +1,6 @@
 //! Complete path-free input prepared for one RoomEQ channel.
 
-use autoeq_core::{Curve, Result, SpinoramaBundle};
+use autoeq_core::{Curve, EstimatedPosition, Result, SpinoramaBundle};
 use std::borrow::Cow;
 
 use crate::PreparedChannelMeasurements;
@@ -37,6 +37,7 @@ pub struct PreparedChannelInput {
     arrival_time_ms: Option<f64>,
     cea2034: PreparedCea2034,
     eq_resources: EqResources,
+    estimated_position: Option<EstimatedPosition>,
 }
 
 impl PreparedChannelInput {
@@ -52,6 +53,7 @@ impl PreparedChannelInput {
             arrival_time_ms,
             cea2034,
             eq_resources,
+            estimated_position: None,
         }
     }
 
@@ -66,6 +68,22 @@ impl PreparedChannelInput {
 
     pub fn measurements(&self) -> &PreparedChannelMeasurements {
         &self.measurements
+    }
+
+    /// Attach a gated capture-estimated speaker position for delay alignment.
+    ///
+    /// The caller must have accepted the block through
+    /// [`EstimatedPosition::gated`]: anything else keeps declared
+    /// geometry and never reaches this setter.
+    pub fn with_estimated_position(mut self, estimated: EstimatedPosition) -> Self {
+        self.estimated_position = Some(estimated);
+        self
+    }
+
+    /// Gated capture-estimated speaker position, when delay alignment
+    /// may consume it instead of declared geometry.
+    pub fn estimated_position(&self) -> Option<&EstimatedPosition> {
+        self.estimated_position.as_ref()
     }
 
     /// Restrict correction to the declared usable measurement band.

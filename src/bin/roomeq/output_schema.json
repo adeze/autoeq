@@ -5631,6 +5631,101 @@
       ],
       "type": "object"
     },
+    "EstimatedPosition": {
+      "description": "Capture-estimated speaker position for delay alignment.\n\nEmitted by sotf-capture's `recording_configuration` from its\nlocalization report (one block per speaker plus its full range\nrow). This is a consumed value, not display evidence: RoomEQ delay\nalignment must call [`Self::gated`] and keep declared geometry on\nany fallback reason — estimates never silently replace it.",
+      "properties": {
+        "mirror_ambiguous": {
+          "default": false,
+          "description": "True when coplanar anchors leave a mirror solution; never consumed.",
+          "type": "boolean"
+        },
+        "position_m": {
+          "description": "Estimated acoustic-centre position in meters, chirp band;\n`None` when refused upstream (see `reason`).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "ranges": {
+          "description": "Full range row: one cell per recording microphone, plan order.",
+          "items": {
+            "$ref": "#/$defs/EstimatedRangeCell"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Stable machine token explaining a missing position.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rms_residual_m": {
+          "description": "RMS range residual of the multilateration fit in meters.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sigma_m": {
+          "description": "Per-axis one-sigma uncertainty in meters.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EstimatedRangeCell": {
+      "description": "One source/microphone range cell of an estimated position.",
+      "properties": {
+        "distance_m": {
+          "description": "Absolute distance in meters; `None` means refused, see `reason`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "microphone_id": {
+          "description": "Microphone identity from the session declaration.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Stable machine token explaining a refused cell.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sigma_m": {
+          "description": "One-sigma range uncertainty in meters.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "microphone_id"
+      ],
+      "type": "object"
+    },
     "ExcursionProtectionConfig": {
       "description": "Excursion protection configuration",
       "properties": {
@@ -7493,6 +7588,17 @@
     "MeasurementMultiple": {
       "description": "Multiple measurements with metadata",
       "properties": {
+        "estimated_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EstimatedPosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Capture-estimated speaker position (Phase 5 handoff). Delay\nalignment consumes it only when [`EstimatedPosition::gated`]\naccepts; anything else keeps declared geometry with the\nnamed fallback reason."
+        },
         "measurements": {
           "items": {
             "$ref": "#/$defs/MeasurementRef"

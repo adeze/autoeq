@@ -98,6 +98,7 @@ fn roundtrip_multi_source(curves: &[Curve], key: &str) -> MeasurementSource {
             .collect(),
         speaker_name: Some(format!("roundtrip-{}", key.replace('_', "-"))),
         provenance: roundtrip_provenance(),
+        estimated_position: None,
     })
 }
 
