@@ -96,8 +96,16 @@ dev:
 check:
 	{{cargo}} check --workspace --all-targets --all-features
 
+# Integration tests spawn built binaries via CARGO_BIN_EXE_*, which cargo
+# fingerprints cannot see: a fresh test binary can outlive a missing binary
+# and fail at runtime instead of build time. Build the release binaries
+# first so `test`, `test-autoeq`, and `ntest` never hit that hole.
 [group('test')]
-test:
+build-test-bins:
+	{{cargo}} build --release --bins --workspace --all-features
+
+[group('test')]
+test: build-test-bins
 	{{cargo}} test --workspace --all-targets --all-features --release
 
 # Each optimizer internally forks rayon evaluators over all
@@ -106,11 +114,11 @@ test:
 # tests still interleave but memory stays bounded). Override with
 # `just test-autoeq threads=N`.
 [group('test')]
-test-autoeq threads="2":
+test-autoeq threads="2": build-test-bins
 	RUST_TEST_THREADS={{threads}} {{cargo}} test --tests --release
 
 [group('test')]
-ntest:
+ntest: build-test-bins
 	{{cargo}} nextest run --release --no-fail-fast --lib --bins --examples --tests --workspace --all-targets --all-features
 
 # WP0 crate-partition gates. Keep the fast checker tests and graph/ownership

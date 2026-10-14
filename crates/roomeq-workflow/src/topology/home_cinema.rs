@@ -8462,9 +8462,7 @@ mod post_dsp_level_tests {
             result.channels["L"]
                 .plugins
                 .iter()
-                .filter(|plugin| {
-                    plugin.parameters["label"] == "post_dsp_output_headroom_safety"
-                })
+                .filter(|plugin| plugin.parameters["label"] == "post_dsp_output_headroom_safety")
                 .map(|plugin| -plugin.parameters["gain_db"].as_f64().unwrap())
                 .sum::<f64>()
         };
