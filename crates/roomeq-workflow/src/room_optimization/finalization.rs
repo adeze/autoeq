@@ -1379,6 +1379,63 @@ fn select_inner(
         started.elapsed().as_secs_f64(),
         best.is_some()
     );
+    // Joint route-delay search inside the authoritative replay. EQ rotates
+    // branch phase after topology selected its route delays, so when no
+    // strength candidate passes, re-search the main route delay on the
+    // full-strength graph and let the same configured replay, safety, and
+    // EPA gates judge every offset. No gate is relaxed; offsets that fail
+    // remain visible as rejected trials.
+    if best.is_none() {
+        for (strength, sub_strength) in [(1.0, 1.0), (1.0, 0.5), (0.5, 1.0)] {
+            for offset_ms in [-2.0, -1.0, -0.5, -0.25, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0] {
+                if let Ok(mut shifted) = prepare_candidate(
+                    &original,
+                    (strength, sub_strength),
+                    &sub_roles,
+                    config,
+                    held_out,
+                    fs,
+                    dir,
+                    store,
+                ) {
+                    if shift_main_route_delays(&mut shifted.result, offset_ms).is_empty() {
+                        continue;
+                    }
+                    let evaluation = evaluate_prepared_trial(
+                        &evaluation_context,
+                        &Ok(shifted),
+                        ((strength, sub_strength, "output", 0.0, None), false),
+                        None,
+                    )?;
+                    if let Some(mut evaluation) = evaluation {
+                        evaluation.check.id =
+                            format!("{}_route_delay_{:+.2}ms", evaluation.check.id, offset_ms);
+                        let attempt = evaluation.attempt;
+                        trials.push(evaluation.check);
+                        if let Ok(score) = attempt
+                            && let Some(mut candidate) = evaluation.candidate
+                            && best
+                                .as_ref()
+                                .is_none_or(|(previous, _)| score < *previous - 1e-9)
+                        {
+                            candidate.metadata.stage_outcomes.push(StageOutcome {
+                                stage: "final_correction_strength".into(),
+                                status: StageStatus::Applied,
+                                advisories: vec![
+                                    format!("selected_strength={strength}"),
+                                    format!("selected_sub_strength={sub_strength}"),
+                                    format!("selected_route_delay_offset_ms={offset_ms:+.2}"),
+                                    "attenuation_included_in_final_acoustic_acceptance".into(),
+                                ],
+                                checks: Vec::new(),
+                            });
+                            best = Some((score, candidate));
+                        }
+                    }
+                }
+            }
+        }
+    }
     let Some((_, mut selected)) = best else {
         // A structural fallback can itself exceed the electrical limit. Keep
         // the original candidate failures visible even if no artifact is saved.
@@ -3141,6 +3198,77 @@ fn record_final_electrical_stage(
             .collect(),
     });
     Ok(())
+}
+
+/// Shift every main route delay by `offset_ms`, keeping the routing graph,
+/// the serialized delay plugins, and the reported per-source delays in
+/// agreement. Delays clamp at zero; the effective per-source shift is what
+/// lands in each representation. Returns the sources actually shifted.
+fn shift_main_route_delays(result: &mut RoomOptimizationResult, offset_ms: f64) -> Vec<String> {
+    if !offset_ms.is_finite() || offset_ms == 0.0 {
+        return Vec::new();
+    }
+    let mut effective: Vec<(String, f64)> = Vec::new();
+    if let Some(bass) = result.metadata.bass_management.as_mut() {
+        if let Some(graph) = bass.routing_graph.as_mut() {
+            for route in &mut graph.routes {
+                if route.route_kind != "main_highpass_to_self" {
+                    continue;
+                }
+                let shifted = (route.delay_ms + offset_ms).max(0.0);
+                let delta = shifted - route.delay_ms;
+                if delta != 0.0 {
+                    route.delay_ms = shifted;
+                    effective.push((route.source_channel.clone(), delta));
+                }
+            }
+        }
+        if let Some(optimization) = bass.optimization.as_mut() {
+            for source in &mut optimization.source_results {
+                if let Some((_, delta)) = effective
+                    .iter()
+                    .find(|(channel, _)| channel == &source.source_channel)
+                {
+                    source.main_delay_ms = (source.main_delay_ms + delta).max(0.0);
+                }
+            }
+            let shifted_groups: Vec<String> = effective
+                .iter()
+                .filter_map(|(channel, _)| {
+                    optimization
+                        .source_results
+                        .iter()
+                        .find(|source| &source.source_channel == channel)
+                        .map(|source| source.group_id.clone())
+                })
+                .collect();
+            for group in &mut optimization.group_results {
+                if shifted_groups.contains(&group.group_id) {
+                    group.main_delay_ms = (group.main_delay_ms + offset_ms).max(0.0);
+                }
+            }
+        }
+    }
+    for (channel, delta) in &effective {
+        if let Some(chain) = result.channels.get_mut(channel) {
+            let mut found = false;
+            for plugin in &mut chain.plugins {
+                if plugin.plugin_type == "delay"
+                    && plugin.parameters["room_eq_stage"] == "route_owned"
+                    && let Some(value) = plugin.parameters.get_mut("delay_ms")
+                {
+                    *value = serde_json::json!((value.as_f64().unwrap_or(0.0) + delta).max(0.0));
+                    found = true;
+                }
+            }
+            if !found && *delta > 0.0 {
+                let mut plugin = roomeq_engine::output::create_delay_plugin(*delta);
+                plugin.parameters["room_eq_stage"] = serde_json::json!("route_owned");
+                chain.plugins.push(plugin);
+            }
+        }
+    }
+    effective.into_iter().map(|(channel, _)| channel).collect()
 }
 
 #[expect(

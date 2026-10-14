@@ -319,6 +319,49 @@ pub(crate) fn routed_seat_identity_order(
     if main_count != canonical.len() || sub_count != canonical.len() {
         return Err("physical_seat_identity_support_mismatch_no_singleton_broadcast".into());
     }
+    let count = canonical.len();
+    if policy.is_some_and(|policy| policy.primary_seat >= count) {
+        return Err("primary_physical_seat_identity_unavailable".into());
+    }
+    let main_weights = policy.and_then(|policy| policy.seat_weights.as_ref());
+    let optimizer_weights = config
+        .optimizer
+        .multi_measurement
+        .as_ref()
+        .and_then(|policy| policy.weights.as_ref());
+    let normalized = |weights: &Vec<f64>| -> std::result::Result<Vec<f64>, String> {
+        if weights.len() != count
+            || weights
+                .iter()
+                .any(|weight| !weight.is_finite() || *weight < 0.0)
+        {
+            return Err("invalid_physical_seat_weight_support".into());
+        }
+        let sum: f64 = weights.iter().sum();
+        if !sum.is_finite() || sum <= 0.0 {
+            return Err("nonfinite_or_zero_physical_seat_weight_sum".into());
+        }
+        Ok(weights.iter().map(|weight| weight / sum).collect())
+    };
+    let main_weights = main_weights.map(normalized).transpose()?;
+    let optimizer_weights = optimizer_weights.map(normalized).transpose()?;
+    if let (Some(main), Some(optimizer)) = (main_weights, optimizer_weights)
+        && main
+            .iter()
+            .zip(optimizer)
+            .any(|(a, b)| (*a - b).abs() > 1e-12)
+    {
+        return Err("conflicting_configured_physical_seat_weights".into());
+    }
+    if count == 1 {
+        // A sole seat joins unambiguously. One-seat source names are
+        // descriptive speaker labels, not listening-seat identities (see
+        // `load_multisub_seat_measurements`), so cross-source label equality
+        // and the multi-seat acquisition join below cannot apply. Binding
+        // validation above and the configured weight checks still hold, and
+        // final configured-reference replay remains the delivered-sum gate.
+        return Ok(canonical);
+    }
     for labels in &declared {
         let permutation = seat_permutation(&canonical, labels)?;
         if permutation
@@ -419,40 +462,6 @@ pub(crate) fn routed_seat_identity_order(
                 reference_positions = Some(positions);
             }
         }
-    }
-    let count = canonical.len();
-    if policy.is_some_and(|policy| policy.primary_seat >= count) {
-        return Err("primary_physical_seat_identity_unavailable".into());
-    }
-    let main_weights = policy.and_then(|policy| policy.seat_weights.as_ref());
-    let optimizer_weights = config
-        .optimizer
-        .multi_measurement
-        .as_ref()
-        .and_then(|policy| policy.weights.as_ref());
-    let normalized = |weights: &Vec<f64>| -> std::result::Result<Vec<f64>, String> {
-        if weights.len() != count
-            || weights
-                .iter()
-                .any(|weight| !weight.is_finite() || *weight < 0.0)
-        {
-            return Err("invalid_physical_seat_weight_support".into());
-        }
-        let sum: f64 = weights.iter().sum();
-        if !sum.is_finite() || sum <= 0.0 {
-            return Err("nonfinite_or_zero_physical_seat_weight_sum".into());
-        }
-        Ok(weights.iter().map(|weight| weight / sum).collect())
-    };
-    let main_weights = main_weights.map(normalized).transpose()?;
-    let optimizer_weights = optimizer_weights.map(normalized).transpose()?;
-    if let (Some(main), Some(optimizer)) = (main_weights, optimizer_weights)
-        && main
-            .iter()
-            .zip(optimizer)
-            .any(|(a, b)| (*a - b).abs() > 1e-12)
-    {
-        return Err("conflicting_configured_physical_seat_weights".into());
     }
     Ok(canonical)
 }

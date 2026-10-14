@@ -286,6 +286,18 @@ pub(super) fn build_roundtrip_config(
             strategy: seat_set.strategy,
             ..Default::default()
         });
+        // The fixture builds every speaker's seats in the same physical
+        // order (`seat-0`, `seat-1`, ...); declare that identity explicitly
+        // so the routed coherent join uses the configured-identity path
+        // instead of requiring a verified fixed-projection capture receipt
+        // that in-memory synthetic curves cannot carry.
+        let seat_count = seat_set.seats.values().next().map_or(0, Vec::len);
+        config.optimizer.multi_seat = Some(roomeq_model::MultiSeatConfig {
+            seat_identity: Some(roomeq_model::SeatIdentityMap {
+                ids: (0..seat_count).map(|seat| format!("seat-{seat}")).collect(),
+            }),
+            ..Default::default()
+        });
     }
 
     config

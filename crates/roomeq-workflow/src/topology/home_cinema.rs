@@ -4271,7 +4271,129 @@ fn optimize_home_cinema_with_sub(
             sample_rate,
             sub_callback,
         )?;
-        let filters = post_eq_result.filters;
+        let mut filters = post_eq_result.filters;
+        // Joint main/sub objective: the sub correction is delivered inside
+        // every main's coherent splice sum, so a filter set that flattens
+        // the sub alone can still worsen the delivered sum at the splice.
+        // Score candidates on the per-role coherent sums and, when the
+        // routed graph is available, also optimize a candidate directly
+        // against those sums (exact where the bass branch dominates, a
+        // bounded approximation through the splice). The better joint
+        // candidate wins; gain-halving repair and the existing sub-alone
+        // and cancellation gates still decide acceptance below.
+        if let Some(graph) = bass_routing_graph.as_ref() {
+            let joint_score = |candidate: &[Biquad]| -> f64 {
+                let routed_after = if candidate.is_empty() {
+                    routed_common_sub_post.clone()
+                } else {
+                    let resp = response::compute_peq_complex_response(
+                        candidate,
+                        &routed_common_sub_post.freq,
+                        sample_rate,
+                    );
+                    response::apply_complex_response(&routed_common_sub_post, &resp)
+                };
+                let mut total = 0.0;
+                for role in main_roles {
+                    let group_id = engine_home_cinema::group_id_for_role(
+                        engine_home_cinema::role_for_channel(role),
+                    );
+                    let role_xover_freq = group_results_by_id
+                        .get(group_id)
+                        .and_then(|group| group.selected_crossover_hz)
+                        .unwrap_or(final_xo_freq);
+                    let Some(sum) =
+                        engine_bass_management::predict_deployed_source_curve_from_routes(
+                            Some(&main_post_curves[role]),
+                            &routed_after,
+                            optimizer_source_pre_route_transfers.get(role),
+                            graph,
+                            role,
+                            sample_rate,
+                        )
+                    else {
+                        return f64::INFINITY;
+                    };
+                    let prepared_target = pre_eq_target_curves.get(role).cloned().map(Curve::from);
+                    total += roomeq_engine::topology::bass_management_objective_with_target(
+                        Some(&sum),
+                        prepared_target.as_ref(),
+                        role_xover_freq,
+                    )
+                    .unwrap_or_else(|| {
+                        compute_flat_loss(&sum, role_xover_freq, main_post_max_freq)
+                    });
+                }
+                total
+            };
+            let baseline_joint = joint_score(&[]);
+            if baseline_joint.is_finite() {
+                let joint_curves: Vec<Curve> = main_roles
+                    .iter()
+                    .filter_map(|role| {
+                        engine_bass_management::predict_deployed_source_curve_from_routes(
+                            Some(&main_post_curves[role]),
+                            &routed_common_sub_post,
+                            optimizer_source_pre_route_transfers.get(role),
+                            graph,
+                            role,
+                            sample_rate,
+                        )
+                    })
+                    .collect();
+                if joint_curves.len() == main_roles.len()
+                    && !joint_curves.is_empty()
+                    && let Ok(mut joint_result) = run_routed_training_post_eq(
+                        &sub_role,
+                        &joint_curves,
+                        &opt_config,
+                        config.target_curve.as_ref(),
+                        sample_rate,
+                        None,
+                    )
+                    && joint_score(&joint_result.filters) < joint_score(&filters)
+                {
+                    {
+                        for evidence in &mut post_eq_result.optimizer_evidence {
+                            evidence.selected_for_output = false;
+                        }
+                        optimizer_evidence_by_channel
+                            .entry(sub_role.clone())
+                            .or_default()
+                            .append(&mut post_eq_result.optimizer_evidence);
+                        post_eq_result.optimizer_evidence =
+                            std::mem::take(&mut joint_result.optimizer_evidence);
+                        filters = joint_result.filters;
+                    }
+                }
+                // Bounded repair: halve every gain (coefficients recomputed,
+                // since `Biquad` caches them) until the joint sum improves
+                // over the uncorrected splice or the correction vanishes.
+                let joint_before_repair = joint_score(&filters);
+                let mut repair_attempts = 0usize;
+                while joint_score(&filters) >= baseline_joint && repair_attempts < 6 {
+                    repair_attempts += 1;
+                    for filter in &mut filters {
+                        filter.update_params(
+                            filter.filter_type,
+                            filter.freq,
+                            filter.srate,
+                            filter.q,
+                            filter.db_gain * 0.5,
+                        );
+                    }
+                }
+                if repair_attempts > 0 {
+                    log::info!(target: BASS_MANAGEMENT_LOG_TARGET,
+                        "  Sub Post-EQ joint repair: {} gain halvings (joint splice objective {:.4} -> {:.4}, baseline {:.4})",
+                        repair_attempts,
+                        joint_before_repair,
+                        joint_score(&filters),
+                        baseline_joint
+                    );
+                }
+            }
+        }
 
         let pre = compute_flat_loss(&sub_post, sub_min_score, bass_route_upper_hz);
         let eq_resp = response::compute_peq_complex_response(&filters, &sub_post.freq, sample_rate);
@@ -4656,10 +4778,17 @@ fn optimize_home_cinema_with_sub(
             opt_config.max_iter,
         );
         let mut post_eq_result = if let Some(training_curves) = routed_training_curves {
+            // The routed sum stays coherent well above the crossover, and
+            // main pre-EQ filters near 2-3x the crossover can fight the
+            // splice there. Let the joint pass reach 4x the crossover so it
+            // can repair that interaction; the preservation gate still
+            // protects the main band from 2x upward.
+            let mut joint_config = opt_config.clone();
+            joint_config.max_freq = (role_xover_freq * 4.0).min(config.optimizer.max_freq);
             run_routed_training_post_eq(
                 role,
                 &training_curves,
-                &opt_config,
+                &joint_config,
                 config.target_curve.as_ref(),
                 sample_rate,
                 post_eq_callback,
@@ -4718,9 +4847,6 @@ fn optimize_home_cinema_with_sub(
         )
         .unwrap_or_else(|| compute_flat_loss(&post_curve, role_xover_freq, main_post_max_freq));
         let main_curve = &main_post_curves[role];
-        let main_eq_resp =
-            response::compute_peq_complex_response(&filters, &main_curve.freq, sample_rate);
-        let main_curve_after = response::apply_complex_response(main_curve, &main_eq_resp);
         let bass_before_post_eq = bass_routing_graph.as_ref().and_then(|graph| {
             engine_bass_management::predict_bass_source_curve_from_routes(
                 &routed_common_sub_post,
@@ -4733,38 +4859,123 @@ fn optimize_home_cinema_with_sub(
         let cancellation_before_post_eq = bass_before_post_eq.as_ref().and_then(|bass| {
             post_eq_crossover_cancellation(config, role, main_curve, bass, role_xover_freq)
         });
-        let bass_branch = bass_before_post_eq.as_ref().map(|bass| {
-            let bass_eq_resp =
-                response::compute_peq_complex_response(&filters, &bass.freq, sample_rate);
-            response::apply_complex_response(bass, &bass_eq_resp)
-        });
-        let post_curve_after = bass_branch
-            .as_ref()
-            .map(|bass| complex_sum_mains(&[&main_curve_after, bass]))
-            .unwrap_or_else(|| main_curve_after.clone());
-        let post = roomeq_engine::topology::bass_management_objective_with_target(
-            Some(&post_curve_after),
-            prepared_target.as_ref(),
-            role_xover_freq,
-        )
-        .unwrap_or_else(|| {
-            compute_flat_loss(&post_curve_after, role_xover_freq, main_post_max_freq)
-        });
-        let cancellation_evidence = bass_branch.as_ref().and_then(|bass| {
-            post_eq_crossover_cancellation(config, role, &main_curve_after, bass, role_xover_freq)
-        });
-        let target_underfill_db =
-            roomeq_engine::topology::bass_management_max_underfill_db_with_target(
-                Some(&post_curve_after),
-                prepared_target.as_ref(),
-                role_xover_freq,
-            );
         let pre_target_underfill_db =
             roomeq_engine::topology::bass_management_max_underfill_db_with_target(
                 Some(&post_curve),
                 prepared_target.as_ref(),
                 role_xover_freq,
             );
+        // Joint-correction repair: the crossover-band optimizer does not
+        // price its filters' tails above the splice, so a candidate that
+        // improves the coherent sum can still regress the protected main
+        // band and be discarded whole. Halve every gain (bounded, six
+        // attempts) and re-evaluate the complete gate set at each scale;
+        // only a scale passing every gate is accepted, otherwise the
+        // original unscaled evidence is reported and discarded as before.
+        let mut candidate_filters = filters.clone();
+        let mut main_eq_resp;
+        let mut main_curve_after;
+        let mut bass_branch;
+        let mut post_curve_after;
+        let mut post;
+        let mut cancellation_evidence;
+        let mut target_underfill_db;
+        let mut repair_attempts = 0usize;
+        loop {
+            main_eq_resp = response::compute_peq_complex_response(
+                &candidate_filters,
+                &main_curve.freq,
+                sample_rate,
+            );
+            main_curve_after = response::apply_complex_response(main_curve, &main_eq_resp);
+            bass_branch = bass_before_post_eq.as_ref().map(|bass| {
+                let bass_eq_resp = response::compute_peq_complex_response(
+                    &candidate_filters,
+                    &bass.freq,
+                    sample_rate,
+                );
+                response::apply_complex_response(bass, &bass_eq_resp)
+            });
+            post_curve_after = bass_branch
+                .as_ref()
+                .map(|bass| complex_sum_mains(&[&main_curve_after, bass]))
+                .unwrap_or_else(|| main_curve_after.clone());
+            post = roomeq_engine::topology::bass_management_objective_with_target(
+                Some(&post_curve_after),
+                prepared_target.as_ref(),
+                role_xover_freq,
+            )
+            .unwrap_or_else(|| {
+                compute_flat_loss(&post_curve_after, role_xover_freq, main_post_max_freq)
+            });
+            cancellation_evidence = bass_branch.as_ref().and_then(|bass| {
+                post_eq_crossover_cancellation(
+                    config,
+                    role,
+                    &main_curve_after,
+                    bass,
+                    role_xover_freq,
+                )
+            });
+            target_underfill_db =
+                roomeq_engine::topology::bass_management_max_underfill_db_with_target(
+                    Some(&post_curve_after),
+                    prepared_target.as_ref(),
+                    role_xover_freq,
+                );
+            let protected_probe = pre_eq_target_curves
+                .get(role)
+                .cloned()
+                .map(Curve::from)
+                .and_then(|target| {
+                    let align_gain_db = gains.get(role).copied().unwrap_or(0.0);
+                    let mut routing_input = pre_eq_initial_curves[role].clone();
+                    routing_input
+                        .spl
+                        .mapv_inplace(|level| level + align_gain_db);
+                    let routing_baseline = apply_chain(
+                        &routing_input,
+                        role_xover_type,
+                        role_xover_freq,
+                        false,
+                        main_gain_post,
+                        role_main_delay,
+                        false,
+                    );
+                    protected_main_target_preservation(
+                        &pre_eq_initial_curves[role],
+                        &routing_baseline,
+                        main_curve,
+                        &main_curve_after,
+                        &target,
+                        align_gain_db,
+                        config.optimizer.smooth_n,
+                        (role_xover_freq * 2.0, main_post_max_freq),
+                    )
+                });
+            let protected_regressed = protected_probe.as_ref().is_some_and(|report| {
+                report.metrics.post_target_weighted_rms_db
+                    > report.metrics.pre_target_weighted_rms_db + 1e-6
+            });
+            if !protected_regressed || repair_attempts >= 6 {
+                break;
+            }
+            repair_attempts += 1;
+            // `Biquad` caches its coefficients at construction; scaling
+            // must recompute them, not merely rewrite `db_gain`.
+            for filter in &mut candidate_filters {
+                filter.update_params(
+                    filter.filter_type,
+                    filter.freq,
+                    filter.srate,
+                    filter.q,
+                    filter.db_gain * 0.5,
+                );
+            }
+        }
+        if repair_attempts > 0 {
+            filters = candidate_filters;
+        }
         // Without calibrated main/sub timing the coherent cancellation
         // verdict is arbitrary; screen Post-EQ on its mains and output
         // preservation instead of rejecting corrections on luck.

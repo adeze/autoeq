@@ -581,4 +581,47 @@ mod physical_seat_identity_tests {
             "explicit_seat_binding_contradicts_measurement_identity"
         );
     }
+
+    #[test]
+    fn single_seat_join_accepts_descriptive_speaker_names() {
+        // One measurement per speaker at the sole listening position: the
+        // measurement names are speaker labels ("l", "lfe"), not seat
+        // identities, so cross-source label equality must not refuse the
+        // unambiguous one-seat join.
+        let single = |name: &str| {
+            MeasurementSource::Single(roomeq_model::MeasurementSingle {
+                measurement: MeasurementRef::Inline(InlineMeasurement {
+                    frequencies: vec![40.0, 80.0, 160.0],
+                    magnitude_db: vec![80.0; 3],
+                    phase_deg: Some(vec![0.0; 3]),
+                    name: Some(name.into()),
+                    wav_path: None,
+                    csv_path: None,
+                }),
+                speaker_name: Some(format!("roundtrip-{name}")),
+                provenance: Default::default(),
+            })
+        };
+        let configured = RoomConfig {
+            speakers: std::collections::HashMap::from([
+                ("main".into(), SpeakerConfig::Single(single("l"))),
+                ("sub".into(), SpeakerConfig::Single(single("lfe"))),
+            ]),
+            ..Default::default()
+        };
+        let SpeakerConfig::Single(main) = &configured.speakers["main"] else {
+            panic!()
+        };
+        assert_eq!(
+            crate::group_measurements::routed_seat_identity_order(
+                &configured,
+                main,
+                &configured.speakers["sub"],
+                1,
+                1
+            )
+            .unwrap(),
+            vec!["l"]
+        );
+    }
 }
