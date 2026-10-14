@@ -317,6 +317,7 @@
 
 # 0.5.76
 
+<<<<<<< HEAD
 - Fix report graph decimation on log-frequency axes: the WASM renderer
   bucketed traces on linear Hz, starving low frequencies of vertices
   (faceted Before-EQ mains next to full-resolution subs). Buckets now
@@ -385,7 +386,9 @@
   route optimizer: positive weights tip genelec-fir into identity
   while unknown needs pool dominance to move, so enforcement stays
   off pending true-headroom pools spanning route and FIR.
-
+- Fix the DT1990 Pro flat QA recipe by using seeded native DE, whose
+  convergence evidence satisfies the strict QA gate; PSO only reports budget
+  completion. Keep the spacing and score-improvement checks unchanged.
 - Add measured-IR full indirect Speech Transmission Index and per-octave modulation
   tables to RoomEQ reports using the IEC 60268-16:2020 model in `math-rir`.
 - Require `math-rir` 0.5.12 and the updated RoomEQ STI output contracts.
