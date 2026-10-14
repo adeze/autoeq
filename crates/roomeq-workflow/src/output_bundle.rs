@@ -385,11 +385,66 @@ fn write_curve_metadata_json(path: &Path, curve: &CurveData) -> io::Result<()> {
     write_json_file(path, &metadata)
 }
 
+// Display CSVs retain original extrema and endpoints. Full-rate evidence is
+// stored separately when this 4096-point diagnostic budget would be exceeded.
+const MAX_IR_DISPLAY_POINTS: usize = 4096;
+const IR_F64_MAGIC: &[u8; 8] = b"AEQIR64\0";
+// Header: magic plus u64 count; sample: one f64 time and one f64 amplitude.
+const IR_F64_HEADER_BYTES: usize = 16;
+const IR_F64_SAMPLE_BYTES: usize = 16;
+
+fn ir_display_indices(ir: &IrWaveform) -> Vec<usize> {
+    let count = ir.time_ms.len();
+    if count <= MAX_IR_DISPLAY_POINTS {
+        return (0..count).collect();
+    }
+    let buckets = (MAX_IR_DISPLAY_POINTS - 2) / 2;
+    let mut indices = vec![0, count - 1];
+    for bucket in 0..buckets {
+        let start = bucket * count / buckets;
+        let end = (bucket + 1) * count / buckets;
+        let mut minimum = start;
+        let mut maximum = start;
+        for index in start + 1..end {
+            if ir.amplitude[index] < ir.amplitude[minimum] {
+                minimum = index;
+            }
+            if ir.amplitude[index] > ir.amplitude[maximum] {
+                maximum = index;
+            }
+        }
+        indices.extend([minimum, maximum]);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+fn write_ir_f64(path: &Path, ir: &IrWaveform) -> io::Result<()> {
+    validate_ir_data(ir)?;
+    let size = ir
+        .time_ms
+        .len()
+        .checked_mul(IR_F64_SAMPLE_BYTES)
+        .and_then(|size| size.checked_add(IR_F64_HEADER_BYTES))
+        .ok_or_else(|| io_invalid("IR64 payload size overflow"))?;
+    let mut bytes = Vec::with_capacity(size);
+    bytes.extend_from_slice(IR_F64_MAGIC);
+    bytes.extend_from_slice(&(ir.time_ms.len() as u64).to_le_bytes());
+    for (time, amplitude) in ir.time_ms.iter().zip(&ir.amplitude) {
+        bytes.extend_from_slice(&time.to_le_bytes());
+        bytes.extend_from_slice(&amplitude.to_le_bytes());
+    }
+    std::fs::write(path, bytes)
+}
+
 fn write_ir_csv(path: &Path, ir: &IrWaveform) -> std::io::Result<()> {
     validate_ir_data(ir)?;
-    let mut out = String::with_capacity(ir.time_ms.len() * 32);
+    let mut out = String::with_capacity(ir.time_ms.len().min(MAX_IR_DISPLAY_POINTS) * 32);
     out.push_str("time_ms,amplitude\n");
-    for (time, amplitude) in ir.time_ms.iter().zip(ir.amplitude.iter()) {
+    for index in ir_display_indices(ir) {
+        let time = ir.time_ms[index];
+        let amplitude = ir.amplitude[index];
         // Default float formatting round-trips; fixed decimal precision can
         // erase low-level native IR tails and shift capture time origins.
         out.push_str(&format!("{time},{amplitude}\n"));
@@ -492,6 +547,24 @@ fn extract_ir(
     ir: Option<IrWaveform>,
 ) -> Option<IrWaveform> {
     let ir = ir?;
+    if ir.time_ms.len() > MAX_IR_DISPLAY_POINTS {
+        let source_file_name = file_name.replace(".csv", ".ir64");
+        let display_file_name = file_name.replace(".csv", "_display.csv");
+        if write_ir_f64(&dir.join(&source_file_name), &ir).is_ok()
+            && write_ir_csv(&dir.join(&display_file_name), &ir).is_ok()
+        {
+            record_file(extracted, index, channel, kind, &source_file_name);
+            record_file(
+                extracted,
+                index,
+                channel,
+                &format!("{kind}_display"),
+                &display_file_name,
+            );
+            return None;
+        }
+        return Some(ir);
+    }
     let path = dir.join(&file_name);
     match write_ir_csv(&path, &ir) {
         Ok(()) => {
@@ -3001,6 +3074,38 @@ fn read_indexed_curve(
 }
 
 fn read_ir_csv_bytes(bytes: &[u8], label: &str) -> Result<IrWaveform, Box<dyn std::error::Error>> {
+    if bytes.starts_with(IR_F64_MAGIC) {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("IR64 '{label}' has invalid length"),
+            )
+        };
+        let count_bytes: [u8; 8] = bytes
+            .get(8..IR_F64_HEADER_BYTES)
+            .ok_or_else(invalid)?
+            .try_into()?;
+        let count = usize::try_from(u64::from_le_bytes(count_bytes))?;
+        let expected = count
+            .checked_mul(IR_F64_SAMPLE_BYTES)
+            .and_then(|size| size.checked_add(IR_F64_HEADER_BYTES))
+            .ok_or_else(invalid)?;
+        if bytes.len() != expected {
+            return Err(invalid().into());
+        }
+        let mut time_ms = Vec::with_capacity(count);
+        let mut amplitude = Vec::with_capacity(count);
+        for pair in bytes[IR_F64_HEADER_BYTES..]
+            .as_chunks::<IR_F64_SAMPLE_BYTES>()
+            .0
+        {
+            time_ms.push(f64::from_le_bytes(pair[..8].try_into()?));
+            amplitude.push(f64::from_le_bytes(pair[8..].try_into()?));
+        }
+        let ir = IrWaveform { time_ms, amplitude };
+        validate_ir_data(&ir)?;
+        return Ok(ir);
+    }
     let text = std::str::from_utf8(bytes)?;
     let mut lines = text.lines();
     let header = lines.next().ok_or_else(|| {
@@ -3056,7 +3161,7 @@ fn read_ir_member(
         manifest,
         captured_files,
         MAX_BUNDLE_MEMBER_BYTES,
-        "IR CSV sidecar",
+        "IR waveform sidecar",
     )?;
     read_ir_csv_bytes(bytes.as_ref(), &path.display().to_string())
 }
@@ -3814,6 +3919,74 @@ mod tests {
         let error = lock_output_bundle_paths(&[&output])
             .expect_err("a symlink must not redirect the advisory lock");
         assert!(error.to_string().contains("regular file"));
+    }
+
+    #[test]
+    fn long_ir_bundle_has_bounded_display_and_bit_exact_full_rate_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_path = dir.path().join("dsp.json");
+        let count = 131_072;
+        let mut ir = IrWaveform {
+            time_ms: (0..count)
+                .map(|index| -0.123_456_789_012_3 + index as f64 / 48.0)
+                .collect(),
+            amplitude: vec![-1.234_567_890_123_456e-120; count],
+        };
+        ir.amplitude[117] = -0.1;
+        ir.amplitude[48_123] = 1.0;
+        ir.amplitude[count - 1] = -0.0;
+        let mut output = DspGraph::new("1");
+        output.add_channel("L", Vec::new());
+        output.channels.get_mut("L").unwrap().pre_ir = Some(ir.clone());
+        let files = save_output_bundle(&mut output, &output_path).expect("save long IR bundle");
+        let assets = assets_dir_for(&output_path);
+        let display_path = assets.join("L__pre_ir_display.csv");
+        let source_path = assets.join("L__pre_ir.ir64");
+        assert!(files.contains(&"L__pre_ir_display.csv".to_string()));
+        assert!(files.contains(&"L__pre_ir.ir64".to_string()));
+        let display_bytes = std::fs::read(display_path).unwrap();
+        let display = read_ir_csv_bytes(&display_bytes, "display").unwrap();
+        assert!(display.time_ms.len() <= MAX_IR_DISPLAY_POINTS);
+        for index in [117, 48_123] {
+            assert!(
+                display
+                    .time_ms
+                    .iter()
+                    .zip(&display.amplitude)
+                    .any(|(&time, &value)| {
+                        time == ir.time_ms[index] && value == ir.amplitude[index]
+                    })
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(source_path).unwrap().len(),
+            (16 + 16 * count) as u64
+        );
+        let restored = load_output_bundle(&output_path).expect("load lossless full-rate evidence");
+        let restored = restored.channels["L"].pre_ir.as_ref().unwrap();
+        assert_eq!(restored.time_ms.len(), count);
+        for (actual, expected) in restored
+            .time_ms
+            .iter()
+            .chain(&restored.amplitude)
+            .zip(ir.time_ms.iter().chain(&ir.amplitude))
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn ir64_reader_refuses_truncation_overflow_and_nonfinite_evidence() {
+        let mut invalid = IR_F64_MAGIC.to_vec();
+        assert!(read_ir_csv_bytes(&invalid, "truncated header").is_err());
+        invalid.extend_from_slice(&u64::MAX.to_le_bytes());
+        assert!(read_ir_csv_bytes(&invalid, "overflow count").is_err());
+        invalid.truncate(8);
+        invalid.extend_from_slice(&1_u64.to_le_bytes());
+        invalid.extend_from_slice(&0.0_f64.to_le_bytes());
+        assert!(read_ir_csv_bytes(&invalid, "truncated sample").is_err());
+        invalid.extend_from_slice(&f64::NAN.to_le_bytes());
+        assert!(read_ir_csv_bytes(&invalid, "nonfinite sample").is_err());
     }
 
     #[test]

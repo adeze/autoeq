@@ -36,18 +36,20 @@ pub(super) fn assemble_fir_result(
             ..Default::default()
         })
     } else {
-        request.target.target_tilt_curve.as_ref().map(|tilt| {
-            let display_tilt = autoeq_core::interpolate_log_space(
-                &request.prepared.measurements().representative().freq,
-                tilt,
-            );
-            CurveData {
-                freq: display_tilt.freq.to_vec(),
-                spl: (&display_tilt.spl + request.target.mean_spl).to_vec(),
-                phase: None,
-                norm_range: request.preprocessed.norm_range,
-                ..Default::default()
-            }
+        // Mixed-phase may have no magnitude FIR design target. Its realized
+        // score must still use the configured external target, exactly as IIR
+        // does, rather than silently comparing the response against flat.
+        let raw = request.prepared.measurements().representative();
+        let shape = request.target.target_tilt_curve.as_ref().map_or_else(
+            || crate::eq::resources::target_curve(raw, Some(request.eq_resources)),
+            |tilt| autoeq_core::interpolate_log_space(&raw.freq, tilt),
+        );
+        Some(CurveData {
+            freq: shape.freq.to_vec(),
+            spl: (&shape.spl + request.target.mean_spl).to_vec(),
+            phase: None,
+            norm_range: request.preprocessed.norm_range,
+            ..Default::default()
         })
     };
     let raw_curve = request.prepared.measurements().representative();

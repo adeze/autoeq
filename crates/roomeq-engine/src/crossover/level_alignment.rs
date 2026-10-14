@@ -44,6 +44,7 @@ pub(crate) fn align_two_band_target_levels(
             sample_rate,
         );
         Curve {
+            resolution: autoeq_core::resolution::MeasurementResolution::combine(drivers),
             freq: data.freq_grid.clone(),
             spl: response.mapv(|z| 20.0 * z.norm().max(1e-12).log10()),
             phase: Some(response.mapv(|z| z.arg().to_degrees())),

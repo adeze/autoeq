@@ -8,6 +8,7 @@ Run with: python3 scripts/test_roomeq_synthetic_exit.py
 from pathlib import Path
 from copy import deepcopy
 import json
+import math
 import subprocess
 import struct
 import unittest
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "target/release/roomeq-qa-synthetic"
 # Progress observers preserve adaptive selection and its existing per-pass
 # budgets. A single full-scale 5.1 refusal row can exceed 15 minutes, and the
-# reduced-level matrix contains 16 rows (parallel workers by default, serial
+# reduced-level matrix contains 17 rows (parallel workers by default, serial
 # with --jobs 1). This only bounds subprocess runtime; it does not relax any
 # acoustic or safety assertion.
 MATRIX_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -31,6 +32,38 @@ class SavedOutput(dict):
 
 
 class SyntheticExitContract(unittest.TestCase):
+    def assert_hybrid_selection(self, row):
+        stages = [stage for stage in row["stage_outcomes"]
+                  if stage["stage"] == "hybrid_best_part_selection"]
+        self.assertEqual(len(stages), 1, row["row"])
+        stage = stages[0]
+        self.assertEqual(stage["status"], "applied", row["row"])
+        selected = [value.removeprefix("selected=")
+                    for value in stage["advisories"] if value.startswith("selected=")]
+        self.assertEqual(len(selected), 1)
+        self.assertIn(selected[0], {"iir", "fir", "hybrid"})
+        self.assertEqual(len(stage["checks"]), 2)
+        parts = {}
+        initial = []
+        for check in stage["checks"]:
+            name = check["id"].removeprefix("hybrid_best_part_")
+            self.assertIn(name, {"iir", "fir"})
+            details = json.loads(check["diagnostic"])
+            self.assertEqual(details["score_basis"], "configured_reference_training_mean")
+            self.assertTrue(details["original_hybrid_safety_budgets"])
+            parts[name] = details["part_post_mean_db"]
+            initial.append(details["hybrid_post_mean_db"])
+        self.assertEqual(set(parts), {"iir", "fir"})
+        self.assertAlmostEqual(initial[0], initial[1], places=9)
+        rows = row["selected_acceptance"]["acoustic_quality"]["training"]["configured_baseline"]["residuals"]
+        post = sum(value["score"]["post_weighted_rms_db"] for value in rows) / len(rows)
+        self.assertTrue(all(math.isfinite(value) and value >= 0
+                            for value in [post, *initial, *parts.values()]))
+        expected = initial[0] if selected[0] == "hybrid" else parts[selected[0]]
+        self.assertAlmostEqual(post, expected, places=9)
+        self.assertLessEqual(post, min(initial[0], *parts.values()) + 1e-9)
+        return selected[0]
+
     def run_qa(self, *args, timeout_seconds=60):
         self.assertTrue(BINARY.is_file(), "Build the release QA binary first")
         return subprocess.run(
@@ -192,7 +225,10 @@ class SyntheticExitContract(unittest.TestCase):
                 self.assertTrue(all(value is None for value in delivered.values()), row["row"])
             else:
                 self.assertEqual(decision, "accepted", row["row"])
-                if row["fir_duration_applicable"]:
+                winner = self.assert_hybrid_selection(row) if row["mode"] == "Hybrid" else None
+                if winner == "iir":
+                    self.assertTrue(all(value is None for value in delivered.values()), row["row"])
+                elif row["fir_duration_applicable"]:
                     self.assertEqual(set(delivered.values()), {taps}, row["row"])
                     applied_fir_modes.add(row["mode"])
                 else:
@@ -204,7 +240,7 @@ class SyntheticExitContract(unittest.TestCase):
         result = self.run_qa("--parameter-matrix-refusals", timeout_seconds=MATRIX_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         rows = json.loads((ROOT / "target/qa/roomeq-parameter-refusals.json").read_text())
-        self.assertEqual({row["row"] for row in rows}, {0, 4, 6, 9, 10, 15})
+        self.assertEqual({row["row"] for row in rows}, {0, 5, 6, 11, 12, 14, 15, 16})
         for row in rows:
             self.assertEqual(row["input_scenario"], "full_scale_safety_refusal")
             self.assertEqual(row["processing_status"], "refused")
@@ -212,6 +248,7 @@ class SyntheticExitContract(unittest.TestCase):
             self.assertEqual(row["assertion_status"], "passed")
             self.assertEqual(row["finalization"]["default_input_peak"], 1.0)
             self.assertEqual(row["finalization"]["max_attenuation_db"], 12.0)
+            self.assertEqual(row["finalization"]["output_ceiling_dbfs"], -24.0)
             required = row["required_attenuation_db_by_seed"]
             self.assertEqual(len(required), 5)
             self.assertTrue(all(value > 12.0 for value in required))

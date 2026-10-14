@@ -102,7 +102,7 @@ class BundleLoaderTests(unittest.TestCase):
             "plugin_type": "convolution",
             "parameters": {"ir_file": reference},
         }]
-        content = b"fixture FIR bytes"
+        content = self._float_wav([0.0, 0.5])
         expected_hash = hashlib.sha256(content).hexdigest()
         if inventory:
             payload["metadata"] = {
@@ -253,6 +253,35 @@ class BundleLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "member failed integrity validation"):
                 load_roomeq_json(path)
 
+    def test_shared_driver_and_global_firs_replay_frozen_manifested_taps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_slim(Path(directory))
+            self._write_convolution_graph(path)
+            payload = json.loads(path.read_text())
+            plugin = payload["global_plugins"][0]
+            channel = payload["channels"]["L"]
+            channel["plugins"] = [plugin]
+            channel["drivers"] = [{"plugins": [plugin]}]
+            _bind_slim(payload)
+            path.write_text(json.dumps(payload))
+            self._write_integrity_manifest(path)
+            with mock.patch.object(loaders, "read_fir_wav", wraps=loaders.read_fir_wav) as read:
+                data = load_roomeq_json(path)
+            read.assert_called_once()
+            resource = assets_dir_for(path) / "resources/test-ir.wav"
+            resource.write_bytes(b"changed after loading")
+            self.assertTrue(verify_payload_binding(data)[0])
+            chains = [data["global_plugins"], data["channels"]["L"]["plugins"],
+                      data["channels"]["L"]["drivers"][0]["plugins"]]
+            for chain in chains:
+                with self.subTest(chain=chain):
+                    self.assertNotIn("_fir_taps", chain[0]["parameters"])
+                    corrected = apply_plugins_to_curve(
+                        {"freq": [12000.0], "spl": [80.0], "phase": [0.0]}, chain)
+                    self.assertAlmostEqual(corrected["spl"][0], 73.9794000867, places=8)
+                    self.assertAlmostEqual(corrected["phase"][0], -90.0)
+            data.close()
+
     def test_manifested_convolution_requires_exact_graph_hash_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._write_slim(Path(directory))
@@ -325,6 +354,38 @@ class BundleLoaderTests(unittest.TestCase):
             self.assertEqual(data["deployed_source_curves"]["L"]["spl"], [79.5, 80.5])
             self.assertEqual(data.symmetric_pairs['L+R']['sum_spl'], [86.0, 87.0])
             self.assertNotIn('symmetric_pairs', data)
+
+    def test_ir64_bundle_loads_full_rate_bits_instead_of_display_csv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_slim(Path(directory))
+            assets = assets_dir_for(path)
+            samples = [(-0.1234567890123 + index / 48.0, -1.234567890123456e-120)
+                       for index in range(10_000)]
+            samples[-1] = (samples[-1][0], -0.0)
+            raw = b"AEQIR64\0" + struct.pack("<Q", len(samples))
+            raw += b"".join(struct.pack("<dd", *sample) for sample in samples)
+            (assets / "L__pre_ir.ir64").write_bytes(raw)
+            (assets / "L__pre_ir_display.csv").write_text("time_ms,amplitude\n0,99\n")
+            index_path = assets / "measurements_index.json"
+            index = json.loads(index_path.read_text())
+            index["channels"]["L"]["pre_ir"] = "L__pre_ir.ir64"
+            index["channels"]["L"]["pre_ir_display"] = "L__pre_ir_display.csv"
+            index_path.write_text(json.dumps(index))
+            self._write_integrity_manifest(path)
+            data = load_roomeq_json(path)
+            ir = data["channels"]["L"]["pre_ir"]
+            self.assertEqual(len(ir["time_ms"]), len(samples))
+            decoded = b"".join(struct.pack("<dd", time, value)
+                               for time, value in zip(ir["time_ms"], ir["amplitude"]))
+            self.assertEqual(decoded, raw[16:])
+
+    def test_ir64_reader_refuses_bad_counts_and_nonfinite_samples(self):
+        malformed = [b"AEQIR64\0", b"AEQIR64\0" + struct.pack("<Q", 2**64 - 1),
+                     b"AEQIR64\0" + struct.pack("<Qd", 1, 0.0),
+                     b"AEQIR64\0" + struct.pack("<Qdd", 1, 0.0, float("nan"))]
+        for raw in malformed:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                loaders.read_ir_csv(raw)
 
     def test_curve_metadata_sidecars_preserve_all_native_curve_fields(self):
         with tempfile.TemporaryDirectory() as directory:

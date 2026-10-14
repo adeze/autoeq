@@ -232,12 +232,7 @@ pub fn fmt_num(v: f64) -> String {
 /// high frequencies. `None` samples are gaps: each contiguous run is
 /// decimated independently and runs are joined with a `NaN`-y sentinel so
 /// the stroke breaks at the gap (callers treat non-finite y as pen-up).
-pub fn decimate(
-    xs: &[f64],
-    ys: &[Option<f64>],
-    max_pts: usize,
-    log_x: bool,
-) -> Vec<(f64, f64)> {
+pub fn decimate(xs: &[f64], ys: &[Option<f64>], max_pts: usize, log_x: bool) -> Vec<(f64, f64)> {
     let n = xs.len().min(ys.len());
     let mut out = Vec::new();
     let mut start = 0usize;
@@ -1797,8 +1792,7 @@ mod tests {
         // Report Before-EQ shape: ~3000 log-spaced points over 20 Hz..20 kHz
         // decimated to a ~1100 px canvas budget.
         let xs = log_xs(3081, 20.0, 16019.0);
-        let ys: Vec<Option<f64>> =
-            xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
+        let ys: Vec<Option<f64>> = xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
         let pts = decimate(&xs, &ys, 2300, true);
         assert!(pts.len() <= 2300, "got {}", pts.len());
         let in_band = |lo: f64, hi: f64| {
@@ -1823,8 +1817,7 @@ mod tests {
         // Same data on a linear axis: equal-Hz buckets, so the bottom
         // decade legitimately holds fewer vertices than the top one.
         let xs = log_xs(3081, 20.0, 16019.0);
-        let ys: Vec<Option<f64>> =
-            xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
+        let ys: Vec<Option<f64>> = xs.iter().map(|&x| Some((x / 100.0).sin() * 10.0)).collect();
         let pts = decimate(&xs, &ys, 2300, false);
         let in_band = |lo: f64, hi: f64| {
             pts.iter()

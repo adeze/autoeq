@@ -78,6 +78,74 @@ fn reference(name: &str) -> ConvolutionSidecarReference {
 }
 
 #[test]
+fn external_target_keeps_pre_score_identical_across_fir_modes() {
+    let measurement = curve(false);
+    let target_curve = Curve {
+        freq: measurement.freq.clone(),
+        spl: measurement.freq.mapv(|f| -10.0 * (f / 20.0).log10() / 3.0),
+        ..Curve::default()
+    };
+    let resources = EqResources {
+        target: Some(crate::eq::PreparedEqTarget::Curve(Box::new(
+            target_curve.clone(),
+        ))),
+        ..EqResources::default()
+    };
+    let prepared = prepared(measurement.clone());
+    let room = config();
+    let target = build_target_context("left", &room, &measurement, None);
+    let features = preprocessed(&measurement);
+    let evaluation = roomeq_quality::QualityEvaluationConfig {
+        min_freq_hz: 20.0,
+        max_freq_hz: 20_000.0,
+        normalize_level: true,
+        schroeder_hz: None,
+    };
+    let score = |target: &Curve| {
+        roomeq_quality::evaluate_acoustic_quality(
+            std::slice::from_ref(&measurement),
+            std::slice::from_ref(&measurement),
+            &[],
+            &[],
+            Some(target),
+            evaluation,
+            roomeq_quality::TemporalQualityEvidence::default(),
+        )
+        .unwrap()
+        .training
+        .pre_weighted_rms_median_db
+    };
+    let expected = score(&target_curve);
+    for mode in [
+        FirChannelMode::PhaseLinear,
+        FirChannelMode::Hybrid,
+        FirChannelMode::MixedPhase,
+    ] {
+        let result = process_fir_channel(FirChannelRequest {
+            mode,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("left.wav"),
+            callback: None,
+        })
+        .unwrap();
+        let published = Curve::from(
+            result
+                .channel
+                .target_curve
+                .expect("external target survives assembly"),
+        );
+        assert!((score(&published) - expected).abs() < 1e-10);
+    }
+}
+
+#[test]
 fn kirkeby_excess_phase_request_exports_causal_design_delay() {
     let curve = curve(true);
     let prepared = prepared(curve.clone());
@@ -550,6 +618,9 @@ fn hybrid_returns_iir_filters_and_required_residual_sidecar() {
 
 #[test]
 fn hybrid_honours_multi_measurement_weights() {
+    // Give the regularized objective enough search to discriminate seat weights;
+    // a 50-evaluation run can stop at a shallow cut before finding the mode.
+    const SEARCH_BUDGET: usize = 500;
     // F04: Hybrid must optimize the configured multi-measurement objective,
     // not just the representative curve. Opposed seats with swapped weights
     // must yield different IIR solutions.
@@ -588,7 +659,7 @@ fn hybrid_honours_multi_measurement_weights() {
         );
         let mut room_config = config();
         room_config.optimizer.num_filters = 1;
-        room_config.optimizer.max_iter = 50;
+        room_config.optimizer.max_iter = SEARCH_BUDGET;
         room_config.optimizer.population = 12;
         room_config.optimizer.seed = Some(42);
         room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
@@ -643,7 +714,7 @@ fn hybrid_honours_multi_measurement_weights() {
     );
     let mut room_config = config();
     room_config.optimizer.num_filters = 1;
-    room_config.optimizer.max_iter = 50;
+    room_config.optimizer.max_iter = SEARCH_BUDGET;
     room_config.optimizer.population = 12;
     room_config.optimizer.seed = Some(42);
     room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {

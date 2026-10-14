@@ -1347,12 +1347,12 @@ pub fn baseline_bass_management_source_reports(
         .collect()
 }
 
-/// Grid density for the per-sub low-pass search. A deterministic log grid
-/// keeps the stage a fast path: pairs × points coherent splice evaluations,
-/// orders of magnitude below a DE rerun.
-const PER_SUB_SPLICE_GRID_POINTS: usize = 21;
-/// Near-tie tolerance: splice losses within this epsilon keep the candidate
-/// closest to the configured center instead of an arbitrary grid edge.
+/// Match the former maximum of three 21-point LP sweeps per physical output.
+/// Joint optimization spends this bounded budget across frequency, delay, and
+/// polarity rather than adding an unrestricted second routing search.
+const PER_SUB_SPLICE_EVALS_PER_OUTPUT: usize = 63;
+
+/// Preserve the exact retained controls when joint scores differ only numerically.
 const PER_SUB_SPLICE_TIE_EPS: f64 = 1.0e-9;
 
 /// Apply exactly the per-driver low-passes later serialized on the shared
@@ -1402,9 +1402,8 @@ fn low_pass_driver_inputs(
         .collect()
 }
 
-/// Coordinate search of the complete shared array, evaluated separately for
-/// every logical input with the actual main HP and shared LP. No positional
-/// main/sub pairing is implied by the per-driver crossover list.
+/// Jointly search physical low-pass, delay, and polarity on routed input sums.
+/// Matrix weights and per-source controls match the deployed graph.
 #[allow(clippy::too_many_arguments)]
 fn apply_per_sub_splice_selection(
     config: &RoomConfig,
@@ -1418,6 +1417,8 @@ fn apply_per_sub_splice_selection(
     sub_outputs: &mut [home_cinema::BassManagementSubOutputReport],
     drivers: &[SubDriverInfo],
     sample_rate: f64,
+    source_results: &[home_cinema::BassManagementSourceReport],
+    routing_matrix: Option<&[Vec<f64>]>,
 ) -> Vec<String> {
     if per_sub_crossover_keys(config).is_empty() {
         return Vec::new();
@@ -1428,8 +1429,53 @@ fn apply_per_sub_splice_selection(
     if plans.len() != drivers.len() || drivers.len() != sub_outputs.len() {
         return vec!["per_sub_splice_skipped_driver_count_mismatch".into()];
     }
-    let evaluate = |frequencies: &[f64]| -> Option<f64> {
-        let filtered = low_pass_driver_inputs(config, drivers, frequencies, sample_rate)?;
+    let mut lower = Vec::new();
+    let mut upper = Vec::new();
+    let mut initial = Vec::new();
+    for (plan, output) in plans.iter().zip(sub_outputs.iter()) {
+        let (low, high) = plan.selectable_bounds_hz();
+        // Preserve specialized DBA steering. Other sub outputs use the same
+        // nonnegative 20 ms delay authority as the existing route optimizer.
+        let fixed = output.strategy_source.starts_with("dba_");
+        let delay = output.delay_ms.max(0.0);
+        let polarity = f64::from(output.polarity_inverted);
+        lower.extend([
+            low,
+            if fixed { delay } else { 0.0 },
+            if fixed { polarity } else { 0.0 },
+        ]);
+        upper.extend([
+            high,
+            if fixed { delay } else { delay.max(20.0) },
+            if fixed { polarity } else { 1.0 },
+        ]);
+        initial.extend([
+            output.selected_low_pass_hz.unwrap_or(high).clamp(low, high),
+            delay,
+            polarity,
+        ]);
+    }
+    let decode = |params: &[f64]| {
+        let mut outputs = sub_outputs.to_vec();
+        for (index, output) in outputs.iter_mut().enumerate() {
+            let base = index * 3;
+            output.selected_low_pass_hz = Some(params[base].clamp(lower[base], upper[base]));
+            output.delay_ms = params[base + 1].clamp(lower[base + 1], upper[base + 1]);
+            output.polarity_inverted = params[base + 2]
+                .round()
+                .clamp(lower[base + 2], upper[base + 2])
+                >= 0.5;
+        }
+        outputs
+    };
+    let evaluate = |params: &[f64]| -> Option<(f64, Vec<f64>, bool)> {
+        let outputs = decode(params);
+        let frequencies: Vec<_> = outputs
+            .iter()
+            .filter_map(|output| output.selected_low_pass_hz)
+            .collect();
+        let filtered = low_pass_driver_inputs(config, drivers, &frequencies, sample_rate)?;
+        let mut cancellation_passed = true;
         let mut losses = Vec::new();
         for role in main_roles {
             let main = aligned_pre_eq_curves.get(role)?;
@@ -1438,7 +1484,24 @@ fn apply_per_sub_splice_selection(
             let frequency = group
                 .selected_crossover_hz
                 .or(group.configured_crossover_hz)?;
-            let mut sub = sum_sub_output_responses_on_grid(&main.freq, &filtered, sub_outputs)?;
+            let source = source_results
+                .iter()
+                .find(|source| source.source_channel == *role && source.group_id == group_id);
+            let mut sub = if let Some(matrix) = routing_matrix {
+                let column = main_roles.iter().position(|input| input == role)?;
+                if matrix.len() != outputs.len() {
+                    return None;
+                }
+                let weights = matrix
+                    .iter()
+                    .map(|row| row.get(column).copied())
+                    .collect::<Option<Vec<_>>>()?;
+                sum_weighted_sub_output_responses_on_grid(
+                    &main.freq, &filtered, &outputs, &weights,
+                )?
+            } else {
+                sum_sub_output_responses_on_grid(&main.freq, &filtered, &outputs)?
+            };
             sub = apply_common_sub_correction(&sub, measured_sub_curve?, corrected_sub_curve?)?;
             sub = apply_source_pre_route_transfer(
                 &sub,
@@ -1451,13 +1514,20 @@ fn apply_per_sub_splice_selection(
                 sample_rate,
                 false,
             );
-            let main_branch =
-                apply_delay_and_polarity_to_curve(&main_branch, group.main_delay_ms, false);
-            sub.spl.mapv_inplace(|level| level + group.trim_db);
+            let main_branch = apply_delay_and_polarity_to_curve(
+                &main_branch,
+                source.map_or(group.main_delay_ms, |source| source.main_delay_ms),
+                false,
+            );
+            sub.spl.mapv_inplace(|level| {
+                level + source.map_or(group.trim_db, |source| source.trim_db)
+            });
             let sub = apply_delay_and_polarity_to_curve(
                 &sub,
-                group.bass_route_delay_ms,
-                group.polarity_inverted,
+                source.map_or(group.bass_route_delay_ms, |source| {
+                    source.bass_route_delay_ms
+                }),
+                source.map_or(group.polarity_inverted, |source| source.polarity_inverted),
             );
             let predicted = complex_sum_mains(&[&main_branch, &sub]);
             let target = target_curves.and_then(|targets| targets.get(role));
@@ -1465,56 +1535,109 @@ fn apply_per_sub_splice_selection(
             let underfill =
                 bass_management_max_underfill_db_with_target(Some(&predicted), target, frequency)
                     .unwrap_or(0.0);
-            losses.push(
-                loss + 1000.0
-                    * (underfill - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB)
-                        .max(0.0)
-                        .powi(2),
-            );
+            let cancellation = crate::topology::assess_configured_crossover_cancellation(
+                config,
+                role,
+                &main_branch,
+                &sub,
+                &predicted,
+                frequency,
+            )?;
+            cancellation_passed &= cancellation.accepted;
+            losses.push(constrained_route_loss(loss, underfill, &cancellation));
         }
         if losses.is_empty() {
             return None;
         }
-        Some(
-            0.5 * losses.iter().sum::<f64>() / losses.len() as f64
-                + 0.5 * losses.into_iter().fold(f64::NEG_INFINITY, f64::max),
-        )
+        // Reuse the existing one-cycle delay price so partial hole filling
+        // does not reward redundant wrapped delays on the physical outputs.
+        let delay_price = outputs
+            .iter()
+            .filter(|output| !output.strategy_source.starts_with("dba_"))
+            .map(|output| {
+                route_actuation_regularization_db(
+                    0.0,
+                    0.0,
+                    output.delay_ms,
+                    0.0,
+                    output.selected_low_pass_hz.unwrap_or(0.0),
+                    0.0,
+                )
+            })
+            .sum::<f64>()
+            / outputs.len() as f64;
+        let score = 0.5 * losses.iter().sum::<f64>() / losses.len() as f64
+            + 0.5 * losses.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            + delay_price;
+        score
+            .is_finite()
+            .then_some((score, losses, cancellation_passed))
     };
-    let mut frequencies: Vec<_> = plans
-        .iter()
-        .map(|plan| plan.selectable_bounds_hz().1)
-        .collect();
-    let Some(mut best) = evaluate(&frequencies).filter(|score| score.is_finite()) else {
+    let Some((baseline, baseline_losses, _)) = evaluate(&initial) else {
         return vec!["per_sub_splice_skipped_missing_phase_or_correction".into()];
     };
-    for _ in 0..3 {
-        let mut improved = false;
-        for (index, plan) in plans.iter().enumerate() {
-            let (low, high) = plan.selectable_bounds_hz();
-            for step in 0..PER_SUB_SPLICE_GRID_POINTS {
-                let candidate = (low.ln()
-                    + (high / low).ln() * step as f64 / (PER_SUB_SPLICE_GRID_POINTS - 1) as f64)
-                    .exp()
-                    .clamp(low, high);
-                let previous = frequencies[index];
-                frequencies[index] = candidate;
-                if let Some(score) = evaluate(&frequencies)
-                    .filter(|score| score.is_finite() && *score < best - PER_SUB_SPLICE_TIE_EPS)
-                {
-                    best = score;
-                    improved = true;
-                } else {
-                    frequencies[index] = previous;
-                }
-            }
+    let feasible = |losses: &[f64], cancellation_passed: bool| {
+        cancellation_passed
+            && losses
+                .iter()
+                .zip(&baseline_losses)
+                .all(|(after, before)| *after <= *before + PER_SUB_SPLICE_TIE_EPS)
+    };
+    // Exact polarity seeds avoid depending on random discovery of a discrete
+    // phase repair while another source is already at its optimum.
+    let mut seed = initial.clone();
+    let mut seed_score = baseline;
+    for index in 0..sub_outputs.len() {
+        let base = index * 3;
+        if lower[base + 2] == upper[base + 2] {
+            continue;
         }
-        if !improved {
-            break;
+        let mut trial = seed.clone();
+        trial[base + 2] = 1.0 - trial[base + 2];
+        if let Some((score, _, _)) = evaluate(&trial)
+            && score + PER_SUB_SPLICE_TIE_EPS < seed_score
+        {
+            seed = trial;
+            seed_score = score;
         }
     }
-    for (output, &frequency) in sub_outputs.iter_mut().zip(&frequencies) {
-        output.selected_low_pass_hz = Some(frequency);
-    }
+    let objective = |params: &[f64]| {
+        evaluate(params)
+            .filter(|(_, losses, passed)| feasible(losses, *passed))
+            .map_or(f64::INFINITY, |(score, _, _)| score)
+    };
+    // Replace repeated coordinate sweeps with one seeded joint search using
+    // their previous worst-case budget. Limit population so the DE helper's
+    // minimum four generations fits that budget. Unqualified winners restore
+    // the original controls; polarity preparation adds one trial per output.
+    let (candidate, _) = differential_evolution_minimize(
+        &lower,
+        &upper,
+        &seed,
+        &objective,
+        config.optimizer.population.min(initial.len() * 4),
+        config
+            .optimizer
+            .max_iter
+            .min(PER_SUB_SPLICE_EVALS_PER_OUTPUT * sub_outputs.len()),
+        config.optimizer.seed.unwrap_or(42),
+    );
+    let improved = evaluate(&candidate).is_some_and(|(score, losses, cancellation_passed)| {
+        cancellation_passed
+            && score + PER_SUB_SPLICE_TIE_EPS < baseline
+            && losses
+                .iter()
+                .zip(&baseline_losses)
+                .all(|(after, before)| *after <= *before + PER_SUB_SPLICE_TIE_EPS)
+    });
+    let selected_params = if improved { &candidate } else { &initial };
+    let score_after = evaluate(selected_params).map_or(baseline, |(score, _, _)| score);
+    let selected = decode(selected_params);
+    let frequencies: Vec<_> = selected
+        .iter()
+        .filter_map(|output| output.selected_low_pass_hz)
+        .collect();
+    sub_outputs.clone_from_slice(&selected);
     for group in group_results.values_mut() {
         group.selected_sub_low_pass_hz = frequencies.clone();
         group.advisories.push("per_sub_splice_lp_selected".into());
@@ -1533,8 +1656,14 @@ fn apply_per_sub_splice_selection(
                 .collect::<Vec<_>>()
                 .join(",")
         ),
+        format!(
+            "per_sub_splice_joint_lp_delay_polarity:{}; score_before={baseline:.9}; score_after={score_after:.9}; matrix={}",
+            if improved { "improved" } else { "retained" },
+            routing_matrix.is_some()
+        ),
         "per_sub_splice_routes_use_driver_lp".into(),
         "per_sub_splice_scored_deployed_array_per_input".into(),
+        "per_sub_splice_representative_curves_only; final_seat_replay_required".into(),
     ]
 }
 
@@ -1652,6 +1781,8 @@ pub fn optimize_bass_management_joint_solution_with_matrix(
         sub_outputs,
         &driver_inputs,
         sample_rate,
+        &existing_sources,
+        routing_matrix,
     ));
 
     let frequencies: Vec<_> = sub_outputs
@@ -2346,7 +2477,8 @@ mod tests {
         let cut_rail = super::route_actuation_regularization_db(-12.0, 2.0, 1.0, 2.0, 72.0, 6.0);
         assert!(cut_rail > 100.0);
         // Non-finite anchor prices nothing instead of masking.
-        let unanchored = super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0, 6.0);
+        let unanchored =
+            super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0, 6.0);
         assert!((unanchored - 0.0).abs() < 1e-9);
         // Degenerate delay (measured: 17.6 ms at ~72 Hz crossover) exceeds
         // one cycle (13.9 ms) and pays quadratic excess.
@@ -2364,7 +2496,10 @@ mod tests {
     fn pool_overrun_follows_the_calibrated_weight_and_cuts_stay_free() {
         // Trim at the pool remainder pays nothing beyond anchor pricing.
         let at_pool = super::route_actuation_regularization_db(2.0, 2.0, 1.0, 2.0, 72.0, 2.0);
-        assert!((at_pool - 0.0).abs() < 1e-9, "at-pool trim priced: {at_pool}");
+        assert!(
+            (at_pool - 0.0).abs() < 1e-9,
+            "at-pool trim priced: {at_pool}"
+        );
         // Overrun pays the calibrated quadratic (currently zero: positive
         // weights tip genelec-fir into identity while unknown needs pool
         // dominance to move, so enforcement stays off pending true-headroom
@@ -3419,6 +3554,147 @@ mod tests {
         ]));
         assert_eq!(per_sub_crossover_keys(&missing).len(), 2);
         assert!(per_sub_crossover_plans(&missing).is_none());
+    }
+
+    #[test]
+    fn per_sub_joint_search_matches_matrix_and_source_polarity_without_harming_other_input() {
+        let mut config = per_sub_config(SubwooferCrossoverRef::PerSub(vec![
+            "bass_xover1".into(),
+            "bass_xover2".into(),
+        ]));
+        for crossover in config.crossovers.as_mut().unwrap().values_mut() {
+            crossover.frequency = Some(80.0);
+            crossover.frequency_range = None;
+        }
+        let curves = make_curves(true);
+        let groups = optimize_home_cinema_group_crossovers(
+            &config,
+            &two_mains(),
+            &curves,
+            &curves,
+            "LFE",
+            &fallback_crossover(),
+            48000.0,
+            None,
+        )
+        .unwrap();
+        let mut opposite = curves["LFE"].clone();
+        opposite.phase.as_mut().unwrap().fill(180.0);
+        let drivers: Vec<_> = [curves["LFE"].clone(), opposite]
+            .into_iter()
+            .enumerate()
+            .map(|(index, curve)| SubDriverInfo {
+                name: format!("sub{}", index + 1),
+                gain: 0.0,
+                delay: 0.0,
+                inverted: false,
+                processing: None,
+                initial_curve: Some(curve),
+            })
+            .collect();
+        let original: Vec<_> = (0..2)
+            .map(|index| BassManagementSubOutputReport {
+                output_role: format!("sub{}", index + 1),
+                gain_db: 0.0,
+                delay_ms: 0.0,
+                polarity_inverted: false,
+                strategy_source: "mso".into(),
+                headroom_contribution_db: 0.0,
+                selected_low_pass_hz: None,
+            })
+            .collect();
+        let matrix = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        for source_polarity in [false, true] {
+            let sources = vec![home_cinema::BassManagementSourceReport {
+                source_channel: "Right".into(),
+                group_id: "lcr".into(),
+                main_delay_ms: 0.0,
+                bass_route_delay_ms: 0.0,
+                polarity_inverted: source_polarity,
+                trim_db: 0.0,
+                objective_before: None,
+                objective_after: None,
+                accepted: true,
+                safety_restored: false,
+                advisories: Vec::new(),
+            }];
+            let mut selected = original.clone();
+            let mut selected_groups = groups.clone();
+            let advisories = apply_per_sub_splice_selection(
+                &config,
+                &two_mains(),
+                &curves,
+                Some(&curves["LFE"]),
+                Some(&curves["LFE"]),
+                None,
+                Some(&curves),
+                &mut selected_groups,
+                &mut selected,
+                &drivers,
+                48000.0,
+                &sources,
+                Some(&matrix),
+            );
+            assert!(!selected[0].polarity_inverted, "{advisories:?}");
+            assert_eq!(
+                selected[1].polarity_inverted, !source_polarity,
+                "{advisories:?}"
+            );
+            let filtered =
+                low_pass_driver_inputs(&config, &drivers, &[80.0, 80.0], 48000.0).unwrap();
+            for (column, role) in two_mains().iter().enumerate() {
+                let weights: Vec<_> = matrix.iter().map(|row| row[column]).collect();
+                let bass = sum_weighted_sub_output_responses_on_grid(
+                    &curves[role].freq,
+                    &filtered,
+                    &selected,
+                    &weights,
+                )
+                .unwrap();
+                let bass =
+                    apply_delay_and_polarity_to_curve(&bass, 0.0, column == 1 && source_polarity);
+                let main =
+                    apply_crossover_response_to_curve(&curves[role], "LR24", 80.0, 48000.0, false);
+                let combined = complex_sum_mains(&[&main, &bass]);
+                let underfill = bass_management_max_underfill_db_with_target(
+                    Some(&combined),
+                    Some(&curves[role]),
+                    80.0,
+                )
+                .unwrap();
+                assert!(
+                    underfill < 0.01,
+                    "{role}: {underfill:.9} dB; {advisories:?}"
+                );
+            }
+        }
+        // Invalid matrices never silently fall back to an unweighted array.
+        let mut selected = original.clone();
+        let mut selected_groups = groups.clone();
+        let advisories = apply_per_sub_splice_selection(
+            &config,
+            &two_mains(),
+            &curves,
+            Some(&curves["LFE"]),
+            Some(&curves["LFE"]),
+            None,
+            Some(&curves),
+            &mut selected_groups,
+            &mut selected,
+            &drivers,
+            48000.0,
+            &[],
+            Some(&[vec![1.0, 0.0]]),
+        );
+        assert_eq!(
+            serde_json::to_value(&selected).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        assert!(
+            advisories
+                .iter()
+                .any(|advisory| advisory.contains("skipped"))
+        );
     }
 
     #[test]

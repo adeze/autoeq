@@ -592,6 +592,7 @@ fn coherence_average_gd_realisations_uses_circular_phase_mean() {
         spl: Array1::from_vec(vec![80.0]),
         phase: Array1::from_vec(vec![phase_deg.to_radians()]),
         coherence: Array1::from_vec(vec![1.0]),
+        resolution: None,
     };
     let realisations = vec![vec![make_input(179.0)], vec![make_input(-179.0)]];
 
@@ -1750,4 +1751,32 @@ fn try_run_phase_linear_fir_gd_without_output_dir() {
     )
     .unwrap();
     assert!(summary.advisory.contains("success") || summary.advisory.contains("minimal"));
+}
+
+#[test]
+fn corrected_and_averaged_gd_inputs_keep_original_resolution() {
+    let raw = Curve {
+        freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+        spl: Array1::from_elem(5, 80.0),
+        phase: Some(Array1::zeros(5)),
+        coherence: Some(Array1::ones(5)),
+        ..Default::default()
+    };
+    let dense = autoeq_core::interpolate_response(&Array1::linspace(20.0, 200.0, 128), &raw);
+    let first = corrected_realisation_to_gd_input(&raw, &dense, &dense).unwrap();
+    assert_eq!(
+        first.resolution.as_ref().unwrap().width_octaves(80.0),
+        Some(2.0)
+    );
+    let mut second = first.clone();
+    second.resolution = first
+        .resolution
+        .as_ref()
+        .unwrap()
+        .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+    let averaged = coherence_average_gd_realisations(&[vec![first], vec![second]]).unwrap();
+    assert_eq!(
+        averaged[0].resolution.as_ref().unwrap().width_octaves(80.0),
+        Some(4.0)
+    );
 }

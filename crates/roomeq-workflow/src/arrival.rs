@@ -418,7 +418,9 @@ mod tests {
         // narrow deep notch in the first segment attracting the single PEQ.
         // The 100 Hz gap bin is a display sample, never fitted or scored.
         let frequencies = vec![20.0, 30.0, 45.0, 60.0, 100.0, 200.0, 300.0, 400.0, 500.0];
-        let magnitude_db = vec![80.0, 80.0, 68.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0];
+        // A measurable peak tests segment correction without requiring boost
+        // into a narrow cancellation-risk dip that the objective suppresses.
+        let magnitude_db = vec![80.0, 80.0, 92.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0];
         let source = MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Inline(InlineMeasurement {
                 frequencies,
@@ -486,11 +488,11 @@ mod tests {
             assert!(segment.pre_score.is_finite(), "{segment:?}");
             assert!(segment.post_score.is_finite(), "{segment:?}");
         }
-        // The notch segment must improve; the flat segment must not regress
+        // The peak segment must improve; the flat segment must not regress
         // into a worse absolute score than it started with.
         assert!(
             report.segments[0].post_score < report.segments[0].pre_score,
-            "notch segment did not improve: {:?}",
+            "peak segment did not improve: {:?}",
             report.segments[0]
         );
         assert!(report.gap_points > 0);

@@ -71,6 +71,10 @@ pub(in super::super) fn try_run_gd_opt_with_frequency_samples(
             spl: ch.final_curve.spl.clone(),
             phase,
             coherence,
+            resolution: autoeq_core::resolution::MeasurementResolution::combine([
+                &ch.initial_curve,
+                &ch.final_curve,
+            ]),
         });
         gd_channel_names.push((*name).clone());
     }
@@ -345,6 +349,10 @@ pub(in super::super) fn try_run_phase_linear_fir_gd(
             spl: ch.final_curve.spl.clone(),
             phase,
             coherence,
+            resolution: autoeq_core::resolution::MeasurementResolution::combine([
+                &ch.initial_curve,
+                &ch.final_curve,
+            ]),
         });
         gd_channel_names.push((*name).clone());
     }

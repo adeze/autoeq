@@ -170,11 +170,15 @@ pub(super) fn attach_validation_scorecard(
             .map_err(|message| AutoeqError::InvalidConfiguration { message })?,
         );
     }
+    let plugin_free_identity = super::room_optimization_result::is_plugin_free_identity(result);
     if let Some(report) = &mut result.metadata.correction_acceptance {
         if report.runtime_policy.is_none() {
             report.runtime_policy = Some(RuntimeAcceptancePolicy::for_output_class(
                 processing_mode.runtime_output_class(),
             ));
+        }
+        if plugin_free_identity && let Some(policy) = report.runtime_policy.as_mut() {
+            policy.output_class = roomeq_model::RuntimeOutputClass::LowLatencyIir;
         }
         align_acceptance_metrics_with_scorecard(report, &scorecard);
         let training_improvement = scorecard.training.improvement_median_db;

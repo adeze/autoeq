@@ -287,7 +287,10 @@ pub(crate) fn run_channel_via_generic_path_with_frequency_samples(
     // existing plugins (excursion HPF, broadband shelf, CEA2034 PEQ, fine EQ).
     let mut plugins: Vec<_> = Vec::with_capacity(raw_chain.plugins.len() + 1);
     if alignment_gain_db.abs() > 0.01 {
-        plugins.push(output::create_gain_plugin(alignment_gain_db));
+        let mut gain = output::create_gain_plugin(alignment_gain_db);
+        gain.parameters["label"] = serde_json::json!("automatic_input_level_alignment");
+        gain.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+        plugins.push(gain);
         final_curve.spl.mapv_inplace(|spl| spl + alignment_gain_db);
     }
     plugins.extend(raw_chain.plugins);
@@ -503,6 +506,10 @@ mod tests {
         let (chain, channel_result, _, _, _, _) = result.unwrap();
         let has_gain = chain.plugins.iter().any(|p| p.plugin_type == "gain");
         assert!(has_gain, "alignment gain plugin should be present");
+        assert!(chain.plugins.iter().any(|plugin| {
+            plugin.parameters["label"] == "automatic_input_level_alignment"
+                && plugin.parameters["room_eq_correction_gain"] == true
+        }));
         let realized = crate::ctc::apply_channel_dsp_chain_to_curve(
             &chain,
             &channel_result.initial_curve,

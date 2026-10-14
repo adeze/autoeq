@@ -183,6 +183,7 @@ pub fn build_weighted_prototype_with_capture(
     let prototype = Curve {
         freq: freqs,
         spl: avg_spl,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     };
 

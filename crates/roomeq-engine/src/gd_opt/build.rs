@@ -1,9 +1,9 @@
-use super::compute::compute_sum_gd;
+use super::compute::compute_sum_gd_with_controls;
 use super::gd_opt_config::GdOptConfig;
 use super::types::ChannelMeasurementInput;
+use super::types::ChannelParams;
 use super::types::GdAlignmentTarget;
 use super::types::GroupDelayOptResult;
-use super::types::encode_result_as_params;
 use ndarray::Array1;
 
 /// Build a `GdAlignmentTarget` from a `GroupDelayOptResult`.
@@ -21,9 +21,21 @@ pub fn build_gd_alignment_target(
         .filter(|&i| channels[0].freq[i] >= result.band.0 && channels[0].freq[i] <= result.band.1)
         .collect();
 
-    // Encode the optimised result as params to compute post-GD
-    let params = encode_result_as_params(result, config);
-    let sum_gd = compute_sum_gd(channels, &params, &band_indices, config);
+    // Evaluate emitted sections, without padding missing APs with search seeds.
+    let controls: Vec<_> = result
+        .per_channel
+        .iter()
+        .map(|channel| ChannelParams {
+            delay_ms: channel.delay_ms,
+            polarity_inverted: channel.polarity_inverted,
+            ap_filters: channel
+                .ap_filters
+                .iter()
+                .map(|ap| (ap.freq, ap.q))
+                .collect(),
+        })
+        .collect();
+    let sum_gd = compute_sum_gd_with_controls(channels, &controls, &band_indices, config);
 
     let per_channel_delay_ms = result.per_channel.iter().map(|ch| ch.delay_ms).collect();
 

@@ -153,6 +153,15 @@ mod tests {
 
         let result = optimize_channel_eq_detailed(&curve, &config, None, 48_000.0)
             .expect("bounded correction-band optimization should succeed");
+        // This deliberately sparse grid cannot warrant any configured peak
+        // bandwidth. Retain its uncorrected response and the actual refusal.
+        assert!(result.filters.is_empty());
+        assert!(result.optimizer_evidence.iter().any(|run| {
+            !run.selected_for_output
+                && !run.converged
+                && !run.best_effort
+                && run.status.contains("measurement resolution")
+        }));
         assert!(result.filters.iter().all(|filter| {
             (40.0..=16_000.0).contains(&filter.freq)
                 && !matches!(
@@ -170,10 +179,10 @@ pub struct PreparedMultiSubGroup {
     pub subwoofers: Vec<Curve>,
     pub seat_measurements: Option<Vec<Vec<Curve>>>,
     /// Verified shared-timing labels per `[sub][seat]`; every sub must
-    /// agree within each seat before coherent joint optimization. `None`
-    /// is unknown: selected joint dispatch refuses it without substituting
-    /// another optimizer. Stays `None` until the measurement-envelope plumbing
-    /// derives per-capture timing labels.
+    /// agree within each seat before coherent joint or legacy multi-seat optimization.
+    /// `None` is unknown: coherent dispatch refuses it without substituting
+    /// another optimizer. The measurement adapter derives these labels from
+    /// stationary capture provenance; phase columns alone do not authorize timing.
     pub reference_scope: Option<Vec<Vec<String>>>,
 }
 
@@ -361,6 +370,9 @@ fn aggregate_topology_bands(
             sample_rate,
         );
         acoustic_drivers.push(Curve {
+            resolution: autoeq_core::resolution::MeasurementResolution::combine(
+                members.iter().map(|index| &drivers[*index]),
+            ),
             freq: data.freq_grid,
             spl: response.mapv(|value| 20.0 * value.norm().max(1e-12).log10()),
             phase: preserve_phase.then(|| response.mapv(|value| value.arg().to_degrees())),
@@ -1022,6 +1034,25 @@ pub fn process_multisub_group_with_callback(
     {
         match prepared.seat_measurements.clone() {
             Some(seat_measurements) => {
+                // Legacy MSO also fits coherent gains and delays. Phase columns
+                // without a common capture reference cannot support that search.
+                let seat_count = seat_measurements.first().map_or(0, Vec::len);
+                let shared_timing = multisub::timing_scopes_are_shared(
+                    prepared.reference_scope.as_deref(),
+                    prepared.subwoofers.len(),
+                    seat_count,
+                );
+                let phase_available = seat_measurements.len() == prepared.subwoofers.len()
+                    && seat_measurements.iter().all(|seats| {
+                        seats.len() == seat_count && seats.iter().all(|curve| curve.phase.is_some())
+                    });
+                if !shared_timing || !phase_available {
+                    return Err(AutoeqError::InvalidConfiguration {
+                        message: format!(
+                            "legacy multi-seat multi-sub processing for '{channel_name}' requires a shared timing reference within every seat and phase on every input; no alternate optimizer was run"
+                        ),
+                    });
+                }
                 let context = MultiSubExecutionContext {
                     channel_name,
                     group,
@@ -1803,6 +1834,10 @@ pub fn process_cardioid_with_callback(
     }
 
     let combined_curve = Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine([
+            &front_curve,
+            &rear_curve,
+        ]),
         freq: front_curve.freq.clone(),
         spl: ndarray::Array1::from_iter(
             combined_complex

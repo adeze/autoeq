@@ -15,6 +15,49 @@ import mdat2csv
 
 
 class Mdat2CsvTests(unittest.TestCase):
+    def test_export_cache_requires_complete_catalogue_and_preserves_user_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'capture.mdat'
+            source.write_bytes(b'capture snapshot')
+            outputs = [root / name for name in ('L.csv', 'L__ir.csv', 'recordings.json')]
+            for path in outputs:
+                path.write_text('exported')
+            digest = mdat2csv.capture_sha256(source)
+            mdat2csv.write_export_cache(root, digest, None, outputs)
+            self.assertTrue(mdat2csv.complete_export_cache(root, digest, None))
+            cache_path = root / mdat2csv.EXPORT_CACHE_NAME
+            catalogue = json.loads(cache_path.read_text())
+            catalogue['converter_sha256'] = 'older converter'
+            cache_path.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+            mdat2csv.write_export_cache(root, digest, None, outputs)
+            outputs[0].write_text('user-edited curve')
+            self.assertTrue(mdat2csv.complete_export_cache(root, digest, None))
+            self.assertEqual(outputs[0].read_text(), 'user-edited curve')
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, 'new reference'))
+            source.write_bytes(b'different capture')
+            self.assertFalse(mdat2csv.complete_export_cache(root, mdat2csv.capture_sha256(source), None))
+            outputs[1].unlink()
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+            (root / mdat2csv.EXPORT_CACHE_NAME).write_text('{}')
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+
+    def test_cache_cannot_escape_export_directory_or_skip_empty_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'recordings.json').write_text('{}')
+            (root / 'L.csv').write_text('')
+            catalogue = {'schema_version': 1, 'source_sha256': 'snapshot',
+                         'converter_sha256': mdat2csv.CONVERTER_SHA256,
+                         'timing_reference_id': None, 'outputs': ['recordings.json', 'L.csv']}
+            cache = root / mdat2csv.EXPORT_CACHE_NAME
+            cache.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, 'snapshot', None))
+            catalogue['outputs'] = ['recordings.json', '../other.csv']
+            cache.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, 'snapshot', None))
+
     def test_ir_export_preserves_timing_amplitude_and_config_binding(self):
         measurement = {
             'name': 'Left seat',

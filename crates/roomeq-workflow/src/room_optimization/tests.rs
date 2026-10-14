@@ -639,6 +639,119 @@ use std::sync::{
 };
 
 #[test]
+fn unrouted_rejected_kernels_remain_available_for_bounded_final_refinement() {
+    use math_audio_iir_fir::{Biquad, BiquadFilterType};
+    let frequencies =
+        Array1::from_iter((0..=400).map(|index| 20.0 * 1000.0_f64.powf(index as f64 / 400.0)));
+    let flat = roomeq_model::Curve {
+        spl: Array1::from_elem(frequencies.len(), 80.0),
+        phase: Some(Array1::zeros(frequencies.len())),
+        freq: frequencies,
+        ..Default::default()
+    };
+    let peak = Biquad::new(BiquadFilterType::Peak, 1000.0, 48_000.0, 1.0, 8.0);
+    let excessive_cut = Biquad::new(BiquadFilterType::Peak, 1000.0, 48_000.0, 1.0, -24.0);
+    let apply = |curve: &roomeq_model::Curve, filter: &Biquad| {
+        let transfer = autoeq_core::response::compute_peq_complex_response(
+            std::slice::from_ref(filter),
+            &curve.freq,
+            48_000.0,
+        );
+        autoeq_core::response::apply_complex_response(curve, &transfer)
+    };
+    for (measured, correction_possible) in [(apply(&flat, &peak), true), (flat.clone(), false)] {
+        let mut result = single_channel_room_result("L");
+        let channel = result.channel_results.get_mut("L").unwrap();
+        channel.initial_curve = measured.clone();
+        channel.final_curve = apply(&measured, &excessive_cut);
+        channel.biquads = vec![excessive_cut.clone()];
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.initial_curve = Some((&measured).into());
+        chain.final_curve = Some((&channel.final_curve).into());
+        chain.target_curve = Some((&flat).into());
+        chain.plugins = vec![output::create_eq_plugin(&channel.biquads)];
+        let original_plugins = chain.plugins.clone();
+        let mut config = RoomConfig::default();
+        config.speakers.insert(
+            "L".into(),
+            SpeakerConfig::Single(MeasurementSource::InMemory(measured)),
+        );
+        config.optimizer.min_freq = 20.0;
+        config.optimizer.max_freq = 20_000.0;
+        let captures = seat_replay::capture_training(&config).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        prepare_cumulative_correction(
+            &mut result,
+            48_000.0,
+            2,
+            (20.0, 20_000.0),
+            dir.path(),
+            ProcessingMode::LowLatency,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&result.channels["L"].plugins).unwrap(),
+            serde_json::to_value(&original_plugins).unwrap()
+        );
+        let carrier = &result.deployed_source_curves["L"];
+        assert!(
+            carrier
+                .spl
+                .iter()
+                .zip(&result.channel_results["L"].final_curve.spl)
+                .all(|(actual, expected)| (actual - expected).abs() < 1e-9),
+            "refinement seed retained the gate's reverted playback carrier"
+        );
+        let rejected = result.metadata.correction_acceptance.as_ref().unwrap();
+        assert!(!rejected.accepted);
+        assert_eq!(
+            rejected.decision,
+            roomeq_model::CorrectionDecision::Rejected
+        );
+        finalization::select(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            dir.path(),
+            &autoeq_artifacts::MemoryArtifactStore::new(),
+        )
+        .unwrap();
+        let report = result.metadata.correction_acceptance.as_ref().unwrap();
+        if correction_possible {
+            assert_eq!(
+                report.outcome,
+                roomeq_model::RoomEqOutcome::Accepted,
+                "{report:?}"
+            );
+            assert!(!result.channel_results["L"].biquads.is_empty());
+            assert!(
+                result.channel_results["L"]
+                    .biquads
+                    .iter()
+                    .all(|filter| { filter.db_gain < 0.0 && filter.db_gain > -24.0 })
+            );
+        } else {
+            assert_eq!(
+                report.outcome,
+                roomeq_model::RoomEqOutcome::Unchanged,
+                "{report:?}"
+            );
+            assert!(!report.accepted);
+            assert!(result.channel_results["L"].biquads.is_empty());
+            assert!(result.channels["L"].plugins.is_empty());
+        }
+        assert!(
+            finalization::assess_delivered_epa(&mut result, &config)
+                .iter()
+                .all(|check| check.passed)
+        );
+    }
+}
+
+#[test]
 fn routed_safety_replay_restores_the_last_known_safe_dsp_chain() {
     let mut pre_safety = single_channel_room_result("L");
     pre_safety

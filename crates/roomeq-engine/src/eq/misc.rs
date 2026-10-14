@@ -4,6 +4,70 @@ use crate::config_adapter::{OptimizerConfigExt, apply_tilt_stage};
 use autoeq_optim::loss::LossType;
 use roomeq_model::OptimizerConfig;
 
+pub(super) fn apply_resolution_guard(
+    objective: &mut autoeq_optim::ObjectiveData,
+    curve: &Curve,
+    config: &OptimizerConfig,
+) {
+    objective.peak_resolution_guard = Some(autoeq_optim::optim::PeakResolutionGuard {
+        support: curve.retained_resolution(),
+        minimum_q: config.min_q,
+        maximum_q: config.max_q,
+        smoothing_octaves: if objective.smooth {
+            1.0 / objective.smooth_n.max(1) as f64
+        } else {
+            0.0
+        },
+    });
+}
+
+pub(super) fn resolution_refusal_identity_loss(
+    objective: &autoeq_optim::ObjectiveData,
+    evidence: &autoeq_optim::optim::OptimizerRunEvidence,
+) -> Option<f64> {
+    // Keep the failed optimizer receipt intact. Only a native bandwidth
+    // refusal can take this path; cancellation and malformed configuration
+    // continue through their existing typed error handling.
+    if evidence.converged
+        || evidence.best_effort
+        || !evidence.status.contains("measurement resolution")
+        || (objective.peak_resolution_guard.is_none() && objective.multi_objective.is_none())
+    {
+        return None;
+    }
+    let loss = autoeq_optim::optim::compute_fitness_penalties_ref(&[], objective);
+    if !loss.is_finite() {
+        return None;
+    }
+    log::warn!(
+        "  Measurement bandwidth refused PEQ correction; retaining uncorrected response: {}",
+        evidence.status
+    );
+    Some(loss)
+}
+
+pub(super) fn apply_q_rail_penalty(
+    objective: &mut autoeq_optim::ObjectiveData,
+    config: &OptimizerConfig,
+) {
+    // A rail filter pays two percent of its absolute gain in the dB-scaled
+    // flat objective. Fourth-power decay leaves broad corrections nearly
+    // unaffected; this is complexity regularization, not listener evidence.
+    const RELATIVE_GAIN_COST: f64 = 0.02;
+    objective.q_rail_penalty = matches!(
+        objective.loss_type,
+        LossType::SpeakerFlat | LossType::SpeakerFlatAsymmetric | LossType::HeadphoneFlat
+    )
+    .then_some((config.max_q, RELATIVE_GAIN_COST));
+    // A dB of supported EPA spectral regression pays one dB-scaled objective
+    // unit. This is a soft model cost, not a listener-preference guarantee.
+    objective.epa_flatness_regression_weight = if objective.q_rail_penalty.is_some() {
+        1.0
+    } else {
+        0.0
+    };
+}
+
 /// Find the length (in samples) at which to truncate an impulse
 /// response so the Schroeder backward integration sees clean decay
 /// without post-decay noise contamination.

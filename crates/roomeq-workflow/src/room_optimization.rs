@@ -30,6 +30,7 @@ use std::sync::{
 
 mod finalization;
 mod gd;
+mod hybrid_parts;
 pub(crate) mod input_snapshot;
 mod parallel_timing;
 mod per_driver_fir;
@@ -289,9 +290,149 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
     };
     let (seat_captures, input_receipt) =
         seat_replay::capture_with_receipt(request.config, context.validation_measurements)?;
+    let replay = FrozenCandidateReplay {
+        search_config: request.config,
+        captures: &seat_captures,
+        identity_receipt: &identity_receipt,
+        input_receipt: &input_receipt,
+    };
+    let observers = hybrid_parts::Observers::new(observer);
+    let mut result = optimize_room_candidate(
+        request,
+        context,
+        observers.observer(),
+        frequency_samples,
+        recovery,
+        finalization_diagnostic,
+        replay,
+    )?;
+    if request.config.optimizer.processing_mode == ProcessingMode::Hybrid
+        && recovery.is_none()
+        && finalization_diagnostic.is_none()
+    {
+        let comparison_complete = hybrid_parts::select(&mut result, |mode| {
+            let mut search_config = request.config.clone();
+            search_config.optimizer.processing_mode = mode.clone();
+            search_config.optimizer.mixed_config = None;
+            let part_dir = context
+                .output_dir
+                .unwrap_or_else(|| Path::new("."))
+                .join("hybrid-parts")
+                .join(match mode {
+                    ProcessingMode::LowLatency => "iir",
+                    _ => "fir",
+                });
+            if observers.stopped() {
+                return Err(AutoeqError::OptimizationFailed {
+                    message: "hybrid part comparison stopped".into(),
+                });
+            }
+            info!(
+                "Hybrid comparison: evaluating standalone {:?} under requested Hybrid safety budgets",
+                mode
+            );
+            context.artifact_store.create_dir_all(&part_dir)?;
+            let part_context = crate::WorkflowContext {
+                output_dir: Some(&part_dir),
+                artifact_store: context.artifact_store,
+                validation_measurements: context.validation_measurements,
+            };
+            if observers.stopped() {
+                return Err(AutoeqError::OptimizationFailed {
+                    message: "hybrid part comparison stopped".into(),
+                });
+            }
+            let mut candidate = optimize_room_candidate(
+                request,
+                &part_context,
+                observers.observer(),
+                frequency_samples,
+                None,
+                None,
+                FrozenCandidateReplay {
+                    search_config: &search_config,
+                    ..replay
+                },
+            )?;
+            hybrid_parts::relocate_resources(
+                &mut candidate,
+                Path::new("hybrid-parts")
+                    .join(match mode {
+                        ProcessingMode::LowLatency => "iir",
+                        _ => "fir",
+                    })
+                    .as_path(),
+                context.output_dir.unwrap_or_else(|| Path::new(".")),
+                context.artifact_store,
+                request.sample_rate,
+            )?;
+            Ok(candidate)
+        });
+        let processing = crate::final_ledger::processing_snapshot(&result)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+        if !comparison_complete {
+            let checks = result
+                .metadata
+                .stage_outcomes
+                .last()
+                .map(|stage| stage.checks.clone())
+                .unwrap_or_default();
+            finalization::publish_baseline(
+                &mut result,
+                replay.captures,
+                context.validation_measurements,
+                request.config,
+                request.sample_rate,
+                context.output_dir.unwrap_or_else(|| Path::new(".")),
+                context.artifact_store,
+                "hybrid_best_part_comparison_unavailable",
+                checks,
+            )?;
+        }
+        // Selection adds diagnostics even when the processing stays unchanged.
+        // Bind them for API callers as well as later native export consumers.
+        crate::final_ledger::finalize_result_ledger(&mut result, &processing, request.sample_rate)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    }
+    // Publish only after provenance and final decisions describe the delivered
+    // graph. Bundle publication also binds its known report reference.
+    generate_validation_bundle_report(
+        &mut result,
+        request.config,
+        context.output_dir,
+        context.artifact_store,
+        request.sample_rate,
+    )?;
+    Ok(result)
+}
+
+/// Borrow one input snapshot across candidate search and final replay.
+#[derive(Clone, Copy)]
+struct FrozenCandidateReplay<'a> {
+    search_config: &'a RoomConfig,
+    captures: &'a [seat_replay::Capture],
+    identity_receipt: &'a StageOutcome,
+    input_receipt: &'a StageOutcome,
+}
+
+// Candidate evaluation deliberately does not publish a validation bundle.
+// Every candidate retains the causal-delay, pruning, drive and ledger boundaries;
+// the pipeline publishes only the selected, fully evaluated graph.
+fn optimize_room_candidate(
+    request: roomeq_engine::EngineRequest<'_>,
+    context: &crate::WorkflowContext<'_>,
+    observer: Option<Box<dyn PipelineObserver>>,
+    frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
+    finalization_diagnostic: Option<(
+        crate::pipeline::FinalizationDiagnosticTrial,
+        &dyn crate::pipeline::FinalizationDiagnosticSink,
+    )>,
+    replay: FrozenCandidateReplay<'_>,
+) -> Result<RoomOptimizationResult> {
     let routed_pruning_requested =
         routed_pruning::requested(request.config, !context.validation_measurements.is_empty());
-    let mut local_config = request.config.clone();
+    let mut local_config = replay.search_config.clone();
     if routed_pruning_requested {
         // Routed nominations cannot authorize removal before the complete graph
         // exists. The final pass uses the original requested enforcement policy.
@@ -389,7 +530,7 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
     if let Some(diagnostic) = finalization_diagnostic {
         finalization::select_with_diagnostic_sink(
             &mut result,
-            &seat_captures,
+            replay.captures,
             context.validation_measurements,
             request.config,
             request.sample_rate,
@@ -400,7 +541,7 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
     } else {
         finalization::select(
             &mut result,
-            &seat_captures,
+            replay.captures,
             context.validation_measurements,
             request.config,
             request.sample_rate,
@@ -411,7 +552,7 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
     if routed_pruning_requested {
         routed_pruning::apply(
             &mut result,
-            &seat_captures,
+            replay.captures,
             context.validation_measurements,
             request.config,
             request.sample_rate,
@@ -426,8 +567,22 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
         request.sample_rate,
         context.output_dir.unwrap_or_else(|| Path::new(".")),
     )?;
-    result.metadata.stage_outcomes.push(identity_receipt);
-    result.metadata.stage_outcomes.push(input_receipt);
+    result
+        .metadata
+        .stage_outcomes
+        .push(replay.identity_receipt.clone());
+    seat_replay::attach_configured_comparison(
+        &mut result,
+        replay.captures,
+        context.validation_measurements,
+        request.config,
+        request.sample_rate,
+        context.output_dir.unwrap_or_else(|| Path::new(".")),
+    );
+    result
+        .metadata
+        .stage_outcomes
+        .push(replay.input_receipt.clone());
     crate::evidence_intake::attach_measurement_conditioning(&mut result, request.config)
         .map_err(|message| AutoeqError::OptimizationFailed { message })?;
     crate::evidence_intake::attach_optimizer_conditioning(&mut result)
@@ -438,15 +593,6 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
         request.sample_rate,
     )
     .map_err(|message| AutoeqError::OptimizationFailed { message })?;
-    // Publish only after provenance and final decisions describe the delivered
-    // graph. The bundle's own report pointer is attached by this last step.
-    generate_validation_bundle_report(
-        &mut result,
-        request.config,
-        context.output_dir,
-        context.artifact_store,
-        request.sample_rate,
-    )?;
     Ok(result)
 }
 
@@ -2723,7 +2869,17 @@ fn prepare_cumulative_correction(
     processing_mode: ProcessingMode,
     group_delay_budget_ms: Option<f64>,
 ) -> Result<()> {
-    if let Err(error) = apply_final_correction_safety_gate_preserving_routed_crossover(
+    // Routed replay already retains its rejected pre-gate graph on failure.
+    // Unrouted stage reversions also need their original kernels available to
+    // finalization's bounded-strength search, rather than only an identity seed.
+    let refinement_seed = result
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+        .is_none()
+        .then(|| result.clone());
+    let gate_result = apply_final_correction_safety_gate_preserving_routed_crossover(
         result,
         sample_rate,
         smoothing_n,
@@ -2731,7 +2887,45 @@ fn prepare_cumulative_correction(
         sidecar_dir,
         processing_mode,
         group_delay_budget_ms,
-    ) {
+    );
+    if gate_result.is_ok()
+        && let Some(mut seed) = refinement_seed
+        && !finalization::same_correction_kernels(&seed, result)
+    {
+        // The restored graph must have its own replayed carriers. Never keep
+        // the gate's identity curves or revive an unreadable FIR resource.
+        if let Err(error) =
+            refresh_non_routed_deployed_source_curves(&mut seed, sample_rate, sidecar_dir)
+        {
+            result.metadata.stage_outcomes.push(StageOutcome {
+                stage: "correction_refinement_seed_unavailable".into(),
+                status: StageStatus::Degraded,
+                advisories: vec![error.to_string()],
+                checks: Vec::new(),
+            });
+        } else {
+            let mut acceptance = result.metadata.correction_acceptance.take();
+            if let Some(report) = acceptance.as_mut() {
+                report.accepted = false;
+                report.decision = roomeq_model::CorrectionDecision::Rejected;
+                report.refresh_outcome();
+            }
+            let outcomes = std::mem::take(&mut result.metadata.stage_outcomes);
+            *result = seed;
+            result.metadata.correction_acceptance = acceptance;
+            result.metadata.stage_outcomes = outcomes;
+            result.metadata.stage_outcomes.push(StageOutcome {
+                stage: "correction_seed_requires_final_refinement".into(),
+                status: StageStatus::Degraded,
+                advisories: vec![
+                    "pre_gate_correction_kernels_retained_only_as_rejected_refinement_seed".into(),
+                    "every_trial_requires_independent_final_safety_and_physical_seat_replay".into(),
+                ],
+                checks: Vec::new(),
+            });
+        }
+    }
+    if let Err(error) = gate_result {
         result.metadata.stage_outcomes.push(StageOutcome {
             stage: "correction_candidate_requires_final_refinement".into(),
             status: StageStatus::Degraded,

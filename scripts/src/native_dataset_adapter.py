@@ -449,6 +449,24 @@ def _comparison_figure_context(mode_name: str, data: Any, routed: dict) -> dict:
     }
 
 
+def _deduplicate_comparison_ir_context(context: dict, graph: dict) -> dict:
+    """Keep overrides, omitting waveforms already present in the graph.
+
+    The native composer falls back to the graph for omitted context waveforms.
+    The graph and its evidence bindings remain intact, and computed L+R views
+    are retained because that logical channel is not a physical graph channel.
+    """
+    channels = graph.get("channels") or {}
+    for name, views in (context.get("channels") or {}).items():
+        channel = channels.get(name)
+        if not isinstance(channel, dict) or not isinstance(views, dict):
+            continue
+        for key in ("pre_ir", "post_ir"):
+            if key in views and key in channel and views[key] == channel[key]:
+                views.pop(key)
+    return context
+
+
 def build_comparison_payload(mode_datasets: list[tuple[str, Any]]) -> dict:
     """Delegate complete cross-mode report assembly to the shared producer."""
     from .report import _mode_label
@@ -463,7 +481,10 @@ def build_comparison_payload(mode_datasets: list[tuple[str, Any]]) -> dict:
             from .dsp import build_post_dsp_source_curves
 
             routed = build_post_dsp_source_curves(data)
-        contexts = _comparison_figure_context(mode_name, data, routed)
+        contexts = _deduplicate_comparison_ir_context(
+            _json_safe(_comparison_figure_context(mode_name, data, routed)),
+            prepared["graph"],
+        )
         modes.append({
             "name": mode_name,
             "prepared": prepared,

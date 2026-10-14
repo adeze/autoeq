@@ -281,16 +281,17 @@ pub fn verification_status_for_outcome(
     match outcome {
         Some(roomeq_model::RoomEqOutcome::Accepted) => "accepted",
         Some(roomeq_model::RoomEqOutcome::Unchanged) => "unchanged",
+        Some(roomeq_model::RoomEqOutcome::SafeFallback) => "safe_fallback",
         Some(roomeq_model::RoomEqOutcome::Rejected) => "rejected",
         Some(roomeq_model::RoomEqOutcome::InsufficientEvidence) | None => "insufficient_evidence",
     }
 }
 
 /// Process exit code for a verification status: only approved playback
-/// (`accepted`, `unchanged`) exits zero.
+/// (`accepted`, `unchanged`, `safe_fallback`) exits zero.
 pub fn exit_code_for_verification_status(status: &str) -> i32 {
     match status {
-        "accepted" | "unchanged" => 0,
+        "accepted" | "unchanged" | "safe_fallback" => 0,
         _ => 1,
     }
 }
@@ -333,7 +334,7 @@ pub struct VerificationReport {
     /// Per-route numerical results; absent for legacy manifest-only checks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comparisons: Vec<ir::IrComparisonOutcome>,
-    /// One of `accepted`, `unchanged`, `rejected`, `insufficient_evidence`.
+    /// One of `accepted`, `unchanged`, `safe_fallback`, `rejected`, `insufficient_evidence`.
     pub status: String,
     /// Process exit code implied by `status` (0 only when approved).
     pub exit_code: i32,

@@ -21,6 +21,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_accepted_pruning_cannot_cross_configured_benefit_floor() {
+        use math_audio_iir_fir::{Biquad, BiquadFilterType};
+        let mut trial = crate::test_fixtures::single_channel_room_result("L");
+        let mut target = trial.channel_results["L"].initial_curve.clone();
+        target.freq = Array1::logspace(10.0, 20.0_f64.log10(), 20000.0_f64.log10(), 256);
+        target.spl = Array1::from_elem(256, 80.0);
+        target.phase = Some(Array1::zeros(256));
+        let peak = Biquad::new(BiquadFilterType::Peak, 1000.0, 48000.0, 1.0, 6.0);
+        let cut = Biquad::new(BiquadFilterType::Peak, 1000.0, 48000.0, 1.0, -6.0);
+        let response =
+            autoeq_core::response::compute_peq_complex_response(&[peak], &target.freq, 48000.0);
+        let measured = autoeq_core::response::apply_complex_response(&target, &response);
+        let channel = trial.channel_results.get_mut("L").unwrap();
+        channel.initial_curve = measured.clone();
+        channel.final_curve = target.clone();
+        channel.biquads = vec![cut.clone()];
+        let chain = trial.channels.get_mut("L").unwrap();
+        chain.initial_curve = Some((&measured).into());
+        chain.final_curve = Some((&target).into());
+        chain.target_curve = Some((&target).into());
+        chain.plugins = vec![roomeq_engine::output::create_eq_plugin(&[cut])];
+        let mut config = RoomConfig::default();
+        config.optimizer.min_freq = 20.0;
+        config.optimizer.max_freq = 20000.0;
+        config.speakers.insert(
+            "L".into(),
+            SpeakerConfig::Single(roomeq_model::MeasurementSource::InMemory(measured)),
+        );
+        let captures = seat_replay::capture_training(&config).unwrap();
+        let mut f0 = trial.clone();
+        seat_replay::restore_structural_baseline(&mut f0);
+        let held = HashMap::new();
+        let directory = tempfile::tempdir().unwrap();
+        let comparison = seat_replay::ConfiguredComparison::new(
+            &f0,
+            &captures,
+            &held,
+            &config,
+            48000.0,
+            directory.path(),
+        );
+        validate_trial(
+            &mut trial,
+            &f0,
+            &captures,
+            &held,
+            &config,
+            48000.0,
+            directory.path(),
+            &comparison,
+        )
+        .unwrap();
+        let actual = seat_replay::configured_selection_metrics(
+            trial.metadata.correction_acceptance.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert!(actual.training_improvement_db > 0.25);
+        // Keep the exact proposed graph and native gates, but raise the
+        // configured benefit floor above its actual delivered improvement.
+        drop(comparison);
+        config.optimizer.finalization.min_primary_improvement_db =
+            actual.training_improvement_db + 0.01;
+        let comparison = seat_replay::ConfiguredComparison::new(
+            &f0,
+            &captures,
+            &held,
+            &config,
+            48000.0,
+            directory.path(),
+        );
+        let error = validate_trial(
+            &mut trial,
+            &f0,
+            &captures,
+            &held,
+            &config,
+            48000.0,
+            directory.path(),
+            &comparison,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("configured pruning benefit below minimum"),
+            "{error}"
+        );
+        assert!(
+            trial
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .unwrap()
+                .accepted
+        );
+        assert!(error.contains("margin=0.010000000"), "{error}");
+    }
+
+    #[test]
     fn qa_roomeq_pruning_conditions_correlated_cancellation_is_not_averaged_away() {
         let mut result = crate::test_fixtures::single_channel_room_result("L");
         let right = crate::test_fixtures::single_channel_room_result("R");
@@ -523,6 +620,10 @@ fn reference(
     format!("F0:routed-conditions-v1:{hash:016x}")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Pruning shares one immutable configured comparison across removal trials"
+)]
 fn validate_trial(
     trial: &mut RoomOptimizationResult,
     f0: &RoomOptimizationResult,
@@ -531,6 +632,7 @@ fn validate_trial(
     config: &RoomConfig,
     fs: f64,
     dir: &Path,
+    comparison: &seat_replay::ConfiguredComparison<'_>,
 ) -> std::result::Result<(), String> {
     let expected = processing(trial);
     finalization::rebuild(trial, config, held, fs, dir).map_err(|error| error.to_string())?;
@@ -569,6 +671,37 @@ fn validate_trial(
             report.metrics.correction_rms_db,
         ));
     }
+    // Pruning cannot spend the meaningful-benefit floor that selected this
+    // graph. Reuse the same configured controls and raw captures for every trial.
+    comparison.attach(trial);
+    if finalization::assess_delivered_epa(trial, config)
+        .iter()
+        .any(|check| !check.passed)
+    {
+        return Err(
+            "delivered frozen EPA spectral error regressed or is unavailable after pruning".into(),
+        );
+    }
+    let metrics = seat_replay::configured_selection_metrics(
+        trial
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .ok_or("configured pruning acceptance report unavailable")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let floor = config
+        .optimizer
+        .finalization
+        .min_primary_improvement_db
+        .max(1e-6);
+    if metrics.training_improvement_db <= floor {
+        return Err(format!(
+            "configured pruning benefit below minimum: observed={:.9} dB; limit={floor:.9} dB; margin={:.9} dB",
+            metrics.training_improvement_db,
+            floor - metrics.training_improvement_db,
+        ));
+    }
     let outputs = crate::electrical_headroom::assess_final_graph(
         &trial.to_dsp_chain_output(),
         fs,
@@ -597,6 +730,7 @@ pub(super) fn apply(
     dir: &Path,
 ) {
     let f0 = result.clone();
+    let comparison = seat_replay::ConfiguredComparison::new(&f0, captures, held, config, fs, dir);
     let locations = inventory(&f0);
     let veto = config.optimizer.filter_audibility.expect("requested veto");
     let default_budget = roomeq_model::PruningBudget::default();
@@ -722,7 +856,16 @@ pub(super) fn apply(
                 );
                 break;
             }
-            if let Err(reason) = validate_trial(&mut trial, &f0, captures, held, config, fs, dir) {
+            if let Err(reason) = validate_trial(
+                &mut trial,
+                &f0,
+                captures,
+                held,
+                config,
+                fs,
+                dir,
+                &comparison,
+            ) {
                 records[index] = (
                     ReportOutcome::Keep,
                     step,

@@ -1578,6 +1578,42 @@ fn calibrate_post_dsp_input_levels(
         }
     }
 
+    let policy = &config.optimizer.finalization;
+    let maximum_input_peak = graph
+        .input_channels
+        .iter()
+        .try_fold(0.0_f64, |maximum, input| {
+            let peak = policy
+                .input_peak_limits
+                .get(input)
+                .copied()
+                .unwrap_or(policy.default_input_peak);
+            if !peak.is_finite() || peak <= 0.0 || peak > 1.0 {
+                return Err(AutoeqError::InvalidConfiguration {
+                    message: format!("invalid declared input peak for '{input}': {peak}"),
+                });
+            }
+            Ok(maximum.max(peak))
+        })?;
+    // The programme model bounds peaks with a sum of route magnitudes for
+    // unit inputs. Scaling that sum by the largest declared peak bounds every
+    // independently phased input combination;
+    // a single full-scale input prevents credit for quieter inputs. Missing
+    // input membership cannot establish reserve. Final electrical replay still
+    // checks each source's own bound independently.
+    let maximum_input_peak = if maximum_input_peak > 0.0 {
+        maximum_input_peak
+    } else {
+        1.0
+    };
+    let input_level_db = 20.0 * maximum_input_peak.log10();
+    graph
+        .advisories
+        .retain(|entry| !entry.starts_with("programme_headroom_max_input_peak:"));
+    graph.advisories.push(format!(
+        "programme_headroom_max_input_peak:{maximum_input_peak:.9}; normalized_model_scaled_by_db:{input_level_db:.6}"
+    ));
+
     // Only the configured correlated-bus headroom model may aggregate
     // independent logical inputs. Preserve all source relationships with one
     // common down-only safety trim if that model predicts overload.
@@ -1589,7 +1625,7 @@ fn calibrate_post_dsp_input_levels(
             sample_rate,
         )
     {
-        let safety_trim_db = (-headroom.margin_db + 0.1).max(0.0);
+        let safety_trim_db = (-headroom.margin_db + input_level_db + 0.1).max(0.0);
         if safety_trim_db > 0.0 {
             for role in main_roles {
                 if let Some(chain) = channels.get_mut(role) {
@@ -3153,7 +3189,26 @@ fn optimize_home_cinema_with_sub(
     // 2. Pre-EQ
     let mut pre_eq_plugins: HashMap<String, Vec<PluginConfigWrapper>> = HashMap::new();
     let mut pre_eq_fir_coeffs: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut pre_eq_target_curves: HashMap<String, CurveData> = HashMap::new();
+    // Freeze the main target's grid and physical level before mode-specific
+    // correction. A target fitted to the corrected route sum would hide
+    // broadband loss and make cross-mode comparisons use different references.
+    let mut pre_eq_target_curves: HashMap<String, CurveData> = main_roles
+        .iter()
+        .map(|role| {
+            let measurement =
+                aligned_curves
+                    .get(role)
+                    .ok_or_else(|| AutoeqError::InvalidMeasurement {
+                        message: format!("missing raw main target reference for '{role}'"),
+                    })?;
+            let target = roomeq_engine::fir::prepared_fir_target_curve(
+                measurement,
+                &config.optimizer,
+                &post_eq_resources,
+            );
+            Ok((role.clone(), (&target).into()))
+        })
+        .collect::<Result<_>>()?;
     let mut pre_eq_initial_curves: HashMap<String, Curve> = HashMap::new();
     let mut optimizer_evidence_by_channel: HashMap<String, Vec<OptimizerRunEvidence>> =
         HashMap::new();
@@ -3257,15 +3312,6 @@ fn optimize_home_cinema_with_sub(
     for (role, chain, ch_result, multiseat_rejection) in pre_eq_outputs? {
         if let Some(advisories) = multiseat_rejection {
             multi_seat_rejections.insert(role.clone(), advisories);
-        }
-        if let Some(mut target) = chain.target_curve.clone() {
-            // The generic solve uses raw measurements. Its target must follow
-            // the same physical calibration gain applied when routing the main.
-            let align_gain = gains.get(&role).copied().unwrap_or(0.0);
-            for level in &mut target.spl {
-                *level += align_gain;
-            }
-            pre_eq_target_curves.insert(role.clone(), target);
         }
         if let Some(fir_coeffs) = ch_result.fir_coeffs.clone() {
             pre_eq_fir_coeffs.insert(role.clone(), fir_coeffs);
@@ -4588,13 +4634,7 @@ fn optimize_home_cinema_with_sub(
             post_eq_filters.insert(role.clone(), Vec::new());
             continue;
         }
-        let prepared_target = post_eq_resources.target.as_ref().map(|_| {
-            roomeq_engine::fir::prepared_fir_target_curve(
-                &post_curve,
-                &opt_config,
-                &post_eq_resources,
-            )
-        });
+        let prepared_target = pre_eq_target_curves.get(role).cloned().map(Curve::from);
         if let Some(target) = prepared_target.as_ref() {
             routed_target_curves.insert(role.clone(), target.into());
         }
@@ -8150,6 +8190,65 @@ mod post_dsp_level_tests {
     }
 
     #[test]
+    fn programme_headroom_uses_the_largest_declared_logical_input_peak() {
+        let (original, config) = recalibration_fixture(10.0);
+        let safety_cut = |result: &roomeq_engine::room_result::RoomOptimizationResult| {
+            result.channels["L"]
+                .plugins
+                .iter()
+                .filter_map(|plugin| {
+                    (plugin.parameters["label"] == "post_dsp_output_headroom_safety")
+                        .then(|| -plugin.parameters["gain_db"].as_f64().unwrap())
+                })
+                .sum::<f64>()
+        };
+        let mut full = original.clone();
+        seed_post_dsp_calibration(&mut full, &config);
+        let full_cut = safety_cut(&full);
+        assert!(full_cut > 0.0);
+
+        let mut reserved_config = config.clone();
+        reserved_config.optimizer.finalization.default_input_peak = 0.1;
+        let mut reserved = original.clone();
+        seed_post_dsp_calibration(&mut reserved, &reserved_config);
+        assert!((safety_cut(&reserved) - (full_cut - 20.0).max(0.0)).abs() < 1e-9);
+        let outputs = crate::electrical_headroom::assess_final_graph(
+            &reserved.to_dsp_chain_output(),
+            48_000.0,
+            std::path::Path::new("."),
+            &reserved_config.optimizer.finalization,
+        )
+        .unwrap();
+        let full_outputs = crate::electrical_headroom::assess_final_graph(
+            &full.to_dsp_chain_output(),
+            48_000.0,
+            std::path::Path::new("."),
+            &config.optimizer.finalization,
+        )
+        .unwrap();
+        // This calibration model permits its configured downstream headroom.
+        // Finalization separately enforces the digital ceiling. Crediting the
+        // smaller input bound must never increase a physical output's peak.
+        for output in &outputs {
+            let previous = full_outputs
+                .iter()
+                .find(|value| value.output == output.output)
+                .unwrap();
+            assert!(output.peak_dbfs.unwrap() <= previous.peak_dbfs.unwrap() + 1e-6);
+        }
+
+        // One full-scale input prevents a uniform 20 dB reserve claim.
+        reserved_config
+            .optimizer
+            .finalization
+            .input_peak_limits
+            .insert("LFE".into(), 1.0);
+        let mut mixed = original;
+        seed_post_dsp_calibration(&mut mixed, &reserved_config);
+        assert!((safety_cut(&mixed) - full_cut).abs() < 1e-9);
+    }
+
+    #[test]
     fn final_input_calibration_aligns_mains_without_cancelling_lfe_gain() {
         let sub = curve(60.0);
         let mut channels = HashMap::from([
@@ -8411,12 +8510,7 @@ mod post_dsp_level_tests {
                 "pre_route",
             );
             stale.parameters["label"] = serde_json::json!("final_channel_level_alignment");
-            result
-                .channels
-                .get_mut(role)
-                .unwrap()
-                .plugins
-                .push(stale);
+            result.channels.get_mut(role).unwrap().plugins.push(stale);
             let graph = result
                 .metadata
                 .bass_management
@@ -8823,7 +8917,9 @@ mod post_dsp_level_tests {
         let (mut original, mut config) = recalibration_fixture(0.0);
         let frequencies =
             ndarray::Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 256);
-        let peak = Biquad::new(BiquadFilterType::Peak, 100.0, 48_000.0, 0.8, 9.0);
+        // Put the planted main defect above the crossover: this fixture checks
+        // output attenuation, independently of joint crossover correction.
+        let peak = Biquad::new(BiquadFilterType::Peak, 1_000.0, 48_000.0, 0.8, 9.0);
         let filters = [peak];
         let transfer =
             roomeq_engine::response::compute_peq_complex_response(&filters, &frequencies, 48_000.0);
@@ -8974,7 +9070,7 @@ mod post_dsp_level_tests {
             initial_required
                 .get("Sub1")
                 .zip(initial_required.get("L"))
-                .is_some_and(|(sub, main)| *sub > *main + 5.0),
+                .is_some_and(|(sub, main)| *sub > *main + 1.0),
             "the routed sub output must exercise a distinct per-output cut: {initial_required:?}"
         );
         assert!(
@@ -10159,13 +10255,21 @@ mod tests {
     fn home_cinema_with_sub_keeps_prepared_target_on_output_chains() {
         let sys = home_cinema_sys_with_sub();
         let mut speakers = stereo_speakers_with_phase();
+        let mut peaked_main = flat_curve_with_phase();
+        for (frequency, level) in peaked_main.freq.iter().zip(peaked_main.spl.iter_mut()) {
+            *level += 6.0 * (-((frequency / 300.0).log2() / 0.4).powi(2)).exp();
+        }
+        speakers.insert(
+            "left".into(),
+            SpeakerConfig::Single(stationary_fixture_source(&[peaked_main])),
+        );
         speakers.insert(
             "sub".to_string(),
             SpeakerConfig::Single(stationary_fixture_source(&[flat_curve_with_phase()])),
         );
         let mut optimizer = tiny_optimizer();
         optimizer.max_freq = 2_000.0;
-        let config = RoomConfig {
+        let mut config = RoomConfig {
             version: default_config_version(),
             system: Some(sys.clone()),
             speakers,
@@ -10179,17 +10283,53 @@ mod tests {
             reporting: None,
             cea2034_cache: None,
         };
-
-        let mut assembly = make_assembly(&config, &sys);
-        let result = HomeCinemaExecutor
-            .execute(&mut assembly)
-            .expect("home cinema with a sub and prepared target should run");
-
-        for channel_name in ["Left", "Right", "sub"] {
-            assert!(
-                result.channels[channel_name].target_curve.is_some(),
-                "{channel_name} output chain must retain its prepared target"
-            );
+        config.optimizer.fir = Some(roomeq_model::FirConfig {
+            taps: 1024,
+            ..Default::default()
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let mut main_targets = None;
+        for mode in [
+            ProcessingMode::LowLatency,
+            ProcessingMode::PhaseLinear,
+            ProcessingMode::Hybrid,
+            ProcessingMode::MixedPhase,
+        ] {
+            config.optimizer.processing_mode = mode;
+            let mut assembly = make_assembly(&config, &sys);
+            assembly.output_dir = directory.path();
+            let result = HomeCinemaExecutor
+                .execute(&mut assembly)
+                .expect("home cinema with a sub and prepared target should run");
+            for channel_name in ["Left", "Right", "sub"] {
+                assert!(
+                    result.channels[channel_name].target_curve.is_some(),
+                    "{channel_name} output chain must retain its prepared target"
+                );
+            }
+            let targets: Vec<_> = ["Left", "Right"]
+                .iter()
+                .map(|name| {
+                    let chain = &result.channels[*name];
+                    let target = chain.target_curve.as_ref().unwrap();
+                    assert_eq!(
+                        serde_json::to_value(target).unwrap(),
+                        serde_json::to_value(
+                            &chain.physical_correction_target.as_ref().unwrap().curve
+                        )
+                        .unwrap()
+                    );
+                    serde_json::to_value(target).unwrap()
+                })
+                .collect();
+            if let Some(reference) = &main_targets {
+                assert_eq!(
+                    &targets, reference,
+                    "main target depends on processing mode"
+                );
+            } else {
+                main_targets = Some(targets);
+            }
         }
     }
 

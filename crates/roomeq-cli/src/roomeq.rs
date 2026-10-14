@@ -48,9 +48,11 @@ const RUN_STATUS_REJECTED: &str = "rejected";
 
 fn require_playback_outcome(outcome: Option<roomeq_model::RoomEqOutcome>) -> Result<()> {
     match outcome {
-        Some(roomeq_model::RoomEqOutcome::Accepted | roomeq_model::RoomEqOutcome::Unchanged) => {
-            Ok(())
-        }
+        Some(
+            roomeq_model::RoomEqOutcome::Accepted
+            | roomeq_model::RoomEqOutcome::Unchanged
+            | roomeq_model::RoomEqOutcome::SafeFallback,
+        ) => Ok(()),
         other => Err(anyhow!("RoomEQ has no approved playback result: {other:?}")),
     }
 }
@@ -78,8 +80,8 @@ fn require_output_playback_approval(output: &DspChainOutput) -> Result<()> {
     require_playback_outcome(None)
 }
 
-/// Whether an outcome approves playback. Only `Accepted` and `Unchanged`
-/// approve; anything else (including a missing outcome) keeps the failure
+/// Whether an outcome approves playback. `Accepted`, `Unchanged`, and `SafeFallback`
+/// approve playback; anything else (including a missing outcome) keeps the failure
 /// exit. A written output JSON file never changes this: file existence is
 /// not a successful correction.
 pub fn playback_approved(outcome: Option<roomeq_model::RoomEqOutcome>) -> bool {
@@ -124,6 +126,7 @@ pub fn acceptance_status_label(
     match report.map(|report| report.outcome) {
         Some(roomeq_model::RoomEqOutcome::Accepted) => "accepted",
         Some(roomeq_model::RoomEqOutcome::Unchanged) => "unchanged",
+        Some(roomeq_model::RoomEqOutcome::SafeFallback) => "safe_fallback",
         Some(roomeq_model::RoomEqOutcome::Rejected) => "rejected",
         Some(roomeq_model::RoomEqOutcome::InsufficientEvidence) => "insufficient_evidence",
         None => "unknown",
@@ -157,7 +160,7 @@ pub fn final_reason_or_unavailable(
 /// acceptance report awaits the K4 ledger (blocked on the model lane).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FinalDecisionSummary {
-    /// One of `accepted`, `unchanged`, `rejected`, `insufficient_evidence`, `unknown`.
+    /// One of `accepted`, `unchanged`, `safe_fallback`, `rejected`, `insufficient_evidence`, `unknown`.
     pub outcome: String,
     /// First recorded reason, or `unavailable` when none was recorded.
     pub reason: String,
@@ -1036,7 +1039,7 @@ fn read_saved_outcome(output_path: &std::path::Path) -> FallbackAttemptOutcome {
         .and_then(serde_json::Value::as_str)
     {
         Some("accepted") => FallbackAttemptOutcome::Accepted,
-        Some("unchanged") => FallbackAttemptOutcome::Unchanged,
+        Some("unchanged" | "safe_fallback") => FallbackAttemptOutcome::Unchanged,
         _ => FallbackAttemptOutcome::NotShippable,
     }
 }
@@ -3030,6 +3033,7 @@ mod tests {
         use roomeq_model::RoomEqOutcome;
         assert!(super::require_playback_outcome(Some(RoomEqOutcome::Accepted)).is_ok());
         assert!(super::require_playback_outcome(Some(RoomEqOutcome::Unchanged)).is_ok());
+        assert!(super::require_playback_outcome(Some(RoomEqOutcome::SafeFallback)).is_ok());
         assert!(super::require_playback_outcome(Some(RoomEqOutcome::Rejected)).is_err());
         assert!(
             super::require_playback_outcome(Some(RoomEqOutcome::InsufficientEvidence)).is_err()
@@ -3894,6 +3898,7 @@ mod tests {
             "outcome": match outcome {
                 roomeq_model::RoomEqOutcome::Accepted => "accepted",
                 roomeq_model::RoomEqOutcome::Unchanged => "unchanged",
+                roomeq_model::RoomEqOutcome::SafeFallback => "safe_fallback",
                 roomeq_model::RoomEqOutcome::Rejected => "rejected",
                 roomeq_model::RoomEqOutcome::InsufficientEvidence => "insufficient_evidence",
             },
@@ -4041,6 +4046,7 @@ mod tests {
 
         assert!(playback_approved(Some(RoomEqOutcome::Accepted)));
         assert!(playback_approved(Some(RoomEqOutcome::Unchanged)));
+        assert!(playback_approved(Some(RoomEqOutcome::SafeFallback)));
         assert!(!playback_approved(Some(RoomEqOutcome::Rejected)));
         assert!(!playback_approved(Some(
             RoomEqOutcome::InsufficientEvidence
@@ -4048,6 +4054,7 @@ mod tests {
         assert!(!playback_approved(None));
         assert_eq!(exit_code_for_outcome(Some(RoomEqOutcome::Accepted)), 0);
         assert_eq!(exit_code_for_outcome(Some(RoomEqOutcome::Unchanged)), 0);
+        assert_eq!(exit_code_for_outcome(Some(RoomEqOutcome::SafeFallback)), 0);
         assert_eq!(exit_code_for_outcome(Some(RoomEqOutcome::Rejected)), 1);
         assert_eq!(
             exit_code_for_outcome(Some(RoomEqOutcome::InsufficientEvidence)),

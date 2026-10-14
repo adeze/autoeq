@@ -71,10 +71,12 @@ fn create_ir_figure(request: &Value) -> Value {
     let channel_name = string_arg(request, "channel_name", "");
     let mut traces = Vec::new();
     if is_truthy(pre_ir) {
+        let (times, amplitudes) =
+            crate::plot_sampling::display_samples(&pre_ir["time_ms"], &pre_ir["amplitude"]);
         traces.push(series(
             "Before EQ",
-            pre_ir.get("time_ms").unwrap_or(&Value::Null),
-            pre_ir.get("amplitude").unwrap_or(&Value::Null),
+            &times,
+            &amplitudes,
             Some("rgba(255, 100, 100, 0.8)"),
             1.0,
             "solid",
@@ -82,10 +84,12 @@ fn create_ir_figure(request: &Value) -> Value {
         ));
     }
     if is_truthy(post_ir) {
+        let (times, amplitudes) =
+            crate::plot_sampling::display_samples(&post_ir["time_ms"], &post_ir["amplitude"]);
         traces.push(series(
             "After EQ",
-            post_ir.get("time_ms").unwrap_or(&Value::Null),
-            post_ir.get("amplitude").unwrap_or(&Value::Null),
+            &times,
+            &amplitudes,
             Some("rgba(100, 200, 100, 0.9)"),
             1.0,
             "solid",

@@ -104,6 +104,18 @@ fn finalize_dispatch_winner(
     } else {
         x.to_vec()
     };
+    // Width projection can broaden overlapping boosts. Apply all gain and Q
+    // projections before repairing their composite scalar ceiling, then let
+    // finalization independently recheck the resulting physical response.
+    let repaired = match super::constraint_envelope::constrain_candidate(
+        candidate_id,
+        &repaired,
+        data,
+        &owned.as_spec(),
+    ) {
+        Ok(candidate) => candidate.params,
+        Err(reason) => return failed(reason),
+    };
     let repaired = if super::constraint_envelope::is_peq_layout_loss(data.loss_type) {
         match project_scalar_ceiling(&repaired, lower_bounds, data) {
             Ok(repaired) => repaired,
@@ -271,9 +283,10 @@ pub struct OptimizerRunEvidence {
     /// counter; validation/finalization scores remain in the run snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluation_count: Option<usize>,
-    /// Fitness calls counted by the backend objective before finalization.
-    /// `maxeval` bounds this search stage; selected-candidate validation and
-    /// rescoring are separate and are not included in this count.
+    /// Fitness calls counted by the backend before finalization.
+    /// Ordinary native DE uses a generation limit derived from `maxeval`;
+    /// controlled calls impose the separate strict evaluation budget.
+    /// Selected-candidate validation and rescoring are not included here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_evaluation_count: Option<usize>,
     /// Fitness attempts the backend refused before computing the objective.
@@ -285,7 +298,7 @@ pub struct OptimizerRunEvidence {
     /// Completed solver generations reported by the backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_count: Option<usize>,
-    /// Configured solver task-callback limit.
+    /// Configured solver generation or task-callback limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_limit: Option<usize>,
     /// Solver task callbacks, including the initial population callback.
@@ -666,7 +679,7 @@ pub fn optimize_filters_with_de_completion(
             None,
         );
     }
-    let snapshot = objective_data.clone();
+    let snapshot = objective_data.post_search_validation_view();
     let (result, completion) = super::de::optimize_filters_autoeq_with_completion(
         x,
         lower_bounds,
@@ -754,6 +767,159 @@ pub fn optimize_filters_with_typed_completion_evidence(
 }
 
 /// Optimize filters and return structured termination/convergence evidence.
+pub(super) fn ordinary_dispatch_evidence(
+    x: &mut [f64],
+    lower: &[f64],
+    upper: &[f64],
+    objective: ObjectiveData,
+    params: &crate::OptimParams,
+    algo_override: Option<&str>,
+    callback: Option<OptimProgressCallback>,
+) -> OptimizerRunEvidence {
+    let mut params = params.clone();
+    if let Some(algorithm) = algo_override {
+        params.algo = algorithm.to_owned();
+    }
+    // Observe ordinary native iteration limits without imposing a new score
+    // cap. Strict shared-budget requests use the controlled API separately.
+    let control = OptimizerRunControl::new(std::num::NonZeroUsize::MAX);
+    let counted = objective.with_run_control(control.clone());
+    let validation = counted.post_search_validation_view();
+    // Some native solvers report success for a callback stop. Retain the
+    // user's stop action independently so it cannot become convergence.
+    let callback_stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback = callback.map(|mut callback| {
+        let stopped = callback_stopped.clone();
+        Box::new(move |iteration, loss, epa| {
+            let action = callback(iteration, loss, epa);
+            if matches!(action, crate::de::CallbackAction::Stop) {
+                stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            action
+        }) as OptimProgressCallback
+    });
+    let mut completion = None;
+    let mut de_report = None;
+    let mut search = None;
+    let mut pareto = None;
+    let result = match super::registry::resolve(&params.algo) {
+        None => Err((format!("Unknown algorithm: {}", params.algo), f64::INFINITY)),
+        Some(backend) if backend.name().eq_ignore_ascii_case("autoeq:de") => {
+            // Preserve the existing EPA-aware DE callback wrapper.
+            let (result, de) = if let Some(callback) = callback {
+                let (result, de) = run_autoeq_de_with_epa_callback(
+                    x,
+                    lower,
+                    upper,
+                    counted,
+                    &params,
+                    backend.name(),
+                    callback,
+                );
+                let result = finalize_dispatch_winner(
+                    backend.name(),
+                    x,
+                    lower,
+                    upper,
+                    &validation,
+                    &params,
+                    result,
+                );
+                (result, de)
+            } else {
+                optimize_filters_with_de_completion(x, lower, upper, counted, &params)
+            };
+            if let Some(de) = de {
+                completion = Some(if de.success {
+                    OptimizerBackendCompletion::Converged
+                } else if de.generations >= de.generation_limit {
+                    OptimizerBackendCompletion::EvaluationLimit
+                } else {
+                    OptimizerBackendCompletion::NonConverged
+                });
+                de_report = Some(de);
+            }
+            result
+        }
+        Some(backend)
+            if callback.is_some()
+                && backend.capabilities().iteration_callback
+                && !backend.supports_iteration_callback(&params, &counted) =>
+        {
+            Err((
+                format!(
+                    "{} cannot provide requested optimizer progress callbacks in this mode",
+                    backend.name()
+                ),
+                f64::INFINITY,
+            ))
+        }
+        Some(backend) => {
+            let callback = callback.filter(|_| backend.capabilities().iteration_callback);
+            let (output, typed) =
+                backend.optimize_with_typed_completion(x, lower, upper, counted, &params, callback);
+            let normalized =
+                normalize_backend_output_with_completion(output, typed, backend.name(), x);
+            let result = finalize_dispatch_winner(
+                backend.name(),
+                x,
+                lower,
+                upper,
+                &validation,
+                &params,
+                normalized.result,
+            );
+            completion = normalized.backend_completion;
+            search = normalized.search_evidence;
+            pareto = normalized
+                .pareto_report
+                .filter(|report| result.is_ok() && report.returned_parameters == x);
+            result
+        }
+    };
+    let accepted = result.is_ok();
+    let mut evidence = OptimizerRunEvidence::from_backend_result(
+        &params.algo,
+        result,
+        x,
+        lower,
+        upper,
+        params.maxeval,
+        params.seed,
+    );
+    evidence.evaluation_count = Some(control.snapshot().evaluations_started);
+    if let Some(de) = de_report {
+        evidence.backend_evaluation_count = Some(de.evaluations);
+        evidence.generation_count = Some(de.generations);
+        evidence.generation_limit = Some(de.generation_limit);
+    }
+    if let Some(search) = search {
+        evidence.backend_evaluation_count = Some(search.evaluations);
+        evidence.backend_denied_evaluation_count = Some(search.denied_evaluations);
+        evidence.backend_stop_cause = Some(search.stop_cause);
+        evidence.generation_count = Some(search.generations);
+        evidence.generation_limit = Some(search.generation_limit);
+        evidence.task_callback_count = Some(search.task_callbacks);
+        evidence.population_fitness_mean = search.population_mean;
+        evidence.population_fitness_stddev = search.population_stddev;
+        if accepted {
+            evidence.apply_backend_completion(search.completion);
+        }
+    }
+    if accepted && let Some(completion) = completion {
+        evidence.apply_backend_completion(completion);
+    }
+    if callback_stopped.load(std::sync::atomic::Ordering::Relaxed) {
+        evidence.termination = OptimizerTermination::UserStopped;
+        evidence.converged = false;
+        evidence.best_effort = evidence.has_valid_candidate();
+        evidence.confidence = OptimizerConfidence::Low;
+    }
+    evidence.pareto_report = pareto;
+    evidence
+}
+
+/// Optimize filters and return structured termination/convergence evidence.
 pub fn optimize_filters_detailed(
     x: &mut [f64],
     lower_bounds: &[f64],
@@ -761,15 +927,14 @@ pub fn optimize_filters_detailed(
     objective_data: ObjectiveData,
     params: &crate::OptimParams,
 ) -> OptimizerRunEvidence {
-    let result = optimize_filters(x, lower_bounds, upper_bounds, objective_data, params);
-    OptimizerRunEvidence::from_backend_result(
-        &params.algo,
-        result,
+    ordinary_dispatch_evidence(
         x,
         lower_bounds,
         upper_bounds,
-        params.maxeval,
-        params.seed,
+        objective_data,
+        params,
+        None,
+        None,
     )
 }
 
@@ -1334,8 +1499,8 @@ pub fn optimize_filters_with_callback(
     // which now also matches `autoeq:cobyla` and `autoeq:isres` and would
     // silently route them through DE instead of the chosen backend.
     if backend.name().eq_ignore_ascii_case("autoeq:de") {
-        let snapshot = objective_data.clone();
-        let result = run_autoeq_de_with_epa_callback(
+        let snapshot = objective_data.post_search_validation_view();
+        let (result, _) = run_autoeq_de_with_epa_callback(
             x,
             lower_bounds,
             upper_bounds,
@@ -1404,22 +1569,14 @@ pub fn optimize_filters_with_callback_detailed(
     params: &crate::OptimParams,
     callback: OptimProgressCallback,
 ) -> OptimizerRunEvidence {
-    let result = optimize_filters_with_callback(
+    ordinary_dispatch_evidence(
         x,
         lower_bounds,
         upper_bounds,
         objective_data,
         params,
-        callback,
-    );
-    OptimizerRunEvidence::from_backend_result(
-        &params.algo,
-        result,
-        x,
-        lower_bounds,
-        upper_bounds,
-        params.maxeval,
-        params.seed,
+        None,
+        Some(callback),
     )
 }
 
@@ -1921,6 +2078,82 @@ mod staged_run_control_tests {
             project_scalar_ceiling(&original, &fixed, &objective).is_err(),
             "fixed boosts cannot be falsely certified feasible"
         );
+    }
+
+    #[test]
+    fn dispatch_repairs_composite_ceiling_after_resolution_broadens_boosts() {
+        let (mut objective, mut params, _, _, _) = scalar_fixture();
+        params.num_filters = 2;
+        params.max_db = 4.0;
+        params.min_q = 0.1;
+        params.max_q = 6.0;
+        params.min_spacing_oct = 0.0;
+        objective.max_db = 4.0;
+        objective.min_spacing_oct = 0.0;
+        objective.peak_resolution_guard = Some(super::super::PeakResolutionGuard {
+            support: std::sync::Arc::new(
+                autoeq_core::resolution::MeasurementResolution::from_grid(
+                    objective.freqs.as_slice().unwrap(),
+                )
+                .unwrap(),
+            ),
+            minimum_q: 0.1,
+            maximum_q: 6.0,
+            smoothing_octaves: 0.5,
+        });
+        let lower = vec![20.0_f64.log10(), 0.1, -12.0, 20.0_f64.log10(), 0.1, -12.0];
+        let upper = vec![
+            20_000.0_f64.log10(),
+            6.0,
+            4.0,
+            20_000.0_f64.log10(),
+            6.0,
+            4.0,
+        ];
+        let mut candidate = vec![100.0_f64.log10(), 6.0, 4.0, 160.0_f64.log10(), 6.0, 4.0];
+        finalize_dispatch_winner(
+            "width-then-ceiling",
+            &mut candidate,
+            &lower,
+            &upper,
+            &objective,
+            &params,
+            Ok((String::from("captured"), 0.0)),
+        )
+        .expect("gain reduction preserves both bandwidth and the strict composite ceiling");
+        assert!(candidate[1] < 1.0 && candidate[4] < 1.0);
+        assert!(candidate[2] < 4.0 && candidate[5] < 4.0);
+        assert_eq!(
+            super::super::compute::compute_ceiling_violation_into(
+                &objective.freqs,
+                &candidate,
+                objective.srate,
+                objective.peq_model,
+                4.0,
+            ),
+            0.0
+        );
+        for frequency in objective.freqs.iter().copied() {
+            let response_db: f64 = candidate
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|filter| {
+                    crate::iir::Biquad::new(
+                        crate::iir::BiquadFilterType::Peak,
+                        10.0_f64.powf(filter[0]),
+                        objective.srate,
+                        filter[1],
+                        filter[2],
+                    )
+                    .complex_response(frequency)
+                    .norm()
+                    .log10()
+                        * 20.0
+                })
+                .sum();
+            assert!(response_db <= 4.0 + 1e-8);
+        }
     }
 
     #[test]

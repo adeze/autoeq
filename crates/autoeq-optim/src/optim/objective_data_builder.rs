@@ -483,6 +483,10 @@ impl ObjectiveDataBuilder {
 
         let mut data = ObjectiveData {
             prepared: Default::default(),
+            q_rail_penalty: None,
+            peak_resolution_guard: None,
+            captured_loss_perturbation_bound: None,
+            epa_flatness_regression_weight: 0.0,
             freqs: Arc::new(self.freqs),
             target: Arc::new(self.target),
             deviation: Arc::new(self.deviation),

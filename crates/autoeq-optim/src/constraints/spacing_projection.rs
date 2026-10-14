@@ -283,16 +283,14 @@ fn project_in_order(
     min_spacing_oct: f64,
     indices: &[usize],
 ) -> Result<Vec<f64>, String> {
-    project_in_order_pava(x, lower, upper, model, min_spacing_oct, indices).or_else(
-        |original| {
-            greedy_placement_in_order(x, lower, upper, indices, min_spacing_oct)
-                .ok()
-                .filter(|candidate| {
-                    placement_is_feasible(candidate, lower, upper, indices, model, min_spacing_oct)
-                })
-                .ok_or(original)
-        },
-    )
+    project_in_order_pava(x, lower, upper, model, min_spacing_oct, indices).or_else(|original| {
+        greedy_placement_in_order(x, lower, upper, indices, min_spacing_oct)
+            .ok()
+            .filter(|candidate| {
+                placement_is_feasible(candidate, lower, upper, indices, model, min_spacing_oct)
+            })
+            .ok_or(original)
+    })
 }
 
 /// Reports whether a projector error proves the filter count infeasible.

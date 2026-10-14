@@ -883,14 +883,21 @@ pub(crate) fn process_joint_sub_group_detailed(
     for value in mean_spl.iter_mut() {
         *value /= seats_f64;
     }
+    let resolution =
+        autoeq_core::resolution::MeasurementResolution::combine(seats.iter().flatten());
+    let mut primary_seat_complex = result.per_seat_post.first().cloned();
+    if let Some(curve) = primary_seat_complex.as_mut() {
+        curve.resolution = resolution.clone();
+    }
     let combined = super::types::MultiSubCombinedResponse {
         spatial_magnitude: crate::Curve {
+            resolution,
             freq: grid.clone(),
             spl: Array1::from(mean_spl),
             phase: None,
             ..Default::default()
         },
-        primary_seat_complex: result.per_seat_post.first().cloned(),
+        primary_seat_complex,
     };
     let base = autoeq_optim::DriverOptimizationResult {
         gains: result.gains_db.clone(),

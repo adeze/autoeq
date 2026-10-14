@@ -90,25 +90,75 @@ pub fn smooth_curve(curve: &Value, octaves: f64) -> Option<Value> {
     }
     let ratio = 2.0_f64.powf(octaves / 2.0);
     let half_width = ratio.log10();
-    let mut levels = Vec::with_capacity(samples.len());
-    for &(center, original) in &samples {
-        let mut weighted = 0.0;
-        let mut weight_sum = 0.0;
-        for &(frequency, level) in &samples {
-            if center / ratio <= frequency && frequency <= center * ratio {
-                let weight = if half_width > 0.0 {
-                    (1.0 - (frequency.log10() - center.log10()).abs() / half_width).max(0.0)
-                } else {
-                    1.0
-                };
-                weighted += level * weight;
-                weight_sum += weight;
-            }
+    if ratio <= 1.0 {
+        return Some(
+            json!({"freq":samples.iter().map(|(f,_)|*f).collect::<Vec<_>>(),
+            "spl":samples.iter().map(|(_,s)|*s).collect::<Vec<_>>() }),
+        );
+    }
+    let logs: Vec<_> = samples.iter().map(|(f, _)| f.log10()).collect();
+    // A triangular log-frequency weight is affine on either side of its
+    // center. Four prefix sums evaluate both halves without an N² scan.
+    let mut prefixes = vec![[0.0; 3]];
+    let mut sums = [0.0; 3];
+    let mut corrections = [0.0; 3];
+    for (&log, &(_, level)) in logs.iter().zip(&samples) {
+        for (component, term) in [log, level, log * level].into_iter().enumerate() {
+            let adjusted = term - corrections[component];
+            let next = sums[component] + adjusted;
+            corrections[component] = (next - sums[component]) - adjusted;
+            sums[component] = next;
         }
-        let level = if weight_sum > 0.0 {
-            weighted / weight_sum
+        prefixes.push(sums);
+    }
+    // Keep the exact legacy accumulation for short report/golden curves;
+    // prefix subtraction is useful only once dense captures dominate work.
+    let prefixes_finite = samples.len() > 512
+        && prefixes.iter().flatten().all(|v| v.is_finite())
+        && samples.iter().all(|(_, level)| level.abs() <= 1e6)
+        && logs.iter().all(|log| log.abs() <= 12.0);
+    let direct = |center: usize, first: usize, last: usize| {
+        let mut weighted = 0.0;
+        let mut weights = 0.0;
+        for index in first..last {
+            let weight = (1.0 - (logs[index] - logs[center]).abs() / half_width).max(0.0);
+            weighted += samples[index].1 * weight;
+            weights += weight;
+        }
+        if weights > 0.0 {
+            weighted / weights
         } else {
+            samples[center].1
+        }
+    };
+    let mut levels = Vec::with_capacity(samples.len());
+    for (index, &(center, original)) in samples.iter().enumerate() {
+        let first = samples.partition_point(|(f, _)| *f < center / ratio);
+        let last = samples.partition_point(|(f, _)| *f <= center * ratio);
+        let level = if last - first <= 1 {
             original
+        } else if !half_width.is_finite() {
+            samples.iter().map(|(_, level)| level).sum::<f64>() / samples.len() as f64
+        } else if prefixes_finite && half_width >= 1e-6 {
+            let range = |a: usize, b: usize| {
+                let count = (b - a) as f64;
+                let log_sum = prefixes[b][0] - prefixes[a][0];
+                let level_sum = prefixes[b][1] - prefixes[a][1];
+                let moment = prefixes[b][2] - prefixes[a][2];
+                (count, log_sum, level_sum, moment)
+            };
+            let (ln, lx, ly, lxy) = range(first, index);
+            let (rn, rx, ry, rxy) = range(index, last);
+            let logarithm = logs[index];
+            let weight = ln + rn + (lx - logarithm * ln + logarithm * rn - rx) / half_width;
+            let weighted = ly + ry + (lxy - logarithm * ly + logarithm * ry - rxy) / half_width;
+            if weight > 0.0 && weighted.is_finite() {
+                weighted / weight
+            } else {
+                direct(index, first, last)
+            }
+        } else {
+            direct(index, first, last)
         };
         if !level.is_finite() {
             return None;
@@ -383,6 +433,67 @@ mod tests {
         .unwrap();
         for fixture in fixtures {
             close(&curve_report(&fixture["data"]), &fixture["expected"]);
+        }
+    }
+
+    fn legacy_smoothed_sample(
+        frequencies: &[f64],
+        levels: &[f64],
+        center: usize,
+        octaves: f64,
+    ) -> f64 {
+        let ratio = 2.0_f64.powf(octaves / 2.0);
+        let width = ratio.log10();
+        let mut sum = 0.0;
+        let mut weights = 0.0;
+        for (&frequency, &level) in frequencies.iter().zip(levels) {
+            if frequencies[center] / ratio <= frequency && frequency <= frequencies[center] * ratio
+            {
+                let weight = if width > 0.0 {
+                    (1.0 - (frequency.log10() - frequencies[center].log10()).abs() / width).max(0.0)
+                } else {
+                    1.0
+                };
+                sum += level * weight;
+                weights += weight;
+            }
+        }
+        if weights > 0.0 {
+            sum / weights
+        } else {
+            levels[center]
+        }
+    }
+
+    #[test]
+    fn prefix_smoothing_matches_legacy_on_irregular_and_dense_capture_grids() {
+        for count in [321, 43_637] {
+            let frequencies: Vec<_> = (0..count)
+                .map(|i| 20.0 + 16_000.0 * (i as f64 / (count - 1) as f64).powf(1.7))
+                .collect();
+            let levels: Vec<_> = frequencies
+                .iter()
+                .map(|f| {
+                    75.0 + 15.0 * (f.ln() * 5.0).sin()
+                        - 30.0 * (-((f / 180.0).ln() / 0.03).powi(2)).exp()
+                })
+                .collect();
+            let curve = json!({"freq":frequencies,"spl":levels});
+            for octaves in [0.0, -0.5, 1e-8, 1.0 / 6.0, 1.0 / 3.0, 1.0, 100.0] {
+                let smoothed = smooth_curve(&curve, octaves).unwrap();
+                assert_eq!(smoothed["freq"], curve["freq"]);
+                for index in (0..count)
+                    .step_by((count / 64).max(1))
+                    .chain(std::iter::once(count - 1))
+                {
+                    let expected = legacy_smoothed_sample(&frequencies, &levels, index, octaves);
+                    let actual = smoothed["spl"][index].as_f64().unwrap();
+                    assert!(
+                        (actual - expected).abs() < 2e-8,
+                        "count={count} width={octaves} index={index}: {actual} != {expected}"
+                    );
+                }
+            }
         }
     }
 

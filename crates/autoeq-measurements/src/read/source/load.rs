@@ -244,6 +244,7 @@ fn align_source_curves(
             Ok(Some(merge(outside, &inside)))
         };
         *outer = Curve {
+            resolution: Some(outer.retained_resolution()),
             freq: merge_field(&outer.freq, |curve| &curve.freq),
             spl: merge_field(&outer.spl, |curve| &curve.spl),
             phase: merge_optional(outer.phase.as_ref(), |curve| curve.phase.as_ref())?,
@@ -575,6 +576,7 @@ fn average_curves_power_domain(curves: &[Curve]) -> Curve {
         spl: avg_spl,
         phase: None,
         coherence,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     }
 }
@@ -693,6 +695,7 @@ pub fn coherent_average_measurement(
         spl,
         phase: Some(phase),
         coherence,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     };
     averaged.validate("coherent average")?;
@@ -922,6 +925,23 @@ mod tests {
             phase: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn power_average_retains_original_grid_resolution_after_alignment() {
+        let coarse = sample_curve(0.0);
+        let grid = Array1::linspace(100.0, 10000.0, 2048);
+        let aligned = interpolate_log_space(&grid, &coarse);
+        let dense = Curve {
+            freq: grid,
+            spl: Array1::zeros(2048),
+            ..Default::default()
+        };
+        let averaged = average_curves_power_domain(&[aligned, dense]);
+        assert_eq!(
+            averaged.retained_resolution().width_octaves(1000.0),
+            coarse.retained_resolution().width_octaves(1000.0)
+        );
     }
 
     #[test]

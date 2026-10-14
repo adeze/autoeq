@@ -516,6 +516,36 @@ pub struct EpaChannelMetrics {
     pub pre: crate::EpaScore,
     /// EPA score computed from the final (post-EQ) response.
     pub post: crate::EpaScore,
+    /// Spectral comparison with explicit equal reference-band pressure energy.
+    /// Absent when shared support cannot establish the fixed matching band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_matched: Option<LevelMatchedEpaMetrics>,
+}
+
+/// Level-controlled EPA diagnostic, separate from delivered SPL and safety.
+/// Matching pressure energy is not equal-loudness calibration or a listening test.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelMatchedEpaMetrics {
+    /// Matching contract: `log_frequency_pressure_energy_1_2_khz_v1`.
+    pub method: String,
+    /// Fixed matching band, with both endpoints inside measured support.
+    pub reference_band_hz: [f64; 2],
+    /// SHA256 of the frozen baseline evaluation grid (little-endian f64).
+    pub frequency_grid_sha256: String,
+    /// Number of evaluation bins; post is interpolated onto the baseline grid.
+    pub sample_count: usize,
+    /// Baseline reference-band pressure-energy level removed before EPA scoring.
+    pub pre_reference_db: f64,
+    /// Delivered reference-band pressure-energy level removed before EPA scoring.
+    pub post_reference_db: f64,
+    /// Configured EPA presentation offset, not authenticated microphone calibration.
+    pub listening_level_phon: f64,
+    /// Baseline model score after reference-band level matching.
+    pub pre: crate::EpaScore,
+    /// Delivered model score after reference-band level matching.
+    pub post: crate::EpaScore,
+    /// Post minus pre modeled preference; not measured listener preference.
+    pub preference_delta: f64,
 }
 
 /// Aggregate EPA metrics for the whole reproduced channel set.
@@ -531,6 +561,9 @@ pub struct EpaMultichannelMetrics {
     pub post: crate::EpaScore,
     /// Human-readable aggregation standard/approximation.
     pub standard: String,
+    /// Whole-set level match preserving relative levels between channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_matched: Option<LevelMatchedEpaMetrics>,
 }
 
 /// Correction-energy split across direct, early, and late IR windows.

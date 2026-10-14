@@ -27,6 +27,7 @@ pub(super) fn make_delayed_channel(
         spl,
         phase,
         coherence,
+        resolution: None,
     }
 }
 
@@ -84,5 +85,6 @@ pub(super) fn make_delayed_channel_with_allpass(
         spl,
         phase,
         coherence,
+        resolution: None,
     }
 }

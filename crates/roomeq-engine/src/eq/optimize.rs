@@ -5,7 +5,9 @@ use super::multi_eq_auto_optimizer_context::MultiEqAutoOptimizerContext;
 use super::multi_eq_auto_optimizer_context::resolve_multi_measurement_auto_optimizer_config;
 use super::prepared_single_channel_eq::prepare_single_channel_eq_with_normalization;
 use super::prepared_single_channel_eq::prepare_single_channel_eq_with_spin;
+#[cfg(test)]
 use super::prepared_single_channel_eq::run_optimization_pass_with_context;
+use super::prepared_single_channel_eq::run_optimization_pass_with_context_and_exact_checkpoint;
 use super::prepared_single_channel_eq::{
     OptimizationPassContext, OptimizationPassExecution, OptimizationPassNormalization,
 };
@@ -269,8 +271,16 @@ pub(crate) fn prepare_multi_measurement_objective_recorded(
         )
         .into());
     }
-    let uncertainty_scaled_config =
+    let mut uncertainty_scaled_config =
         uncertainty_scaled_optimizer_config(config, &measurement_quality);
+    apply_noise_aware_filter_threshold(&mut uncertainty_scaled_config, curves, Some(multi_config));
+    // Capture the bound before prototype collapse discards position-specific
+    // companions; retain evidence separately from the magnitude-only prototype.
+    let prototype_noise_bound = multi_config
+        .rir_prototype
+        .as_ref()
+        .and_then(|_| power_average_loss_noise_floor(curves, &uncertainty_scaled_config))
+        .map(|floor| floor * 0.5);
     let config = &uncertainty_scaled_config;
 
     // Optionally collapse multiple measurements into a distance- and
@@ -494,6 +504,7 @@ pub(crate) fn prepare_multi_measurement_objective_recorded(
             freq: curve.freq.clone(),
             spl: &curve.spl - mean_spl,
             phase: curve.phase.clone(),
+            resolution: Some(curve.retained_resolution()),
             ..Default::default()
         };
         normalizations.push(roomeq_model::InputNormalizationEvidence {
@@ -552,6 +563,21 @@ pub(crate) fn prepare_multi_measurement_objective_recorded(
             &deviation_curve,
             &None,
         )?;
+
+        super::misc::apply_q_rail_penalty(&mut objective_data, config);
+        super::misc::apply_resolution_guard(&mut objective_data, &normalized_curve, config);
+        if multi_config.rir_prototype.is_some() {
+            objective_data.captured_loss_perturbation_bound = prototype_noise_bound;
+        } else if matches!(
+            multi_config.strategy,
+            MultiMeasurementStrategy::VariancePenalized
+                | MultiMeasurementStrategy::SpatialRobustness
+        ) {
+            // Cache original capture evidence before normalized/smoothed curves
+            // lose their noise companion. One comparison floor bounds two losses.
+            objective_data.captured_loss_perturbation_bound =
+                captured_loss_noise_floor(curve, config).map(|floor| floor * 0.5);
+        }
 
         // Propagate EPA configuration from OptimizerConfig into the
         // ObjectiveData so `compute_base_fitness` uses the user-provided
@@ -1165,7 +1191,10 @@ fn max_spacing_feasible_filter_count(
     }
 
     let available_octaves = (max_freq_hz / min_freq_hz).log2();
-    let rounding_margin = 8.0 * f64::EPSILON * available_octaves.abs().max(1.0);
+    // Preparation moves both Hz endpoints inward by up to eight representable
+    // values before log conversion. Admit numerical boundary cases here;
+    // actual candidate bounds and spacing remain checked by final projection.
+    let rounding_margin = 32.0 * f64::EPSILON * available_octaves.abs().max(1.0);
     (1..=requested)
         .take_while(|&count| {
             let required_octaves = (count - 1) as f64 * min_spacing_oct;
@@ -1185,6 +1214,8 @@ mod spacing_feasibility_preflight_tests {
 
     struct CountingIdentityBackend {
         counts: Arc<Mutex<Vec<usize>>>,
+        seeds: Arc<Mutex<Vec<Vec<f64>>>>,
+        returned_gain: f64,
     }
 
     impl CountingIdentityBackend {
@@ -1194,6 +1225,7 @@ mod spacing_feasibility_preflight_tests {
             objective: ObjectiveData,
             params: &OptimParams,
         ) -> Result<(String, f64), (String, f64)> {
+            self.seeds.lock().expect("test mutex").push(x.to_vec());
             let mut counts = self.counts.lock().expect("test mutex");
             if counts.last() != Some(&params.num_filters) {
                 counts.push(params.num_filters);
@@ -1204,7 +1236,7 @@ mod spacing_feasibility_preflight_tests {
             for filter in 0..params.num_filters {
                 let gain_index = filter * parameters_per_filter + gain_offset;
                 if gain_index < x.len() {
-                    x[gain_index] = 0.0;
+                    x[gain_index] = self.returned_gain;
                 }
             }
             let loss = autoeq_optim::optim::compute_fitness_penalties_ref(x, &objective);
@@ -1379,6 +1411,8 @@ mod spacing_feasibility_preflight_tests {
         let counts = Arc::new(Mutex::new(Vec::new()));
         let backend = CountingIdentityBackend {
             counts: Arc::clone(&counts),
+            seeds: Arc::default(),
+            returned_gain: 0.0,
         };
         let selection = adaptive_filter_search(&context, &config, None, &backend, None)
             .expect("spacing-feasible passes should retain a winner");
@@ -1446,6 +1480,110 @@ mod spacing_feasibility_preflight_tests {
                 .iter()
                 .any(|evidence| evidence.status.contains("spacing projection")),
             "refusal evidence must be retained"
+        );
+    }
+
+    #[test]
+    fn adaptive_pass_receives_the_previous_backend_solution() {
+        let frequencies = Array1::logspace(10.0, 60.0_f64.log10(), 500.0_f64.log10(), 65);
+        let curve = Curve {
+            spl: frequencies
+                .mapv(|frequency| 3.0 * (-((frequency / 150.0).log2() / 0.5).powi(2)).exp()),
+            freq: frequencies,
+            ..Curve::default()
+        };
+        let config = OptimizerConfig {
+            num_filters: 2,
+            min_freq: 60.0,
+            max_freq: 500.0,
+            min_filter_improvement: 0.0,
+            refine: false,
+            seed: Some(42),
+            ..OptimizerConfig::default()
+        };
+        let prep =
+            prepare_single_channel_eq_with_normalization(&curve, &config, None, 48_000.0, None)
+                .expect("prepared objective");
+        let context = OptimizationPassContext {
+            objective_data: &prep.objective_data,
+            args_template: &prep.args_template,
+            peq_model: prep.peq_model,
+            sample_rate: prep.sample_rate,
+            normalization: OptimizationPassNormalization::Single(&prep.input_normalization),
+        };
+        let seeds = Arc::default();
+        let backend = CountingIdentityBackend {
+            counts: Arc::default(),
+            seeds: Arc::clone(&seeds),
+            returned_gain: -0.5,
+        };
+        adaptive_filter_search(&context, &config, None, &backend, None)
+            .expect("warm-started passes");
+        let seeds = seeds.lock().expect("test mutex");
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(&seeds[1][..2], &seeds[0][..2], "retain frequency and Q");
+        assert_eq!(seeds[1][2], -0.5, "carry the preceding optimized gain");
+        assert_eq!(seeds[1][5], 0.0, "new peak must be neutral");
+    }
+
+    #[test]
+    fn ordinary_cmaes_and_local_refinement_share_the_pass_evaluation_cap() {
+        let frequencies = Array1::logspace(10.0, 60.0_f64.log10(), 500.0_f64.log10(), 65);
+        let curve = Curve {
+            spl: frequencies
+                .mapv(|frequency| 3.0 * (-((frequency / 150.0).log2() / 0.5).powi(2)).exp()),
+            freq: frequencies,
+            ..Curve::default()
+        };
+        let config = OptimizerConfig {
+            algorithm: String::from("autoeq:cmaes"),
+            num_filters: 1,
+            min_freq: 60.0,
+            max_freq: 500.0,
+            max_iter: 400,
+            refine: true,
+            seed: Some(42),
+            ..OptimizerConfig::default()
+        };
+        let prep =
+            prepare_single_channel_eq_with_normalization(&curve, &config, None, 48_000.0, None)
+                .expect("prepared objective");
+        let context = OptimizationPassContext {
+            objective_data: &prep.objective_data,
+            args_template: &prep.args_template,
+            peq_model: prep.peq_model,
+            sample_rate: prep.sample_rate,
+            normalization: OptimizationPassNormalization::Single(&prep.input_normalization),
+        };
+        let (_, loss, parameters, evidence) = run_optimization_pass_with_context(
+            &context,
+            1,
+            config.max_iter,
+            &config,
+            None,
+            &RealOptimizerBackend::new(),
+            None,
+        )
+        .expect("finite budgeted candidate");
+        assert!(loss.is_finite());
+        assert!(parameters.iter().all(|value| value.is_finite()));
+        assert_eq!(evidence.len(), 2, "local search uses the reserved budget");
+        let counts: Vec<_> = evidence
+            .iter()
+            .map(|stage| {
+                stage
+                    .evaluation_count
+                    .expect("typed stage evaluation count")
+            })
+            .collect();
+        assert!(counts.iter().all(|count| *count > 0));
+        assert!(
+            counts[0] <= 320,
+            "global search must reserve local capacity: {counts:?}"
+        );
+        assert!(
+            counts.iter().sum::<usize>() <= config.max_iter,
+            "shared cap: {counts:?}"
         );
     }
 
@@ -1570,6 +1708,7 @@ fn adaptive_filter_search(
 
     let mut best_filters: Vec<Biquad> = vec![];
     let mut best_loss = f64::INFINITY;
+    let mut best_parameters = Vec::new();
     let mut optimizer_evidence = Vec::new();
     // Each pass owns its callback, while the user's observer spans all passes.
     // Observing progress must not select a different optimization algorithm.
@@ -1610,16 +1749,21 @@ fn adaptive_filter_search(
                 action
             }) as autoeq_optim::optim::OptimProgressCallback
         });
-        let pass = run_optimization_pass_with_context(
+        let pass = run_optimization_pass_with_context_and_exact_checkpoint(
             context,
             k,
             budget_per_step,
             config,
-            pass_callback,
-            backend,
-            control,
+            OptimizationPassExecution {
+                callback: pass_callback,
+                backend,
+                control,
+                exact: None,
+                initial_parameters: (!best_parameters.is_empty())
+                    .then_some(best_parameters.as_slice()),
+            },
         );
-        let (filters, loss, _x, mut pass_evidence) = match pass {
+        let (filters, loss, parameters, mut pass_evidence) = match pass {
             Ok(pass) => pass,
             Err(error) if k > 1 && error.is::<EqBudgetRefusal>() => {
                 let mut evidence = error
@@ -1632,9 +1776,7 @@ fn adaptive_filter_search(
             }
             // Backoff needs only a valid completed pass: an empty best is
             // the identity correction, already reachable via the stall rule.
-            Err(error)
-                if k > 1 && error.is::<EqSpacingRefusal>() && best_loss.is_finite() =>
-            {
+            Err(error) if k > 1 && error.is::<EqSpacingRefusal>() && best_loss.is_finite() => {
                 let mut evidence = error
                     .downcast::<EqSpacingRefusal>()
                     .expect("checked refusal type")
@@ -1662,7 +1804,36 @@ fn adaptive_filter_search(
             improvement
         );
 
-        if k > 1 && improvement < config.min_filter_improvement {
+        let mut threshold = config.min_filter_improvement;
+        if k > 1 {
+            match adaptive_variance_noise_floor(
+                context.objective_data,
+                &best_parameters,
+                &parameters,
+            ) {
+                Some(Ok(floor)) => {
+                    threshold = threshold.max(floor);
+                    log::info!(
+                        "  Adaptive variance noise floor: comparison={floor:.6}, effective={threshold:.6}; not statistical confidence"
+                    );
+                }
+                Some(Err(reason)) => {
+                    if let Some(control) = control {
+                        control.check_terminal()?;
+                    }
+                    for evidence in &mut pass_evidence {
+                        evidence.selected_for_output = false;
+                    }
+                    optimizer_evidence.extend(pass_evidence);
+                    log::warn!(
+                        "  Adaptive variance noise assessment refused: {reason}; keeping previous qualified filter count"
+                    );
+                    break;
+                }
+                None => {}
+            }
+        }
+        if k > 1 && improvement < threshold {
             for evidence in &mut pass_evidence {
                 evidence.selected_for_output = false;
             }
@@ -1671,7 +1842,7 @@ fn adaptive_filter_search(
                 "  Stopping at {} filters: improvement {:.6} < threshold {:.6}",
                 k - 1,
                 improvement,
-                config.min_filter_improvement
+                threshold
             );
             break;
         }
@@ -1682,6 +1853,7 @@ fn adaptive_filter_search(
         optimizer_evidence.extend(pass_evidence);
         best_filters = filters;
         best_loss = loss;
+        best_parameters = parameters;
     }
 
     // Experimental veto removals must all share the postpass's frozen F0.
@@ -2224,8 +2396,13 @@ fn optimize_channel_eq_inner_with_control(
         return Err("exact DE recovery does not support local refinement".into());
     }
     let measurement_quality = autoeq_optim::measurements::assess_measurement_quality(curve);
-    let uncertainty_scaled_config =
+    let mut uncertainty_scaled_config =
         uncertainty_scaled_optimizer_config(config, &measurement_quality);
+    apply_noise_aware_filter_threshold(
+        &mut uncertainty_scaled_config,
+        std::slice::from_ref(curve),
+        None,
+    );
     let config = &uncertainty_scaled_config;
 
     // A progress observer must not disable the requested adaptive selection.
@@ -2277,6 +2454,7 @@ fn optimize_channel_eq_inner_with_control(
                 backend,
                 control,
                 exact: Some(exact),
+                initial_parameters: None,
             },
         )?,
         None => run_optimization_pass(
@@ -2606,6 +2784,19 @@ fn optimize_channel_eq_multi_inner_with_control(
                 global_evidence.status
             );
         } else {
+            if let Some(loss) =
+                super::misc::resolution_refusal_identity_loss(&final_objective, &global_evidence)
+            {
+                global_evidence.selected_for_output = false;
+                global_evidence.multi_input_normalization = Some(input_normalization);
+                return Ok(EqOptimizationResult {
+                    filters: Vec::new(),
+                    loss,
+                    optimizer_evidence: vec![global_evidence],
+                    audibility_veto: Vec::new(),
+                    veto_adjudication: None,
+                });
+            }
             return Err(format!(
                 "multi-measurement global optimizer produced unusable result: {}",
                 global_evidence.status
@@ -2737,11 +2928,20 @@ fn optimize_channel_eq_multi_inner_with_control(
     } else {
         x_after_boost
     };
-    let final_loss = autoeq_optim::optim::compute_fitness_penalties_ref(&x_final, &final_objective);
+    let owned = autoeq_optim::optim::OwnedConstraintSpec::from_params(&optim_params)?;
+    let final_candidate = autoeq_optim::optim::finalize_candidate(
+        "multi-measurement-final",
+        &x_final,
+        &final_objective,
+        &owned.as_spec(),
+    )?;
+    let x_final = final_candidate.params;
+    let final_loss = final_candidate.loss;
     for evidence in &mut optimizer_evidence {
         evidence.multi_input_normalization = Some(input_normalization.clone());
         if evidence.selected_for_output {
             evidence.objective = Some(final_loss);
+            evidence.constraint_report = Some(final_candidate.constrained.clone());
         }
     }
     let peq = autoeq_core::x2peq::x2peq(&x_final, sample_rate, optim_params.peq_model);
@@ -2818,6 +3018,903 @@ fn optimize_channel_eq_multi_adaptive_prepared(
         audibility_veto,
         veto_adjudication,
     })
+}
+
+// For S(L)=mean(L)+lambda*Var(L), |delta S| <= mean(epsilon)
+// +lambda*(2*sigma(L)*RMS(epsilon)+RMS(epsilon)^2). Centering is a
+// nonexpansive weighted projection. No independence/bin-count assumption enters.
+fn variance_loss_perturbation_bound(
+    losses: &[f64],
+    weights: &[f64],
+    bounds: &[f64],
+    lambda: f64,
+) -> Option<f64> {
+    if losses.len() != weights.len()
+        || bounds.len() != weights.len()
+        || !lambda.is_finite()
+        || lambda < 0.0
+    {
+        return None;
+    }
+    let (mut mass, mut mean, mut squared, mut mean_bound, mut squared_bound) =
+        (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut active = 0;
+    for ((&loss, &weight), &bound) in losses.iter().zip(weights).zip(bounds) {
+        if !weight.is_finite() || weight < 0.0 {
+            return None;
+        }
+        if weight == 0.0 {
+            continue;
+        }
+        if !loss.is_finite() || !bound.is_finite() || bound < 0.0 {
+            return None;
+        }
+        active += 1;
+        mass += weight;
+        let delta = loss - mean;
+        mean += weight / mass * delta;
+        squared += weight * delta * (loss - mean);
+        mean_bound += weight * bound;
+        squared_bound += weight * bound * bound;
+    }
+    if !mass.is_finite() || mass <= 0.0 {
+        return None;
+    }
+    // One active prototype has exactly zero seat variance under any noise.
+    if active == 1 {
+        let bound = mean_bound / mass;
+        return bound.is_finite().then_some(bound);
+    }
+    let variance = (squared / mass).max(0.0);
+    let noise_norm = (squared_bound / mass).sqrt();
+    let bound =
+        mean_bound / mass + lambda * (2.0 * variance.sqrt() * noise_norm + noise_norm * noise_norm);
+    (bound.is_finite() && bound >= 0.0).then_some(bound)
+}
+
+fn adaptive_variance_noise_floor(
+    data: &autoeq_optim::optim::ObjectiveData,
+    previous: &[f64],
+    current: &[f64],
+) -> Option<Result<f64, String>> {
+    let multi = data.multi_objective.as_ref()?;
+    if multi.strategy != autoeq_optim::roomeq::MultiMeasurementStrategy::VariancePenalized {
+        return None;
+    }
+    let bounds: Vec<_> = multi
+        .objectives
+        .iter()
+        .zip(&multi.weights)
+        .map(|(objective, weight)| {
+            if *weight == 0.0 {
+                Some(0.0)
+            } else {
+                objective.captured_loss_perturbation_bound
+            }
+        })
+        .collect::<Option<_>>()?;
+    // These scores use the normal controlled validation gate; counters/budgets
+    // include them. Refusal cannot authorize an unassessed more complex model.
+    let before = autoeq_optim::optim::compute_pareto_objectives(previous, data);
+    let after = autoeq_optim::optim::compute_pareto_objectives(current, data);
+    Some(
+        match (
+            variance_loss_perturbation_bound(
+                &before,
+                &multi.weights,
+                &bounds,
+                multi.variance_lambda,
+            ),
+            variance_loss_perturbation_bound(
+                &after,
+                &multi.weights,
+                &bounds,
+                multi.variance_lambda,
+            ),
+        ) {
+            (Some(before), Some(after)) if (before + after).is_finite() => Ok(before + after),
+            _ => Err(String::from(
+                "per-seat validation or finite variance perturbation bound unavailable",
+            )),
+        },
+    )
+}
+
+/// Raise adaptive stopping above a captured one-RMS noise perturbation estimate.
+///
+/// This is an operational search floor, not a confidence interval or listener
+/// threshold. For norm-based flat losses, an additive noise magnitude ratio r
+/// gives the larger logarithmic perturbation -20 log10(1-r). Twice its weighted
+/// norm covers comparing two losses. Asymmetric branches use their largest
+/// square-root weight. Do not divide by bin count: adjacent spectral bins are
+/// correlated. Missing/invalid companions remain unknown, never zero noise.
+fn captured_loss_noise_floor(curve: &Curve, config: &OptimizerConfig) -> Option<f64> {
+    if !matches!(config.loss_type.as_str(), "flat" | "headphone_flat")
+        || curve.validate("adaptive noise floor").is_err()
+    {
+        return None;
+    }
+    let noise = curve.noise_floor_db.as_ref()?;
+    let [min_hz, max_hz] = config.active_correction_band();
+    let mut bounds = ndarray::Array1::zeros(curve.freq.len());
+    let mut supported = 0;
+    for (index, &frequency) in curve.freq.iter().enumerate() {
+        if frequency < min_hz || frequency > max_hz {
+            continue;
+        }
+        let ratio = 10.0_f64.powf((noise[index] - curve.spl[index]) / 20.0);
+        if !ratio.is_finite() || ratio >= 1.0 {
+            return None;
+        }
+        // ln_1p preserves very small noise ratios without rounding 1-r to one.
+        bounds[index] = -20.0 * (-ratio).ln_1p() / std::f64::consts::LN_10;
+        supported += 1;
+    }
+    if supported < 2 {
+        return None;
+    }
+    loss_noise_floor_from_bounds(&curve.freq, &bounds, config)
+}
+
+// Positive weighted flat/EPA norms are monotone in the absolute perturbation
+// envelope; this also supports a power-average bootstrap's per-bin maximum.
+fn loss_noise_floor_from_bounds(
+    frequencies: &ndarray::Array1<f64>,
+    bounds: &ndarray::Array1<f64>,
+    config: &OptimizerConfig,
+) -> Option<f64> {
+    let [min_hz, max_hz] = config.active_correction_band();
+    let weight = if config.loss_type == "flat" && config.asymmetric_loss {
+        let weights = config.asymmetric_loss_config();
+        [
+            weights.peak_weight,
+            weights.dip_weight,
+            weights.bass_peak_weight,
+            weights.bass_dip_weight,
+        ]
+        .into_iter()
+        .try_fold(0.0_f64, |maximum, value| {
+            (value.is_finite() && value >= 0.0).then_some(maximum.max(value))
+        })?
+        .sqrt()
+    } else {
+        1.0
+    };
+    let epa = config
+        .epa_config
+        .as_ref()
+        .map(crate::config_adapter::to_optimizer_epa)
+        .unwrap_or_default();
+    // Comparing two hinge penalties can perturb both candidate and baseline
+    // spectral norms. Include that extra four-norm bound, independent of the
+    // base flat/asymmetric norm; Q-rail costs do not depend on captured noise.
+    let epa_bound =
+        autoeq_optim::loss::epa::score::epa_flatness(frequencies, bounds, min_hz, max_hz, &epa);
+    let floor = 2.0 * weight * autoeq_optim::loss::flat_loss(frequencies, bounds, min_hz, max_hz)
+        + 4.0 * epa_bound;
+    (floor.is_finite() && floor >= 0.0).then_some(floor)
+}
+
+// Fixed nonnegative power averaging (bootstrap or prototype) is monotone and
+// translation-equivariant in dB: bounding
+// every source by +/-b bounds every resampled average by +/-b. Maximum and
+// fractional-tail CVaR are 1-Lipschitz in the vector's infinity norm. Clipping
+// the averaged power at the fixed numerical floor is nonexpansive. Keep the
+// maximum at EACH frequency; maximum source RMS alone misses disjoint noise
+// bands. Bootstrap multiplicity never creates independent capture evidence.
+fn power_average_loss_noise_floor(curves: &[Curve], config: &OptimizerConfig) -> Option<f64> {
+    let first = curves.first()?;
+    if !matches!(config.loss_type.as_str(), "flat" | "headphone_flat") {
+        return None;
+    }
+    let [min_hz, max_hz] = config.active_correction_band();
+    let mut bounds = ndarray::Array1::zeros(first.freq.len());
+    let mut supported = 0;
+    for curve in curves {
+        if curve.freq != first.freq || curve.validate("bootstrap noise envelope").is_err() {
+            return None;
+        }
+        let noise = curve.noise_floor_db.as_ref()?;
+        supported = 0;
+        for (index, &frequency) in curve.freq.iter().enumerate() {
+            if !(min_hz..=max_hz).contains(&frequency) {
+                continue;
+            }
+            let ratio = 10.0_f64.powf((noise[index] - curve.spl[index]) / 20.0);
+            if !ratio.is_finite() || ratio >= 1.0 {
+                return None;
+            }
+            let bound = -20.0 * (-ratio).ln_1p() / std::f64::consts::LN_10;
+            bounds[index] = f64::max(bounds[index], bound);
+            supported += 1;
+        }
+    }
+    if supported < 2 {
+        return None;
+    }
+    loss_noise_floor_from_bounds(&first.freq, &bounds, config)
+}
+
+fn apply_noise_aware_filter_threshold(
+    config: &mut OptimizerConfig,
+    curves: &[Curve],
+    multi: Option<&MultiMeasurementConfig>,
+) {
+    // Zero explicitly selects a fixed-count search; noise evidence must not
+    // silently switch that request to adaptive optimization.
+    if config.min_filter_improvement <= 0.0 || config.num_filters <= 1 {
+        return;
+    }
+    if multi.is_some_and(|multi| {
+        multi.rir_prototype.is_none()
+            && matches!(
+                multi.strategy,
+                MultiMeasurementStrategy::VariancePenalized
+                    | MultiMeasurementStrategy::SpatialRobustness
+            )
+    }) {
+        log::info!(
+            "Adaptive variance noise floor is assessed on each candidate comparison when captured companions support the loss; requested threshold {:.6} remains the lower bound",
+            config.min_filter_improvement
+        );
+        return;
+    }
+    // Spatial variation is not captured noise. Fixed prototype and bootstrap
+    // power averages use the explicit per-frequency capture envelope below.
+    let supported_aggregation = multi.is_none_or(|multi| {
+        multi.rir_prototype.is_none()
+            && matches!(
+                multi.strategy,
+                MultiMeasurementStrategy::Average
+                    | MultiMeasurementStrategy::WeightedSum
+                    | MultiMeasurementStrategy::Minimax
+            )
+    });
+    let power_average = multi.is_some_and(|multi| {
+        multi.rir_prototype.is_some()
+            || multi.strategy == MultiMeasurementStrategy::MinimaxUncertainty
+    });
+    let floor = if power_average {
+        power_average_loss_noise_floor(curves, config)
+    } else {
+        supported_aggregation
+            .then(|| {
+                curves
+                    .iter()
+                    .map(|curve| captured_loss_noise_floor(curve, config))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .flatten()
+            .filter(|floors| !floors.is_empty())
+            .map(|floors| floors.into_iter().fold(0.0_f64, f64::max))
+    };
+    if let Some(floor) = floor {
+        let requested = config.min_filter_improvement;
+        config.min_filter_improvement = requested.max(floor);
+        log::info!(
+            "Adaptive noise floor: one-RMS loss perturbation comparison={floor:.6}, requested={requested:.6}, effective={:.6}; not a confidence interval",
+            config.min_filter_improvement
+        );
+    } else {
+        log::info!(
+            "Adaptive noise floor unavailable: captured noise companions or loss uncertainty propagation missing; retaining requested threshold {:.6}",
+            config.min_filter_improvement
+        );
+    }
+}
+
+#[cfg(test)]
+mod adaptive_noise_tests {
+    use super::*;
+    use autoeq_optim::OptimParams;
+    use autoeq_optim::optim::ObjectiveData;
+    use ndarray::Array1;
+
+    fn noise_curve(snr_db: f64, samples: usize) -> Curve {
+        let freq = Array1::logspace(10.0, 20.0_f64.log10(), 2000.0_f64.log10(), samples);
+        Curve {
+            spl: Array1::from_elem(samples, 80.0),
+            noise_floor_db: Some(Array1::from_elem(samples, 80.0 - snr_db)),
+            freq,
+            ..Curve::default()
+        }
+    }
+
+    #[test]
+    fn adaptive_noise_floor_uses_actual_band_level_and_grid_measure() {
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            asymmetric_loss: false,
+            ..Default::default()
+        };
+        let expected = -120.0 * 0.99_f64.log10();
+        for samples in [32, 4096] {
+            let mut curve = noise_curve(40.0, samples);
+            let floor = captured_loss_noise_floor(&curve, &config).unwrap();
+            assert!((floor - expected).abs() < 1e-12);
+            curve.spl += 17.0;
+            *curve.noise_floor_db.as_mut().unwrap() += 17.0;
+            assert!((captured_loss_noise_floor(&curve, &config).unwrap() - floor).abs() < 1e-12);
+        }
+        let mut narrowed = config.clone();
+        narrowed.correction_band = Some(roomeq_model::CorrectionBandPolicy {
+            min_hz: 100.0,
+            max_hz: 500.0,
+            allow_natural_rolloff: false,
+        });
+        // Out-of-band poor SNR must not raise a bass-only search floor.
+        let mut curve = noise_curve(40.0, 128);
+        for (index, &frequency) in curve.freq.iter().enumerate() {
+            if !(100.0..=500.0).contains(&frequency) {
+                curve.noise_floor_db.as_mut().unwrap()[index] = 79.0;
+            }
+        }
+        assert!((captured_loss_noise_floor(&curve, &narrowed).unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn adaptive_noise_floor_keeps_unknown_and_fixed_count_requests_distinct() {
+        let base = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            ..Default::default()
+        };
+        let known = noise_curve(20.0, 128);
+        let mut missing = known.clone();
+        missing.noise_floor_db = None;
+        let mut invalid = known.clone();
+        invalid.noise_floor_db.as_mut().unwrap()[50] = 80.0;
+        for curve in [&missing, &invalid] {
+            assert!(captured_loss_noise_floor(curve, &base).is_none());
+            let mut config = base.clone();
+            apply_noise_aware_filter_threshold(&mut config, std::slice::from_ref(curve), None);
+            assert_eq!(config.min_filter_improvement, base.min_filter_improvement);
+        }
+        let mut fixed = base.clone();
+        fixed.min_filter_improvement = 0.0;
+        apply_noise_aware_filter_threshold(&mut fixed, std::slice::from_ref(&known), None);
+        assert_eq!(fixed.min_filter_improvement, 0.0);
+        let mut multi = base.clone();
+        apply_noise_aware_filter_threshold(
+            &mut multi,
+            &[known.clone(), noise_curve(60.0, 128)],
+            Some(&MultiMeasurementConfig::default()),
+        );
+        assert!(multi.min_filter_improvement > 1.0);
+        let mut partial = base.clone();
+        apply_noise_aware_filter_threshold(
+            &mut partial,
+            &[known, missing],
+            Some(&MultiMeasurementConfig::default()),
+        );
+        assert_eq!(partial.min_filter_improvement, base.min_filter_improvement);
+    }
+
+    #[test]
+    fn bootstrap_noise_floor_propagates_disjoint_capture_noise_without_dividing_by_resamples() {
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            ..Default::default()
+        };
+        let mut first = noise_curve(60.0, 128);
+        let mut second = first.clone();
+        for index in 0..first.freq.len() {
+            first.noise_floor_db.as_mut().unwrap()[index] =
+                80.0 - if index < 64 { 20.0 } else { 60.0 };
+            second.noise_floor_db.as_mut().unwrap()[index] =
+                80.0 - if index >= 64 { 20.0 } else { 60.0 };
+        }
+        let curves = [first.clone(), second.clone()];
+        let floor = power_average_loss_noise_floor(&curves, &config).unwrap();
+        let maximum_source = curves
+            .iter()
+            .map(|curve| captured_loss_noise_floor(curve, &config).unwrap())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            floor > maximum_source,
+            "disjoint per-bin envelopes cannot collapse to maximum source RMS"
+        );
+        let duplicates = [first.clone(), second.clone(), first.clone(), second.clone()];
+        assert_eq!(
+            floor,
+            power_average_loss_noise_floor(&duplicates, &config).unwrap()
+        );
+        for alpha in [None, Some(0.25), Some(0.75)] {
+            let multi = MultiMeasurementConfig {
+                strategy: MultiMeasurementStrategy::MinimaxUncertainty,
+                bootstrap_uncertainty: Some(roomeq_model::BootstrapUncertaintyConfig {
+                    num_resamples: 64,
+                    scalarisation: if alpha.is_some() {
+                        roomeq_model::BootstrapScalarisation::Cvar
+                    } else {
+                        roomeq_model::BootstrapScalarisation::WorstCase
+                    },
+                    cvar_alpha: alpha.unwrap_or(1.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut effective = config.clone();
+            apply_noise_aware_filter_threshold(&mut effective, &curves, Some(&multi));
+            assert_eq!(effective.min_filter_improvement, floor);
+            let (_, _, prepared, _) = prepare_multi_measurement_objective_recorded(
+                &curves,
+                &config,
+                &MultiMeasurementConfig {
+                    bootstrap_uncertainty: Some(roomeq_model::BootstrapUncertaintyConfig {
+                        num_resamples: 8,
+                        ..multi.bootstrap_uncertainty.clone().unwrap()
+                    }),
+                    ..multi
+                },
+                None,
+                48_000.0,
+            )
+            .expect("actual bootstrap preparation retains the captured-noise floor");
+            assert!(prepared.min_filter_improvement >= floor);
+        }
+        // Independently propagate adversarial per-capture perturbations through
+        // the actual power-average implementation, including duplicate draws.
+        let bound = -20.0 * (-0.1_f64).ln_1p() / std::f64::consts::LN_10;
+        for indices in [[0, 0], [0, 1], [1, 1]] {
+            let originals = [curves[indices[0]].clone(), curves[indices[1]].clone()];
+            let mut perturbed = originals.clone();
+            for (draw, curve) in perturbed.iter_mut().enumerate() {
+                for index in 0..curve.spl.len() {
+                    let ratio = 10.0_f64.powf(
+                        (curve.noise_floor_db.as_ref().unwrap()[index] - curve.spl[index]) / 20.0,
+                    );
+                    let delta = -20.0 * (-ratio).ln_1p() / std::f64::consts::LN_10;
+                    curve.spl[index] += if (index + draw) % 2 == 0 {
+                        delta
+                    } else {
+                        -delta
+                    };
+                }
+            }
+            let before = roomeq_analysis::spatial_robustness::rms_average(&originals);
+            let after = roomeq_analysis::spatial_robustness::rms_average(&perturbed);
+            for (before, after) in before.spl.iter().zip(&after.spl) {
+                assert!((after - before).abs() <= bound + 1e-12);
+            }
+        }
+        let mut missing = second;
+        missing.noise_floor_db = None;
+        assert!(power_average_loss_noise_floor(&[first, missing], &config).is_none());
+    }
+
+    #[test]
+    fn variance_noise_bound_covers_adversarial_weighted_loss_perturbations() {
+        let losses = [1.0, 4.0, 10.0];
+        let weights = [0.7, 0.2, 0.1];
+        let bounds = [0.1, 0.4, 0.8];
+        let risk = |values: &[f64], lambda: f64| {
+            let mean: f64 = values
+                .iter()
+                .zip(weights)
+                .map(|(value, weight)| value * weight)
+                .sum();
+            mean + lambda
+                * values
+                    .iter()
+                    .zip(weights)
+                    .map(|(value, weight)| weight * (value - mean).powi(2))
+                    .sum::<f64>()
+        };
+        for lambda in [0.0, 1.0, 10.0] {
+            let bound =
+                variance_loss_perturbation_bound(&losses, &weights, &bounds, lambda).unwrap();
+            for signs in 0..8 {
+                let perturbed: Vec<_> = losses
+                    .iter()
+                    .zip(bounds)
+                    .enumerate()
+                    .map(|(index, (loss, delta))| {
+                        loss + if signs & (1 << index) == 0 {
+                            delta
+                        } else {
+                            -delta
+                        }
+                    })
+                    .collect();
+                assert!((risk(&perturbed, lambda) - risk(&losses, lambda)).abs() <= bound + 1e-12);
+            }
+            let shifted: Vec<_> = losses.iter().map(|loss| loss + 1000.0).collect();
+            assert!(
+                (variance_loss_perturbation_bound(&shifted, &weights, &bounds, lambda).unwrap()
+                    - bound)
+                    .abs()
+                    < 1e-10,
+                "shared candidate-only penalties must not inflate seat dispersion"
+            );
+        }
+        assert!(
+            variance_loss_perturbation_bound(&losses, &[0.7, -0.2, 0.5], &bounds, 1.0).is_none()
+        );
+        assert!(variance_loss_perturbation_bound(&losses, &weights, &bounds, f64::NAN).is_none());
+        assert!(
+            variance_loss_perturbation_bound(&[1.0, f64::INFINITY, 10.0], &weights, &bounds, 1.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prepared_variance_noise_floor_uses_original_capture_bounds_and_actual_candidates() {
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            ..Default::default()
+        };
+        let first = noise_curve(40.0, 128);
+        let mut second = first.clone();
+        for (index, &frequency) in second.freq.iter().enumerate() {
+            second.spl[index] += 6.0 * (-((frequency / 100.0).log2() / 0.5).powi(2)).exp();
+        }
+        second.noise_floor_db = Some(&second.spl - 40.0);
+        for strategy in [
+            MultiMeasurementStrategy::VariancePenalized,
+            MultiMeasurementStrategy::SpatialRobustness,
+        ] {
+            let multi = MultiMeasurementConfig {
+                strategy,
+                variance_lambda: 2.0,
+                ..Default::default()
+            };
+            let (objective, _, _, _) = prepare_multi_measurement_objective_recorded(
+                &[first.clone(), second.clone()],
+                &config,
+                &multi,
+                None,
+                48_000.0,
+            )
+            .unwrap();
+            let children = &objective.multi_objective.as_ref().unwrap().objectives;
+            assert!(
+                children
+                    .iter()
+                    .all(|child| child.captured_loss_perturbation_bound.is_some())
+            );
+            let identity = [100.0_f64.log10(), 0.5, 0.0];
+            let correction = [100.0_f64.log10(), 0.5, -3.0];
+            let floor = adaptive_variance_noise_floor(&objective, &identity, &correction)
+                .unwrap()
+                .unwrap();
+            assert!(
+                floor > captured_loss_noise_floor(&first, &config).unwrap(),
+                "variance sensitivity increases the scalar comparison bound"
+            );
+            assert!(
+                adaptive_variance_noise_floor(&objective, &identity, &[f64::NAN, 0.5, -3.0])
+                    .unwrap()
+                    .is_err(),
+                "known noise evidence cannot authorize an unassessed candidate"
+            );
+            let mut missing = objective.clone();
+            missing.multi_objective.as_mut().unwrap().objectives[1]
+                .captured_loss_perturbation_bound = None;
+            assert!(adaptive_variance_noise_floor(&missing, &identity, &correction).is_none());
+        }
+    }
+
+    #[test]
+    fn prototype_noise_bound_survives_collapse_without_fabricated_companions() {
+        use roomeq_model::rir_prototype_config::{
+            DirectivityModel, DistanceWeightMode, RirPrototypeConfig,
+        };
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            ..Default::default()
+        };
+        let first = noise_curve(20.0, 128);
+        let mut second = noise_curve(60.0, 128);
+        second.spl += 6.0;
+        *second.noise_floor_db.as_mut().unwrap() += 6.0;
+        let curves = [first.clone(), second.clone()];
+        let floor = power_average_loss_noise_floor(&curves, &config).unwrap();
+        for strategy in [
+            MultiMeasurementStrategy::Average,
+            MultiMeasurementStrategy::VariancePenalized,
+            MultiMeasurementStrategy::MinimaxUncertainty,
+        ] {
+            let prototype = RirPrototypeConfig {
+                reference_position: [0.0, 0.0, 0.0],
+                source_position: [0.0, 2.0, 0.0],
+                microphone_positions: vec![[0.0, 0.1, 0.0], [0.4, 0.1, 0.0]],
+                distance_mode: DistanceWeightMode::Uniform,
+                directivity: DirectivityModel::SphericalHead { radius_m: 0.09 },
+                frequency_dependent_directivity: true,
+            };
+            let multi = MultiMeasurementConfig {
+                strategy,
+                rir_prototype: Some(prototype.clone()),
+                variance_lambda: 100.0,
+                bootstrap_uncertainty: Some(roomeq_model::BootstrapUncertaintyConfig {
+                    num_resamples: 8,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let (objective, _, prepared, _) = prepare_multi_measurement_objective_recorded(
+                &curves, &config, &multi, None, 48_000.0,
+            )
+            .unwrap();
+            assert!(prepared.min_filter_improvement >= floor);
+            for child in &objective.multi_objective.as_ref().unwrap().objectives {
+                assert_eq!(child.captured_loss_perturbation_bound, Some(floor * 0.5));
+                let input = child.input_curve.as_ref().unwrap();
+                assert!(input.noise_floor_db.is_none() && input.phase.is_none());
+            }
+            if strategy == MultiMeasurementStrategy::VariancePenalized {
+                let identity = [100.0_f64.log10(), 0.5, 0.0];
+                assert!(
+                    (adaptive_variance_noise_floor(&objective, &identity, &identity)
+                        .unwrap()
+                        .unwrap()
+                        - floor)
+                        .abs()
+                        < 1e-12,
+                    "one active prototype has no seat-variance noise term even at lambda100"
+                );
+            }
+            // Independently perturb the actual geometric/directivity-weighted
+            // prototype builder; fixed nonnegative weights preserve the envelope.
+            let before = build_weighted_prototype_with_capture(&curves, &prototype, None).unwrap();
+            let mut perturbed = curves.clone();
+            let maximum = -20.0 * (-0.1_f64).ln_1p() / std::f64::consts::LN_10;
+            for (source, curve) in perturbed.iter_mut().enumerate() {
+                let ratio = if source == 0 { 0.1_f64 } else { 0.001_f64 };
+                let bound = -20.0 * (-ratio).ln_1p() / std::f64::consts::LN_10;
+                for (index, level) in curve.spl.iter_mut().enumerate() {
+                    *level += if (index + source) % 2 == 0 {
+                        bound
+                    } else {
+                        -bound
+                    };
+                }
+            }
+            let after =
+                build_weighted_prototype_with_capture(&perturbed, &prototype, None).unwrap();
+            for (before, after) in before.curve.spl.iter().zip(&after.curve.spl) {
+                assert!((after - before).abs() <= maximum + 1e-12);
+            }
+            let mut missing = second.clone();
+            missing.noise_floor_db = None;
+            let (unknown, _, prepared, _) = prepare_multi_measurement_objective_recorded(
+                &[first.clone(), missing],
+                &config,
+                &multi,
+                None,
+                48_000.0,
+            )
+            .unwrap();
+            assert_eq!(
+                prepared.min_filter_improvement,
+                config.min_filter_improvement
+            );
+            assert!(
+                unknown
+                    .multi_objective
+                    .unwrap()
+                    .objectives
+                    .iter()
+                    .all(|child| child.captured_loss_perturbation_bound.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_highpass_model_bandwidth_returns_flagged_uncorrected_response() {
+        let curve = Curve {
+            freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0]),
+            spl: Array1::from_vec(vec![80.0, 82.0, 84.0, 86.0]),
+            ..Default::default()
+        };
+        let config = OptimizerConfig {
+            algorithm: "autoeq:de".into(),
+            peq_model: "hp-pk".into(),
+            min_freq: 20.0,
+            max_freq: 160.0,
+            min_q: 0.5,
+            max_q: 6.0,
+            num_filters: 1,
+            max_iter: 32,
+            population: 8,
+            seed: Some(17),
+            psychoacoustic: false,
+            asymmetric_loss: false,
+            refine: false,
+            min_filter_improvement: 0.0,
+            ..Default::default()
+        };
+        let result = optimize_channel_eq_inner(
+            &curve, &config, None, 48_000.0, Some(83.0), None, None,
+            &RealOptimizerBackend::new(),
+        ).expect("unwarranted resonant model keeps a flagged identity rather than an empty-handed failure");
+        assert!(result.filters.is_empty());
+        assert!(result.loss.is_finite());
+        assert!(
+            result
+                .optimizer_evidence
+                .iter()
+                .any(|evidence| evidence.status.contains("measurement resolution"))
+        );
+        assert!(
+            result
+                .optimizer_evidence
+                .iter()
+                .all(|evidence| !evidence.selected_for_output && !evidence.converged)
+        );
+    }
+
+    struct ExactPeakCuts;
+    impl OptimizerBackend for ExactPeakCuts {
+        fn optimize_filters(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+        ) -> Result<(String, f64), (String, f64)> {
+            for (index, parameters) in x.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                parameters.copy_from_slice(&[
+                    [60.0_f64, 400.0, 1500.0][index].log10(),
+                    2.0,
+                    if index < 2 { -1.0 } else { 0.0 },
+                ]);
+            }
+            assert_eq!(params.peq_model, PeqModel::Pk);
+            Ok((
+                "exact captured peak cuts".into(),
+                autoeq_optim::optim::compute_base_fitness(x, &objective),
+            ))
+        }
+        fn optimize_filters_with_callback(
+            &self,
+            x: &mut [f64],
+            lower: &[f64],
+            upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+            mut callback: autoeq_optim::optim::OptimProgressCallback,
+        ) -> Result<(String, f64), (String, f64)> {
+            let result = self.optimize_filters(x, lower, upper, objective, params);
+            if let Ok((_, loss)) = &result {
+                callback(1, *loss, None);
+            }
+            result
+        }
+
+        fn optimize_filters_with_algo_override(
+            &self,
+            x: &mut [f64],
+            lower: &[f64],
+            upper: &[f64],
+            objective: ObjectiveData,
+            params: &OptimParams,
+            _algorithm: Option<&str>,
+        ) -> Result<(String, f64), (String, f64)> {
+            self.optimize_filters(x, lower, upper, objective, params)
+        }
+    }
+
+    #[test]
+    fn adaptive_variance_noise_stops_extra_fit_but_keeps_clean_capture_benefit() {
+        let mut curve = noise_curve(20.0, 256);
+        // Independent per-seat level centering changes the target reference.
+        // Four-dB peaks leave useful residual for each one-dB backend cut.
+        let cuts = [60.0_f64.log10(), 2.0, -4.0, 400.0_f64.log10(), 2.0, -4.0];
+        curve.spl = 80.0 - autoeq_optim::x2peq::x2spl(&curve.freq, &cuts, 48_000.0, PeqModel::Pk);
+        curve.coherence = Some(Array1::from_elem(curve.freq.len(), 0.99));
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            psychoacoustic: false,
+            asymmetric_loss: false,
+            refine: false,
+            ..Default::default()
+        };
+        let multi = MultiMeasurementConfig {
+            strategy: MultiMeasurementStrategy::VariancePenalized,
+            variance_lambda: 2.0,
+            ..Default::default()
+        };
+        let mut counts = Vec::new();
+        let mut details = Vec::new();
+        for snr in [20.0, 100.0] {
+            curve.noise_floor_db = Some(&curve.spl - snr);
+            let (objective, params, effective, normalization) =
+                prepare_multi_measurement_objective_recorded(
+                    &[curve.clone(), curve.clone()],
+                    &config,
+                    &multi,
+                    None,
+                    48_000.0,
+                )
+                .unwrap();
+            let context = OptimizationPassContext {
+                objective_data: &objective,
+                args_template: &params,
+                peq_model: params.peq_model,
+                sample_rate: 48_000.0,
+                normalization: OptimizationPassNormalization::Multi(&normalization),
+            };
+            let selection =
+                adaptive_filter_search(&context, &effective, None, &ExactPeakCuts, None).unwrap();
+            counts.push(selection.filters.len());
+            details.push((snr, selection.loss, selection.optimizer_evidence));
+        }
+        assert_eq!(
+            counts,
+            [1, 2],
+            "variance-aware stopping must keep qualified clean-capture benefit: {details:?}"
+        );
+    }
+
+    #[test]
+    fn adaptive_noise_floor_stops_extra_peak_fit_below_capture_noise() {
+        let mut curve = noise_curve(20.0, 256);
+        let cuts = [60.0_f64.log10(), 2.0, -1.0, 400.0_f64.log10(), 2.0, -1.0];
+        curve.spl = 80.0 - autoeq_optim::x2peq::x2spl(&curve.freq, &cuts, 48_000.0, PeqModel::Pk);
+        curve.noise_floor_db = Some(&curve.spl - 20.0);
+        curve.coherence = Some(Array1::from_elem(curve.freq.len(), 0.99));
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 2000.0,
+            min_filter_improvement: 0.01,
+            num_filters: 3,
+            psychoacoustic: false,
+            asymmetric_loss: false,
+            refine: false,
+            ..Default::default()
+        };
+        let noisy = optimize_channel_eq_inner(
+            &curve,
+            &config,
+            None,
+            48_000.0,
+            Some(80.0),
+            None,
+            None,
+            &ExactPeakCuts,
+        )
+        .unwrap();
+        curve.noise_floor_db = Some(&curve.spl - 100.0);
+        let clean = optimize_channel_eq_inner(
+            &curve,
+            &config,
+            None,
+            48_000.0,
+            Some(80.0),
+            None,
+            None,
+            &ExactPeakCuts,
+        )
+        .unwrap();
+        assert_eq!(noisy.filters.len(), 1);
+        assert_eq!(
+            clean.filters.len(),
+            2,
+            "clean loss={} noisy loss={} evidence={:?}",
+            clean.loss,
+            noisy.loss,
+            clean.optimizer_evidence
+        );
+        assert!(noisy.loss > clean.loss + config.min_filter_improvement);
+    }
 }
 
 fn uncertainty_scaled_optimizer_config(
@@ -4848,6 +5945,9 @@ mod multi_eq_tests {
                     num_filters: 2,
                     max_freq: 8_000.0,
                     max_q: global_q,
+                    // Isolate the HF policy with fine objective smoothing:
+                    // the default half-octave width independently caps bass Q.
+                    smooth_n: 48,
                     refine: false,
                     psychoacoustic: false,
                     min_filter_improvement: 0.0,
@@ -5742,8 +6842,22 @@ mod controlled_pipeline_tests {
                 .contains("composite gain envelope breached"),
             "the refusal should identify the violated correction envelope: {error}"
         );
-        assert_eq!(error.snapshot().evaluations_started, 192);
-        assert_eq!(error.stages().len(), 3);
+        // Objective regularizers may stop the adaptive loop before all three
+        // passes. Refusal must still preserve exact counts for every run pass.
+        assert!((1..=3).contains(&error.stages().len()));
+        let started: usize = error
+            .stages()
+            .iter()
+            .map(|stage| {
+                let snapshot = stage
+                    .stage_snapshot
+                    .expect("adaptive pass has a quota receipt");
+                assert!(snapshot.evaluations_started <= 64);
+                snapshot.evaluations_started
+            })
+            .sum();
+        assert_eq!(error.snapshot().evaluations_started, started);
+        assert!((1..=192).contains(&started));
         assert!(error.stages().iter().all(|stage| {
             stage
                 .evidence

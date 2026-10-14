@@ -3,6 +3,35 @@ use roomeq_model::{ChannelDspChain, RoomConfig};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// Prove that playback contains no processing or structural routing.
+pub(super) fn is_plugin_free_identity(result: &RoomOptimizationResult) -> bool {
+    !result.channels.is_empty()
+        && result.metadata.bass_management.is_none()
+        && result.metadata.ctc.is_none()
+        && result
+            .channels
+            .values()
+            .all(|chain| chain.plugins.is_empty() && chain.drivers.is_none())
+        && result
+            .channel_results
+            .values()
+            .all(|channel| channel.biquads.is_empty() && channel.fir_coeffs.is_none())
+}
+
+/// Apply identity evidence requirements while preserving every numeric budget.
+pub(super) fn policy_for_delivered_graph(
+    result: &RoomOptimizationResult,
+    mut policy: roomeq_model::RuntimeAcceptancePolicy,
+) -> roomeq_model::RuntimeAcceptancePolicy {
+    if is_plugin_free_identity(result) {
+        // No temporal transfer needs measurement phase. Keep missing phase
+        // explicit in the evidence and retain the requested safety thresholds.
+        // Unknown plugins, drivers, routing, and global CTC never qualify.
+        policy.output_class = roomeq_model::RuntimeOutputClass::LowLatencyIir;
+    }
+    policy
+}
+
 /// Names of all supporting-source output channels (primaries and supports).
 ///
 /// These are not correction channels: the support chain is designed to
@@ -706,6 +735,10 @@ pub(super) fn apply_final_correction_safety_gate(
                 is_runtime_quality_violation(violation)
                     && violation != "audibility_regression_reverted"
             }) {
+                // The report below is refreshed to describe reverted playback.
+                // Preserve the refusal's original measurements before rollback.
+                let refusal_checks =
+                    roomeq_engine::quality::runtime_acceptance_failure_checks(&report);
                 let runtime_reverted = revert_all_correction_stages(
                     result,
                     sample_rate,
@@ -731,7 +764,7 @@ pub(super) fn apply_final_correction_safety_gate(
                         .metadata
                         .stage_outcomes
                         .push(roomeq_model::StageOutcome {
-                            checks: Vec::new(),
+                            checks: refusal_checks,
                             stage: "final_runtime_acceptance".to_string(),
                             status: roomeq_model::StageStatus::Degraded,
                             advisories: runtime_reverted
@@ -885,7 +918,8 @@ fn reconcile_group_delay_summary(result: &mut RoomOptimizationResult) {
 
 const OPTIMIZER_ACCEPTANCE_POLICY_VERSION: &str = "1.0.0";
 
-fn refresh_optimizer_evidence(
+/// Refresh optimizer evidence for the currently retained correction kernels.
+pub(super) fn refresh_optimizer_evidence(
     result: &mut RoomOptimizationResult,
 ) -> Option<roomeq_engine::OptimizerConfidence> {
     use roomeq_engine::OptimizerConfidence;
@@ -1028,18 +1062,34 @@ fn runtime_acceptance_evidence(
     let mut training_targets = Vec::with_capacity(names.len());
     for name in &names {
         let channel = &result.channel_results[name];
-        let target = result
+        let physical_target = result
             .channels
             .get(name)
-            .and_then(|chain| chain.target_curve.clone())
-            .map(roomeq_model::Curve::from)
-            .map(|mut target| {
-                // Target curves are serialized at the optimizer's display
-                // level. Align their absolute level to the measured channel
-                // before using them for runtime residual metrics, matching
-                // the per-channel acceptance gate above.
-                align_target_level(&channel.initial_curve, &mut target);
+            .and_then(|chain| chain.physical_correction_target.as_ref());
+        let target = physical_target
+            .map(|physical| {
+                // Runtime curves retain the raw measurement plane. Translate the
+                // calibrated target into that same plane without fitting its level.
+                let mut target = roomeq_model::Curve::from(physical.curve.clone());
                 target
+                    .spl
+                    .mapv_inplace(|level| level - physical.measurement_alignment_gain_db);
+                target
+            })
+            .or_else(|| {
+                result
+                    .channels
+                    .get(name)
+                    .and_then(|chain| chain.target_curve.clone())
+                    .map(roomeq_model::Curve::from)
+                    .map(|mut target| {
+                        // Target curves are serialized at the optimizer's display
+                        // level. Align their absolute level to the measured channel
+                        // before using them for runtime residual metrics, matching
+                        // the per-channel acceptance gate above.
+                        align_target_level(&channel.initial_curve, &mut target);
+                        target
+                    })
             });
         let post = result
             .channels
@@ -1110,7 +1160,7 @@ fn runtime_acceptance_evidence(
             sample_rate,
             processing_mode.clone(),
         );
-        let scorecard = roomeq_engine::quality::evaluate_acoustic_quality(
+        let mut scorecard = roomeq_engine::quality::evaluate_acoustic_quality(
             std::slice::from_ref(pre),
             std::slice::from_ref(post),
             &[],
@@ -1120,11 +1170,17 @@ fn runtime_acceptance_evidence(
                 min_freq_hz: pre.freq[0].max(post.freq[0]),
                 max_freq_hz: pre.freq.last().copied()?.min(post.freq.last().copied()?),
                 schroeder_hz: None,
-                normalize_level: true,
+                normalize_level: result
+                    .channels
+                    .get(name)
+                    .is_none_or(|chain| chain.physical_correction_target.is_none()),
             },
             channel_temporal,
         )
         .ok()?;
+        for reference in &mut scorecard.training.frozen_grid_residual {
+            reference.logical_input = Some(name.clone());
+        }
         log::debug!(
             "Runtime acoustic quality '{}': RMS {:.4} -> {:.4} dB, p95 {:.4} dB, worst {:.4} dB",
             name,
@@ -1189,7 +1245,11 @@ fn runtime_acceptance_evidence(
         policy.max_induced_group_delay_rms_ms =
             policy.max_induced_group_delay_rms_ms.max(budget_ms);
     }
-    Some((quality, realization, policy))
+    Some((
+        quality,
+        realization,
+        policy_for_delivered_graph(result, policy),
+    ))
 }
 
 pub(super) fn aggregate_runtime_quality(
@@ -1217,11 +1277,23 @@ pub(super) fn aggregate_runtime_quality(
         )
     };
     let mut aggregate = first.clone();
+    aggregate.training.frozen_grid_residual.clear();
+    let mut curve_offset = 0;
+    for score in scorecards {
+        for mut reference in score.training.frozen_grid_residual.iter().cloned() {
+            reference.curve_index += curve_offset;
+            aggregate.training.frozen_grid_residual.push(reference);
+        }
+        curve_offset += score.training.curve_count;
+    }
     aggregate.useful_output = scorecards
         .iter()
         .flat_map(|score| score.useful_output.iter().cloned())
         .collect();
-    aggregate.training.curve_count = scorecards.len();
+    aggregate.training.curve_count = scorecards
+        .iter()
+        .map(|score| score.training.curve_count)
+        .sum();
     aggregate.training.pre_weighted_rms_median_db =
         metric(|metrics| metrics.pre_weighted_rms_median_db);
     aggregate.training.post_weighted_rms_median_db =
@@ -1869,6 +1941,7 @@ fn crop_curve_to_band(
         min_phase: curve.min_phase.as_ref().map(select),
         excess_phase: curve.excess_phase.as_ref().map(select),
         excess_delay_ms: curve.excess_delay_ms,
+        resolution: Some(curve.retained_resolution()),
     })
 }
 
@@ -2067,6 +2140,11 @@ pub(in super::super) fn remove_routing_transfer(
     }
 
     let mut corrected = realized.clone();
+    corrected.resolution = autoeq_core::resolution::MeasurementResolution::combine([
+        initial,
+        routed_baseline,
+        realized,
+    ]);
     corrected.spl = &realized.spl - &routed_baseline.spl + &initial.spl;
     corrected.phase = match (
         initial.phase.as_ref(),
@@ -2413,15 +2491,19 @@ fn release_masking_without_fir_bulk(chain: &mut ChannelDspChain) {
 /// survives on it. Structural delays (time alignment, routes) are
 /// deployment-constant and excluded.
 fn chain_has_fir_bulk(chain: &ChannelDspChain) -> bool {
-    chain.plugins.iter().any(|plugin| {
-        plugin.plugin_type == "convolution" || is_fir_bulk_delay_plugin(plugin)
-    })
+    chain
+        .plugins
+        .iter()
+        .any(|plugin| plugin.plugin_type == "convolution" || is_fir_bulk_delay_plugin(plugin))
 }
 
 fn is_fir_bulk_delay_plugin(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
     plugin.plugin_type == "delay"
         && matches!(
-            plugin.parameters.get("label").and_then(|value| value.as_str()),
+            plugin
+                .parameters
+                .get("label")
+                .and_then(|value| value.as_str()),
             Some("fir_design_delay" | "hybrid_fir_latency_alignment")
         )
 }
@@ -2469,9 +2551,12 @@ fn branch_fir_bulk_ms(chain: &ChannelDspChain) -> f64 {
         .iter()
         .position(|plugin| plugin.plugin_type == "band_split");
     let merge = split.and_then(|start| {
-        chain.plugins.iter().skip(start + 1).position(|plugin| {
-            plugin.plugin_type == "band_merge"
-        }).map(|offset| start + 1 + offset)
+        chain
+            .plugins
+            .iter()
+            .skip(start + 1)
+            .position(|plugin| plugin.plugin_type == "band_merge")
+            .map(|offset| start + 1 + offset)
     });
     let chain_bulk_ms = match (split, merge) {
         (Some(start), Some(end)) => {
@@ -2606,10 +2691,7 @@ fn reinstall_orphaned_latency_alignment(
     result: &mut RoomOptimizationResult,
     captured: &std::collections::HashMap<String, CapturedBranchLatency>,
 ) {
-    let has_subs = result
-        .channels
-        .values()
-        .any(is_graph_routed_bass_output);
+    let has_subs = result.channels.values().any(is_graph_routed_bass_output);
     let sub_bulk_ms = result
         .channels
         .values()
@@ -2675,15 +2757,10 @@ fn reinstall_orphaned_latency_alignment(
         let Some(chain) = result.channels.get_mut(name) else {
             continue;
         };
-        if chain
-            .plugins
-            .iter()
-            .any(is_latency_alignment_plugin)
-        {
+        if chain.plugins.iter().any(is_latency_alignment_plugin) {
             continue;
         }
-        let target_bulk_ms =
-            partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
+        let target_bulk_ms = partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
         if !target_bulk_ms.is_finite() {
             continue;
         }
@@ -2964,6 +3041,53 @@ fn validate_hybrid_correction_blocks(result: &RoomOptimizationResult) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routing_removal_preserves_all_original_support_before_residual_fir() {
+        let mut initial = autoeq_core::Curve {
+            freq: ndarray::Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: ndarray::Array1::from_elem(5, 80.0),
+            phase: Some(ndarray::Array1::zeros(5)),
+            ..Default::default()
+        };
+        initial.resolution = initial
+            .retained_resolution()
+            .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+        let grid = ndarray::Array1::linspace(20.0, 200.0, 128);
+        let initial = autoeq_core::interpolate_response(&grid, &initial);
+        // These derived operands intentionally have no original annotation;
+        // their dense axes must not erase the retained initial support.
+        let baseline = autoeq_core::Curve {
+            freq: grid.clone(),
+            spl: ndarray::Array1::from_elem(128, 77.0),
+            phase: Some(ndarray::Array1::from_elem(128, -30.0)),
+            ..Default::default()
+        };
+        let realized = autoeq_core::Curve {
+            freq: grid,
+            spl: ndarray::Array1::from_elem(128, 76.0),
+            phase: Some(ndarray::Array1::from_elem(128, -45.0)),
+            ..Default::default()
+        };
+        let corrected = super::remove_routing_transfer(&initial, &baseline, &realized).unwrap();
+        assert_eq!(
+            corrected.retained_resolution().width_octaves(80.0),
+            Some(4.0)
+        );
+        assert!(
+            corrected
+                .spl
+                .iter()
+                .all(|level| (level - 79.0).abs() < 1e-10)
+        );
+        assert!(
+            corrected
+                .phase
+                .unwrap()
+                .iter()
+                .all(|phase| (phase + 15.0).abs() < 1e-10)
+        );
+    }
+
     use super::*;
     use crate::test_fixtures::{empty_metadata, single_channel_room_result};
     use roomeq_engine::OptimizerRunEvidence;
@@ -4097,9 +4221,7 @@ mod tests {
             .plugins
             .iter()
             .filter(|plugin| super::is_latency_alignment_plugin(plugin))
-            .filter_map(|plugin| {
-                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
-            })
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
             .collect();
         assert_eq!(installed.len(), 1);
         assert!((installed[0] - 42.67).abs() < 1e-9);
@@ -4208,8 +4330,7 @@ mod tests {
             }
         }
         let mut result = single_channel_room_result("L");
-        result.channels.get_mut("L").unwrap().plugins =
-            vec![conv(0.0), alignment(42.67)];
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
         let mut sub = result.channels["L"].clone();
         sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
         result.channels.insert("Sub1".to_string(), sub);
@@ -4224,9 +4345,7 @@ mod tests {
             .plugins
             .iter()
             .filter(|plugin| super::is_latency_alignment_plugin(plugin))
-            .filter_map(|plugin| {
-                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
-            })
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
             .collect();
         assert_eq!(installed, vec![42.67]);
 
@@ -4251,9 +4370,7 @@ mod tests {
             .plugins
             .iter()
             .filter(|plugin| super::is_latency_alignment_plugin(plugin))
-            .filter_map(|plugin| {
-                plugin.parameters.get("delay_ms").and_then(|v| v.as_f64())
-            })
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
             .collect();
         assert_eq!(installed, vec![42.67]);
     }
@@ -4292,8 +4409,7 @@ mod tests {
             }
         }
         let mut result = single_channel_room_result("L");
-        result.channels.get_mut("L").unwrap().plugins =
-            vec![conv(0.0), alignment(42.67)];
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
         let mut sub = result.channels["L"].clone();
         sub.plugins = vec![sub_crossover(), conv(42.67)];
         result.channels.insert("Sub1".to_string(), sub);
@@ -4428,8 +4544,7 @@ mod tests {
             }
         }
         let mut result = single_channel_room_result("L");
-        result.channels.get_mut("L").unwrap().plugins =
-            vec![conv(0.0), alignment(42.67)];
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
         let mut sub = result.channels["L"].clone();
         sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
         result.channels.insert("Sub1".to_string(), sub);
@@ -5390,6 +5505,27 @@ mod tests {
         );
         assert_eq!(report.decision, CorrectionDecision::RevertedStage);
         assert_eq!(report.reverted_stages, ["left:peq"]);
+        let refusal = result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .find(|stage| stage.stage == "final_runtime_acceptance")
+            .unwrap();
+        let check = refusal
+            .checks
+            .iter()
+            .find(|check| check.id == "realization_error_limit_exceeded")
+            .unwrap();
+        assert!(check.observed.unwrap() > check.limit.unwrap());
+        assert!(
+            report
+                .realization_quality
+                .as_ref()
+                .unwrap()
+                .max_abs_error_db
+                .unwrap()
+                < check.observed.unwrap()
+        );
     }
 
     #[test]

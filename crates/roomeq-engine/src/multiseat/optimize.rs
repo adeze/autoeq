@@ -201,6 +201,8 @@ pub fn optimize_multiseat(
         measurements.num_seats, variance_before
     );
 
+    let options = MsoSearchOptions::from_config(config, eval_min, eval_max)
+        .with_measurement_resolution(measurements, sample_rate);
     // Optimize based on strategy
     let (optimal_gains, optimal_delays, optimal_polarities, optimal_allpass_filters) = match config
         .strategy
@@ -209,7 +211,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             eval_min,
             eval_max,
@@ -219,7 +221,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             eval_min,
             eval_max,
@@ -229,7 +231,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             config.primary_seat,
             config.max_deviation_db,
@@ -249,7 +251,7 @@ pub fn optimize_multiseat(
                 &interpolated,
                 &freqs,
                 measurements.num_subs,
-                config,
+                options,
                 sample_rate,
                 eval_min,
                 eval_max,
@@ -619,13 +621,12 @@ pub(super) fn optimize_minimize_variance(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -656,13 +657,12 @@ fn optimize_average_response(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -692,7 +692,7 @@ fn optimize_primary_with_constraints(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     primary_seat: usize,
     max_deviation_db: f64,
@@ -700,7 +700,6 @@ fn optimize_primary_with_constraints(
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -737,14 +736,13 @@ fn optimize_modal_basis(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     basis: &ModalBasis,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -1286,7 +1284,8 @@ fn optimize_continuous_area_dispatch<const D: usize>(
         });
     }
 
-    let options = MsoSearchOptions::from_config(config, eval_min, eval_max);
+    let options = MsoSearchOptions::from_config(config, eval_min, eval_max)
+        .with_measurement_resolution(measurements, sample_rate);
     let ((gains, delays, polarities, allpass_filters), search_report) =
         optimize_continuous_mso_with_budget(measurements.num_subs, options, budget, &evaluate_area);
     if search_report.stop_reason == "cancelled" || is_cancelled(budget) {

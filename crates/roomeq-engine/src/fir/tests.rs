@@ -255,24 +255,13 @@ fn fir_response_db(coeffs: &[f64], freq: f64, sample_rate: f64) -> f64 {
 
 #[test]
 fn fir_max_boost_db_clamps_correction_boost() {
-    // Measurement with a deep in-band null at 100 Hz: an uncapped Kirkeby
-    // inversion tries to fill it with far more than 12 dB of boost, while the
-    // capped design must stay near the configured limit.
+    // A broad level mismatch has no local null; it isolates the global cap.
     let freqs: Vec<f64> = (0..200)
         .map(|i| 20.0 * (1000.0_f64).powf(i as f64 / 199.0))
         .collect();
-    let spl: Vec<f64> = freqs
-        .iter()
-        .map(|&f| {
-            if (60.0..=160.0).contains(&f) {
-                55.0
-            } else {
-                80.0
-            }
-        })
-        .collect();
+    let spl = vec![55.0; freqs.len()];
     let measurement = create_test_curve(&freqs, &spl);
-    let target = flat_target_like(&measurement);
+    let target = create_test_curve(&freqs, &vec![80.0; freqs.len()]);
 
     let uncapped =
         generate_fir_correction_prepared(&measurement, &kirkeby_config(None), &target, 48_000.0)
@@ -280,7 +269,7 @@ fn fir_max_boost_db_clamps_correction_boost() {
     let uncapped_boost = fir_response_db(&uncapped, 100.0, 48_000.0);
     assert!(
         uncapped_boost > 12.0,
-        "uncapped design should boost the 100 Hz null well past 12 dB, got {uncapped_boost:.2} dB"
+        "uncapped broad-level design should exceed 12 dB, got {uncapped_boost:.2} dB"
     );
 
     let capped = generate_fir_correction_prepared(
@@ -479,15 +468,20 @@ fn explicit_correction_band_keeps_fir_outside_band_unshaped() {
 
 #[test]
 fn kirkeby_path_forwards_the_configured_pre_ringing_policy() {
-    let freq = Array1::from(vec![20.0, 100.0, 500.0, 1_000.0, 5_000.0, 20_000.0]);
+    // Dense ORIGINAL support isolates pre-ringing forwarding; six sparse
+    // points do not warrant a full correction feature inside this bass band.
+    let freq = Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 256);
     let measurement = Curve {
-        spl: Array1::from(vec![75.0, 82.0, 80.0, 78.0, 72.0, 65.0]),
+        spl: Array1::from_iter(
+            freq.iter()
+                .map(|frequency| 75.0 + 7.0 * (-((frequency / 100.0).log2() / 0.7).powi(2)).exp()),
+        ),
         freq: freq.clone(),
         ..Curve::default()
     };
     let target = Curve {
+        spl: Array1::from_elem(freq.len(), 80.0),
         freq,
-        spl: Array1::from_elem(6, 80.0),
         ..Curve::default()
     };
     let policy = PreRingingSerdeConfig {
@@ -510,30 +504,45 @@ fn kirkeby_path_forwards_the_configured_pre_ringing_policy() {
 
     let actual = generate_fir_correction_prepared(&measurement, &config, &target, 48_000.0)
         .expect("Kirkeby correction");
-    let expected = autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing(
+    // Isolate policy forwarding on the actual bandwidth-constrained proposal.
+    let correction = autoeq_core::curve_transforms::smooth_correction_to_resolution(
         &measurement,
-        &target,
-        48_000.0,
-        2_048,
-        20.0,
-        1_000.0,
-        false,
-        0.0,
-        Some(math_audio_iir_fir::PreRingingConfig {
+        &(&target.spl - &measurement.spl),
+        1.0 / config.smooth_n as f64,
+        [config.min_freq, config.max_freq],
+    )
+    .unwrap();
+    let target = Curve {
+        spl: &measurement.spl + &correction,
+        ..target
+    };
+    let design = math_audio_iir_fir::FirDesignConfig {
+        n_taps: 2_048,
+        sample_rate: 48_000.0,
+        phase: math_audio_iir_fir::FirPhase::Kirkeby,
+        min_freq: 20.0,
+        max_freq: 1_000.0,
+        correct_excess_phase: false,
+        phase_smoothing_octaves: 0.0,
+        pre_ringing: Some(math_audio_iir_fir::PreRingingConfig {
             threshold_db: policy.threshold_db,
             max_time_s: policy.max_time_s,
         }),
-    );
-    let without_policy = autoeq_fir::generate_kirkeby_correction_with_smoothing(
+        ..Default::default()
+    };
+    let expected =
+        super::generate::generate_resolved_kirkeby(&measurement, &target, &config, &design)
+            .unwrap();
+    let without_policy = super::generate::generate_resolved_kirkeby(
         &measurement,
         &target,
-        48_000.0,
-        2_048,
-        20.0,
-        1_000.0,
-        false,
-        0.0,
-    );
+        &config,
+        &math_audio_iir_fir::FirDesignConfig {
+            pre_ringing: None,
+            ..design
+        },
+    )
+    .unwrap();
 
     assert_eq!(actual, expected);
     let policy_effect = actual
@@ -964,4 +973,242 @@ fn excess_phase_recovery_preserves_valid_or_unrequested_designs() {
             });
         assert_eq!(actual, expected);
     }
+}
+
+#[test]
+fn kirkeby_magnitude_projection_preserves_phase_and_refuses_callback_errors() {
+    let frequencies = [20.0, 100.0, 1_000.0, 20_000.0];
+    let measured = [0.0; 4];
+    let phase = [-10.0, -50.0, -500.0, -10_000.0];
+    let design = math_audio_iir_fir::FirDesignConfig {
+        n_taps: 2_048,
+        sample_rate: 48_000.0,
+        min_freq: 20.0,
+        max_freq: 1_000.0,
+        correct_excess_phase: true,
+        phase_smoothing_octaves: 0.0,
+        pre_ringing: None,
+        ..Default::default()
+    };
+    let mut context = math_audio_iir_fir::FirDesignContext::new();
+    let original = context.generate_kirkeby_correction(
+        &frequencies,
+        &measured,
+        Some(&phase),
+        &measured,
+        &design,
+    );
+    let mut context = math_audio_iir_fir::FirDesignContext::new();
+    let unchanged = context
+        .generate_kirkeby_correction_with_magnitude_projection(
+            &frequencies,
+            &measured,
+            Some(&phase),
+            &measured,
+            &design,
+            |freq, db| -> Result<(), &'static str> {
+                assert_eq!(freq.len(), db.len());
+                let index = freq.iter().position(|f| *f >= 100.0).unwrap();
+                let beta = 1.0 / (2.0 * 10.0_f64.powf(15.0 / 20.0));
+                let regularized = 20.0 * (1.0 / (1.0 + beta * beta)).log10();
+                assert!((db[index] - regularized).abs() < 1e-12);
+                Ok(())
+            },
+        )
+        .unwrap();
+    // Generic callback monomorphization can change floating-point scheduling;
+    // retain a roundoff bound, far below any physical response tolerance.
+    for (before, after) in original.iter().zip(&unchanged) {
+        assert!((before - after).abs() <= 4.0 * f64::EPSILON);
+    }
+    let mut context = math_audio_iir_fir::FirDesignContext::new();
+    let doubled = context
+        .generate_kirkeby_correction_with_magnitude_projection(
+            &frequencies,
+            &measured,
+            Some(&phase),
+            &measured,
+            &design,
+            |_, db| -> Result<(), &'static str> {
+                for value in db {
+                    *value += 20.0 * 2.0_f64.log10();
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    // Scaling the whole complex spectrum changes amplitude alone; every
+    // time-domain sample retains the phase-dependent impulse shape.
+    for (before, after) in original.iter().zip(&doubled) {
+        assert!((2.0 * before - after).abs() < 1e-12);
+    }
+    let rejected = context.generate_kirkeby_correction_with_magnitude_projection(
+        &frequencies,
+        &measured,
+        Some(&phase),
+        &measured,
+        &design,
+        |_, _| -> Result<(), &'static str> { Err("unsupported acquisition") },
+    );
+    assert_eq!(rejected.unwrap_err(), "unsupported acquisition");
+    assert_eq!(
+        original,
+        math_audio_iir_fir::FirDesignContext::new().generate_kirkeby_correction(
+            &frequencies,
+            &measured,
+            Some(&phase),
+            &measured,
+            &design,
+        )
+    );
+}
+
+#[test]
+fn prepared_magnitude_fir_has_warranted_transitions_at_both_band_edges() {
+    let freq = Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 2048);
+    let measurement = Curve {
+        spl: Array1::zeros(freq.len()),
+        freq: freq.clone(),
+        ..Default::default()
+    };
+    let target = Curve {
+        spl: Array1::from_elem(freq.len(), 6.0),
+        freq,
+        ..Default::default()
+    };
+    let probes = Array1::from_vec(vec![90.0, 100.0, 110.0, 500.0, 2_000.0, 2_100.0]);
+    for phase in ["linear", "minimum", "kirkeby"] {
+        let config = OptimizerConfig {
+            min_freq: 100.0,
+            max_freq: 2_000.0,
+            smooth_n: 2,
+            fir: Some(FirConfig {
+                taps: 16_384,
+                phase: phase.into(),
+                correct_excess_phase: false,
+                phase_smoothing: 0.0,
+                max_boost_db: Some(6.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let coefficients =
+            generate_fir_correction_prepared(&measurement, &config, &target, 48_000.0).unwrap();
+        let transfer =
+            crate::response::compute_fir_complex_response(&coefficients, &probes, 48_000.0);
+        let gains: Vec<_> = transfer
+            .iter()
+            .map(|value| 20.0 * value.norm().log10())
+            .collect();
+        assert!(
+            gains[0].abs() < 0.1
+                && gains[1].abs() < 0.1
+                && gains[4].abs() < 0.1
+                && gains[5].abs() < 0.1,
+            "{phase} must reach neutral at supported boundaries without a one-bin gain jump: {gains:?}"
+        );
+        assert!(
+            gains[2] < 1.3,
+            "{phase} onset must have a supported width: {gains:?}"
+        );
+        assert!(
+            gains[3] > 3.0,
+            "{phase} must retain warranted interior benefit: {gains:?}"
+        );
+        let narrow = OptimizerConfig {
+            max_freq: 150.0,
+            ..config
+        };
+        let coefficients =
+            generate_fir_correction_prepared(&measurement, &narrow, &target, 48_000.0).unwrap();
+        let transfer =
+            crate::response::compute_fir_complex_response(&coefficients, &probes, 48_000.0);
+        assert!(
+            transfer
+                .iter()
+                .all(|value| (20.0 * value.norm().log10()).abs() < 1e-5),
+            "{phase} must not shrink a correction feature into an unsupported band"
+        );
+    }
+}
+
+#[test]
+fn single_fir_null_protection_survives_resolution_projection_and_realization() {
+    let freqs: Vec<_> = (0..400)
+        .map(|i| 20.0 * 1000.0_f64.powf(i as f64 / 399.0))
+        .collect();
+    let spl: Vec<_> = freqs
+        .iter()
+        .map(|f| {
+            if (f / 200.0).log2().abs() < 0.08 {
+                60.0
+            } else {
+                80.0
+            }
+        })
+        .collect();
+    let measurement = create_test_curve(&freqs, &spl);
+    let target = create_test_curve(&freqs, &spl.iter().map(|v| v + 6.0).collect::<Vec<_>>());
+    assert!(
+        super::fir_null_mask(&measurement)
+            .iter()
+            .any(|protected| *protected)
+    );
+    for phase in ["linear", "minimum", "kirkeby"] {
+        let mut config = kirkeby_config(Some(9.0));
+        config.min_freq = 80.0;
+        config.max_freq = 4000.0;
+        config.smooth_n = 2;
+        let fir = config.fir.as_mut().unwrap();
+        fir.phase = phase.into();
+        fir.taps = 16_384;
+        let coefficients =
+            generate_fir_correction_prepared(&measurement, &config, &target, 48_000.0).unwrap();
+        let null_gain = fir_response_db(&coefficients, 200.0, 48_000.0);
+        assert!(
+            null_gain <= 0.3,
+            "{phase}: protected-null realized gain {null_gain}"
+        );
+        let broad_gain = fir_response_db(&coefficients, 1000.0, 48_000.0);
+        assert!(
+            broad_gain > 3.0,
+            "{phase}: lost supported broad correction {broad_gain}"
+        );
+    }
+}
+
+#[test]
+fn retained_support_limits_fir_basis_without_rejecting_extrapolated_display_bins() {
+    let source = Curve {
+        freq: Array1::logspace(10.0, 25.0_f64.log10(), 190.0_f64.log10(), 256),
+        spl: Array1::from_elem(256, 86.0),
+        phase: Some(Array1::zeros(256)),
+        ..Default::default()
+    };
+    let measurement =
+        autoeq_core::interpolate_response(&Array1::linspace(20.0, 200.0, 512), &source);
+    let target = flat_target_like(&measurement);
+    let config = OptimizerConfig {
+        min_freq: 20.0,
+        max_freq: 200.0,
+        fir: Some(FirConfig {
+            taps: 16384,
+            phase: "linear".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let coefficients =
+        generate_fir_correction_prepared(&measurement, &config, &target, 48_000.0).unwrap();
+    assert_eq!(coefficients.len(), 16384);
+    assert!(coefficients.iter().all(|tap| tap.is_finite()));
+    let grid = Array1::from_vec(vec![1.0, 80.0, 1000.0]);
+    let response = crate::response::compute_fir_complex_response(&coefficients, &grid, 48_000.0);
+    assert!(
+        20.0 * response[1].norm().log10() < -3.0,
+        "supported correction must survive"
+    );
+    assert!((20.0 * response[2].norm().log10()).abs() < 0.1);
+    assert_eq!(measurement.freq[0], 20.0);
+    assert_eq!(measurement.freq[511], 200.0);
 }

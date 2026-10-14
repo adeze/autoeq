@@ -521,6 +521,7 @@ pub fn reconcile_ledger(
             let reason = match acceptance.derived_outcome() {
                 roomeq_model::RoomEqOutcome::Accepted => "final_acceptance_accepted",
                 roomeq_model::RoomEqOutcome::Unchanged => "final_acceptance_unchanged",
+                roomeq_model::RoomEqOutcome::SafeFallback => "final_acceptance_safe_fallback",
                 roomeq_model::RoomEqOutcome::Rejected => "final_acceptance_rejected",
                 roomeq_model::RoomEqOutcome::InsufficientEvidence => {
                     "final_acceptance_insufficient_evidence"
@@ -940,12 +941,12 @@ pub fn assess_output_regression(
 
 /// Final result document handed to root R3 and the CLI.
 ///
-/// `outcome` uses the four stable states (accepted/unchanged/rejected/
+/// `outcome` uses the stable states (accepted/unchanged/safe_fallback/rejected/
 /// unknown). Unknown covers insufficient evidence; failures stay in the
 /// ledger as history but never read as delivered EQ.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowResultDocument {
-    /// R3 vocabulary: accepted, unchanged, rejected, unknown.
+    /// R3 vocabulary: accepted, unchanged, safe_fallback, rejected, unknown.
     pub outcome: WorkflowOutcome,
     /// Fingerprint of the delivered graph this result describes.
     pub graph_fingerprint: String,

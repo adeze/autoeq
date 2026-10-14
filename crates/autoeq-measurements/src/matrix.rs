@@ -299,6 +299,7 @@ fn power_average(curves: &[Curve]) -> Curve {
         spl: average.mapv(|power| 10.0 * power.log10()),
         phase: None,
         coherence: None,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     }
 }
@@ -320,6 +321,7 @@ fn decibel_average(curves: &[Curve]) -> Curve {
         spl: sum / curves.len() as f64,
         phase: None,
         coherence: None,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     }
 }

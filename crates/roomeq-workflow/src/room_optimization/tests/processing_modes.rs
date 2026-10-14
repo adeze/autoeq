@@ -154,6 +154,22 @@ fn optimize_room_impl_workflow_hybrid_succeeds() {
 }
 
 #[test]
+fn hybrid_public_pipeline_binds_final_selection_diagnostics() {
+    let config = stereo_config_for_mode(ProcessingMode::Hybrid);
+    let output_dir = tempfile::tempdir().unwrap();
+    let result = crate::optimize_room(&config, 48_000.0, None, Some(output_dir.path())).unwrap();
+    assert!(
+        result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .any(|stage| { stage.stage == "hybrid_best_part_selection" })
+    );
+    roomeq_engine::room_result::FinalizedDecisions::from_output(&result.to_dsp_chain_output())
+        .expect("Hybrid selection diagnostics must remain bound to the returned graph");
+}
+
+#[test]
 fn roadmap_measurement_receipts_reach_iir_fir_and_hybrid_reports() {
     for mode in [
         ProcessingMode::LowLatency,

@@ -204,6 +204,7 @@ fn magnitude_smoothing_preserves_measured_metadata_and_invalidates_derived_phase
         min_phase: Some(Array1::from_vec(vec![1.0, 2.0, 3.0])),
         excess_phase: Some(Array1::from_vec(vec![9.0, 18.0, 27.0])),
         excess_delay_ms: Some(1.5),
+        resolution: None,
     };
     let config = PsychoacousticSmoothingConfig {
         low_freq_n: 1,

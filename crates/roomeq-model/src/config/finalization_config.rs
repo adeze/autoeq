@@ -39,6 +39,15 @@ pub struct FinalizationConfig {
     /// Protect summed physical sub outputs with a runtime limiter instead of static cuts.
     /// Requires native playback to preserve the limiter and matching output delays.
     pub subwoofer_limiter: bool,
+    /// Minimum configured-reference training target-RMS improvement for nonidentity correction, in dB.
+    ///
+    /// The default 0.25 dB is an engineering selection floor matching the
+    /// correctable-fixture policy, not a calibrated hearing threshold. It
+    /// prevents tiny numerical gains from justifying a complex correction.
+    /// Every-seat uncertainty and playback safety remain independent gates.
+    /// Selection uses complete raw configured-reference receipts; native marginal
+    /// safety scores remain independently enforced.
+    pub min_primary_improvement_db: f64,
     /// Minimum uncertainty-adjusted improvement for a candidate to ship, in dB.
     ///
     /// Every training seat's `improvement_lower_bound_db` (improvement after
@@ -65,6 +74,7 @@ impl Default for FinalizationConfig {
             max_useful_output_loss_db: 3.0,
             max_output_safety_attenuation_db: BTreeMap::new(),
             subwoofer_limiter: false,
+            min_primary_improvement_db: 0.25,
             min_improvement_lower_bound_db: 0.0,
         }
     }
@@ -116,6 +126,11 @@ impl FinalizationConfig {
         if !self.min_improvement_lower_bound_db.is_finite() {
             return Err("finalization.min_improvement_lower_bound_db must be finite".into());
         }
+        if !self.min_primary_improvement_db.is_finite()
+            || !(0.0..=60.0).contains(&self.min_primary_improvement_db)
+        {
+            return Err("finalization.min_primary_improvement_db must be in 0..=60".into());
+        }
         if self
             .input_peak_limits
             .iter()
@@ -133,6 +148,20 @@ impl FinalizationConfig {
 #[cfg(test)]
 mod tests {
     use super::FinalizationConfig;
+
+    #[test]
+    fn primary_improvement_floor_has_a_meaningful_default_and_validates() {
+        let mut config: FinalizationConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.min_primary_improvement_db, 0.25);
+        for floor in [0.0, 0.1, 0.25, 1.0] {
+            config.min_primary_improvement_db = floor;
+            assert!(config.validate().is_ok());
+        }
+        for floor in [-0.1, f64::NAN, f64::INFINITY, 61.0] {
+            config.min_primary_improvement_db = floor;
+            assert!(config.validate().is_err());
+        }
+    }
 
     #[test]
     fn physical_drive_ranking_requires_explicit_valid_evidence_and_weight() {

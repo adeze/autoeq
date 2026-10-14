@@ -433,7 +433,14 @@ mod tests {
                 [(-6.0, None, 0.0), (3.0, None, 0.0), (-6.0, Some(3.0), -3.0)]
             {
                 let output_dir = tempfile::tempdir().unwrap();
-                let original = small_curve_no_phase();
+                // This tests calibration through the delivered sidecar, not
+                // band-edge transitions. Supply dense original support so the
+                // warranted taper ends outside the asserted 500–5000 Hz band.
+                let original = Curve {
+                    freq: Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 128),
+                    spl: Array1::from_elem(128, 80.0),
+                    ..Default::default()
+                };
                 let mut residual = original.clone();
                 residual.spl += candidate_gain;
                 let config = OptimizerConfig {

@@ -61,12 +61,14 @@ fn wolfram_re12_gd_coherence() {
             spl: Array1::from_elem(freqs.len(), 80.0),
             phase: Array1::zeros(freqs.len()),
             coherence: Array1::from_elem(freqs.len(), 0.95),
+            resolution: None,
         },
         ChannelMeasurementInput {
             freq: Array1::from_vec(freqs.clone()),
             spl: Array1::from_elem(freqs.len(), 76.0),
             phase: Array1::zeros(freqs.len()),
             coherence: Array1::from_elem(freqs.len(), 0.92),
+            resolution: None,
         },
     ];
     let config = GdOptConfig {

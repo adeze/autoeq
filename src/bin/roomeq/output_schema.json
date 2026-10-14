@@ -2198,6 +2198,13 @@
             "null"
           ]
         },
+        "seat_id": {
+          "description": "Declared physical listening-seat identity, independent of microphone hardware.\nMissing preserves legacy JSON; it never supplies an inferred seat binding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skew_ppm": {
           "description": "Relative input clock skew in parts per million.",
           "format": "double",
@@ -2470,6 +2477,17 @@
           ],
           "description": "Stage-bound joint subwoofer diagnostics, when that method ran."
         },
+        "physical_correction_target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhysicalCorrectionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional owning physical target for correction-only safety.\nNative coherent evaluation continues to use `target_curve`.\nOld results lack this evidence and retain their conservative legacy gate."
+        },
         "plugins": {
           "description": "Ordered list of plugins (AudioEngine PluginConfig format)",
           "items": {
@@ -2509,6 +2527,17 @@
             }
           ],
           "description": "Prominent-resonance decay slices from the channel's measured room\nIR, accompanying `waterfall`."
+        },
+        "speech_transmission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChannelSpeechTransmission"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Full indirect STI from the native measured room impulse response."
         },
         "t60_octaves": {
           "anyOf": [
@@ -2909,6 +2938,99 @@
       ],
       "type": "object"
     },
+    "ChannelSpeechTransmission": {
+      "description": "Full indirect speech transmission results with measured-capture provenance.",
+      "properties": {
+        "basis": {
+          "description": "Always `measured_room_ir`; never derived from a synthesized waveform.",
+          "type": "string"
+        },
+        "duration_s": {
+          "description": "Original capture duration, without analysis padding, in seconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "method": {
+          "description": "Analysis contract: `iec_60268_16_2020_indirect_ir_only_v1`.",
+          "type": "string"
+        },
+        "modulation_frequencies_hz": {
+          "description": "Fourteen nominal modulation frequencies, 0.63 Hz through 12.5 Hz.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 14,
+          "minItems": 14,
+          "type": "array"
+        },
+        "modulation_transfer": {
+          "description": "Modulation transfer values, indexed by modulation frequency then octave.",
+          "items": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 7,
+            "minItems": 7,
+            "type": "array"
+          },
+          "maxItems": 14,
+          "minItems": 14,
+          "type": "array"
+        },
+        "mti": {
+          "description": "Per-octave mean transmission indices over all 14 modulations.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 7,
+          "minItems": 7,
+          "type": "array"
+        },
+        "octave_centers_hz": {
+          "description": "Seven nominal octave centers in ascending order, 125 Hz through 8 kHz.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 7,
+          "minItems": 7,
+          "type": "array"
+        },
+        "sample_rate_hz": {
+          "description": "Native capture sampling rate in Hz.",
+          "format": "double",
+          "type": "number"
+        },
+        "sti": {
+          "description": "Overall full STI in [0, 1].",
+          "format": "double",
+          "type": "number"
+        },
+        "warnings": {
+          "description": "Capture limitations, including possible decay truncation on short inputs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "method",
+        "basis",
+        "sample_rate_hz",
+        "duration_s",
+        "sti",
+        "octave_centers_hz",
+        "modulation_frequencies_hz",
+        "modulation_transfer",
+        "mti",
+        "warnings"
+      ],
+      "type": "object"
+    },
     "ChannelT60Band": {
       "description": "One octave-band Schroeder/T60 fit from a measured room IR.",
       "properties": {
@@ -3228,6 +3350,114 @@
         }
       ]
     },
+    "ConfiguredBaselineComparison": {
+      "description": "Compare delivered playback against configured routing and unprocessed captures.",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "playback_graph_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "residuals": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredBaselineResidual"
+          },
+          "type": "array"
+        },
+        "unavailable": {
+          "description": "Incomplete reference assessment cannot supply comparable scores.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "method",
+        "residuals",
+        "unavailable"
+      ],
+      "type": "object"
+    },
+    "ConfiguredBaselineResidual": {
+      "description": "Fixed configured-baseline residual for one declared physical seat.",
+      "properties": {
+        "baseline_support": {
+          "items": {
+            "$ref": "#/$defs/SummationSupportEvidence"
+          },
+          "type": "array"
+        },
+        "delivered_physical_outputs": {
+          "description": "Actual delivered outputs; routing optimization may change branch participation.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "delivered_support": {
+          "items": {
+            "$ref": "#/$defs/SummationSupportEvidence"
+          },
+          "type": "array"
+        },
+        "epa_spectral_flatness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "EPA spectral-error comparison on this score's frozen target reference.\nAbsent in legacy receipts. An unavailable assessment is an explicit\nfailed check with no observed scalar, never a zero regression."
+        },
+        "epa_unavailable": {
+          "description": "Why EPA was not assessed; absence is never a non-regression verdict.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level_matched_epa": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LevelMatchedEpaMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "EPA diagnostic on this configured reference and delivered physical seat.\nMissing when measured support cannot establish the fixed matching band."
+        },
+        "physical_outputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "score": {
+          "$ref": "#/$defs/FrozenGridResidualEvidence"
+        },
+        "seat_index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seat_index",
+        "physical_outputs",
+        "score",
+        "baseline_support",
+        "delivered_support"
+      ],
+      "type": "object"
+    },
     "ContinuousListeningAreaConfig": {
       "description": "Serializable continuous listening-area configuration for JSON config files.\n\nDrives `MultiSeatStrategy::ContinuousArea`. The optimizer integrates the\nper-position objective over a continuous prior π(p) defined over a\n`dimensions`-dimensional axis-aligned box, replacing the discrete seats\narray with a continuous probability density.\n\n`bounds.len()` must equal `dimensions`. For Gaussian priors,\n`mean.len()` and `cov_diag.len()` must also equal `dimensions`.\n`seat_positions.len()` must equal the number of discrete seats in the\ncalibration `MultiSeatMeasurements` and each row's length must equal\n`dimensions`.\n\n# Seat-identity / ordering contract\n\n`primary_seat` (on [`MultiSeatConfig`](super::multi_seat_config::MultiSeatConfig))\nis a positional index while `seat_positions` is a parallel array: the\nloader only checks equal counts, not semantic correspondence, so a swapped\norder in one sub/source silently combines different physical positions.\nTwo mechanisms close this gap:\n\n- **Stable seat IDs (recommended).** Set\n  [`SeatIdentityMap`](super::multi_seat_config::SeatIdentityMap) on the\n  sibling [`MultiSeatConfig`](super::multi_seat_config::MultiSeatConfig)\n  to one unique, non-empty ID per seat. Consumers (`roomeq-workflow`,\n  `roomeq-engine`) must join every source's per-seat measurements to\n  these IDs via\n  [`ContinuousListeningAreaConfig::check_source_seat_coverage`] instead of\n  relying on index order, and must echo the IDs in output reports\n  ([`ContinuousAreaMetrics`](crate::output::ContinuousAreaMetrics)) so the\n  correspondence is auditable.\n- **Strict positional ordering (legacy).** When no seat IDs are provided,\n  `seat_positions[i]` corresponds to measurement seat index `i`, and every\n  sub/source must present seats in exactly the same order. Any reordering\n  on one source silently mixes positions; prefer stable IDs.",
       "properties": {
@@ -3336,7 +3566,7 @@
           "$ref": "#/$defs/CorrectionMetricSummary"
         },
         "observations": {
-          "description": "Non-violating limit assessments recorded for audit agreement.\n\nEntries explain why an apparent limit/value divergence is not a\nviolation under the defined quantity semantics (for example, an\nacoustic response ratio above the gain backstop while the\nelectrical bound stays within it). Observations never change the\noutcome; only `violations` do.",
+          "description": "Non-violating limit assessments recorded for audit agreement.\n\nEntries record diagnostic facts that do not violate a limit.\nObservations never clear acoustic boost, electrical gain, pre-ringing,\nor headroom violations and never change the outcome.",
           "items": {
             "type": "string"
           },
@@ -3345,7 +3575,7 @@
         "outcome": {
           "$ref": "#/$defs/RoomEqOutcome",
           "default": "insufficient_evidence",
-          "description": "Stable four-state summary kept alongside the detailed decision."
+          "description": "Stable outcome summary kept alongside the detailed decision."
         },
         "policy": {
           "$ref": "#/$defs/CorrectionAcceptancePolicy"
@@ -3435,13 +3665,22 @@
       "type": "object"
     },
     "CorrectionDecision": {
-      "enum": [
-        "accepted",
-        "rejected",
-        "reverted_stage",
-        "identity_fallback"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "accepted",
+            "rejected",
+            "reverted_stage",
+            "identity_fallback"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "safe_fallback",
+          "description": "Correction-free baseline with bounded safety attenuation or verified alignment.",
+          "type": "string"
+        }
+      ]
     },
     "CorrectionDecisionLedger": {
       "description": "Ordered set of decision records with a pinned ledger version.",
@@ -5157,6 +5396,17 @@
     "EpaChannelMetrics": {
       "description": "Per-channel EPA psychoacoustic metrics computed on the initial\n(pre-EQ) and final (post-EQ) frequency responses.\n\nSee [`crate::loss::epa::score::EpaScore`] for the individual fields.",
       "properties": {
+        "level_matched": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LevelMatchedEpaMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Spectral comparison with explicit equal reference-band pressure energy.\nAbsent when shared support cannot establish the fixed matching band."
+        },
         "post": {
           "$ref": "#/$defs/EpaScore",
           "description": "EPA score computed from the final (post-EQ) response."
@@ -5258,6 +5508,17 @@
     "EpaMultichannelMetrics": {
       "description": "Aggregate EPA metrics for the whole reproduced channel set.\n\nChannels are combined with BS.1770-style energy weights before EPA scoring:\nfront/main channels use unit weight, surround channels use +1.5 dB energy\nweight, and LFE/subwoofer channels are excluded.",
       "properties": {
+        "level_matched": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LevelMatchedEpaMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whole-set level match preserving relative levels between channels."
+        },
         "post": {
           "$ref": "#/$defs/EpaScore",
           "description": "EPA score computed from the aggregate final (post-EQ) response."
@@ -5731,6 +5992,12 @@
           "format": "double",
           "type": "number"
         },
+        "min_primary_improvement_db": {
+          "default": 0.25,
+          "description": "Minimum configured-reference training target-RMS improvement for nonidentity correction, in dB.\n\nThe default 0.25 dB is an engineering selection floor matching the\ncorrectable-fixture policy, not a calibrated hearing threshold. It\nprevents tiny numerical gains from justifying a complex correction.\nEvery-seat uncertainty and playback safety remain independent gates.\nSelection uses complete raw configured-reference receipts; native marginal\nsafety scores remain independently enforced.",
+          "format": "double",
+          "type": "number"
+        },
         "output_ceiling_dbfs": {
           "default": 0.0,
           "description": "Maximum sampled physical-output level, in dBFS (must be <= 0).",
@@ -5882,6 +6149,109 @@
           "type": "number"
         }
       },
+      "type": "object"
+    },
+    "FrozenGridResidualEvidence": {
+      "properties": {
+        "baseline_samples_sha256": {
+          "description": "SHA256 of unconditioned pre levels sampled on this grid.",
+          "type": "string"
+        },
+        "curve_index": {
+          "description": "Index in this partition's evaluated curve set, not an acquisition seat ID.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluated_band_hz": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "frequency_grid_sha256": {
+          "description": "SHA256 of versioned little-endian f64 frequency samples.",
+          "type": "string"
+        },
+        "improvement_db": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "level_offset_db": {
+          "format": "double",
+          "type": "number"
+        },
+        "logical_input": {
+          "description": "Optional owner supplied by logical-input replay; never inferred from hashes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "normalized_to_pre": {
+          "description": "Whether the pre-derived offset is applied to both residuals.",
+          "type": "boolean"
+        },
+        "post_covers_baseline_grid": {
+          "type": "boolean"
+        },
+        "post_reference_gain_db": {
+          "description": "Actual additional post-reference gain; zero for absolute-target scoring.",
+          "format": "double",
+          "type": "number"
+        },
+        "post_weighted_rms_db": {
+          "description": "Absent when post does not cover the entire frozen baseline grid.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pre_weighted_rms_db": {
+          "format": "double",
+          "type": "number"
+        },
+        "relative_target_reference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativeTargetReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Canonical relative-level basis; original target hash and offset stay above.\nAbsent for absolute targets and legacy receipts."
+        },
+        "sample_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target_samples_sha256": {
+          "description": "SHA256 of target levels on this grid (zero for an absent relative target).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curve_index",
+        "frequency_grid_sha256",
+        "baseline_samples_sha256",
+        "target_samples_sha256",
+        "sample_count",
+        "evaluated_band_hz",
+        "normalized_to_pre",
+        "level_offset_db",
+        "post_reference_gain_db",
+        "pre_weighted_rms_db",
+        "post_covers_baseline_grid"
+      ],
       "type": "object"
     },
     "GateRewHeaderFacts": {
@@ -6817,6 +7187,76 @@
       ],
       "type": "object"
     },
+    "LevelMatchedEpaMetrics": {
+      "description": "Level-controlled EPA diagnostic, separate from delivered SPL and safety.\nMatching pressure energy is not equal-loudness calibration or a listening test.",
+      "properties": {
+        "frequency_grid_sha256": {
+          "description": "SHA256 of the frozen baseline evaluation grid (little-endian f64).",
+          "type": "string"
+        },
+        "listening_level_phon": {
+          "description": "Configured EPA presentation offset, not authenticated microphone calibration.",
+          "format": "double",
+          "type": "number"
+        },
+        "method": {
+          "description": "Matching contract: `log_frequency_pressure_energy_1_2_khz_v1`.",
+          "type": "string"
+        },
+        "post": {
+          "$ref": "#/$defs/EpaScore",
+          "description": "Delivered model score after reference-band level matching."
+        },
+        "post_reference_db": {
+          "description": "Delivered reference-band pressure-energy level removed before EPA scoring.",
+          "format": "double",
+          "type": "number"
+        },
+        "pre": {
+          "$ref": "#/$defs/EpaScore",
+          "description": "Baseline model score after reference-band level matching."
+        },
+        "pre_reference_db": {
+          "description": "Baseline reference-band pressure-energy level removed before EPA scoring.",
+          "format": "double",
+          "type": "number"
+        },
+        "preference_delta": {
+          "description": "Post minus pre modeled preference; not measured listener preference.",
+          "format": "double",
+          "type": "number"
+        },
+        "reference_band_hz": {
+          "description": "Fixed matching band, with both endpoints inside measured support.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "sample_count": {
+          "description": "Number of evaluation bins; post is interpolated onto the baseline grid.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "method",
+        "reference_band_hz",
+        "frequency_grid_sha256",
+        "sample_count",
+        "pre_reference_db",
+        "post_reference_db",
+        "listening_level_phon",
+        "pre",
+        "post",
+        "preference_delta"
+      ],
+      "type": "object"
+    },
     "LfeBassManagementReport": {
       "description": "Canonical home-cinema LFE programme-input policy.",
       "properties": {
@@ -6961,6 +7401,17 @@
           "description": "Native sampling rate verified against the waveform time grid.",
           "format": "double",
           "type": "number"
+        },
+        "speech_transmission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChannelSpeechTransmission"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Full indirect STI from the native measured room impulse response."
         },
         "t60_octaves": {
           "anyOf": [
@@ -8624,6 +9075,7 @@
             "max_attenuation_db": 12.0,
             "max_useful_output_loss_db": 3.0,
             "min_improvement_lower_bound_db": 0.0,
+            "min_primary_improvement_db": 0.25,
             "output_ceiling_dbfs": 0.0,
             "physical_drive": null,
             "physical_drive_weight": 0.0,
@@ -9888,6 +10340,25 @@
       },
       "type": "object"
     },
+    "PhysicalCorrectionTarget": {
+      "description": "Owning physical Main target before structural routing.\n\nThe reference curve is in the initially calibrated measurement plane.\n`measurement_alignment_gain_db` maps raw measured pressure into that plane;\nlater routing gains and correction trims are not part of this mapping.",
+      "properties": {
+        "curve": {
+          "$ref": "#/$defs/CurveData",
+          "description": "Owning Main solve target with its original shape and support."
+        },
+        "measurement_alignment_gain_db": {
+          "description": "Initial measurement calibration gain, applied exactly once to pre/post.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "curve",
+        "measurement_alignment_gain_db"
+      ],
+      "type": "object"
+    },
     "PhysicalDriveEnvelope": {
       "additionalProperties": false,
       "description": "One explicitly calibrated, frequency-sampled physical-demand envelope.",
@@ -10616,10 +11087,28 @@
             "null"
           ]
         },
+        "configured_baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConfiguredBaselineComparison"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whole-playback comparison; native marginal safety metrics remain below."
+        },
         "curve_count": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "frozen_grid_residual": {
+          "description": "Comparison-only scores on the pre/target grid. Native union-grid metrics\nbelow remain the safety evidence. Different baseline/target/grid hashes\ndo not establish a common basis across modes.",
+          "items": {
+            "$ref": "#/$defs/FrozenGridResidualEvidence"
+          },
+          "type": "array"
         },
         "improvement_median_db": {
           "format": "double",
@@ -11115,6 +11604,36 @@
       },
       "type": "object"
     },
+    "RelativeTargetReference": {
+      "description": "Canonical level reference for a target whose absolute level is unconstrained.",
+      "properties": {
+        "level_offset_db": {
+          "description": "Pre-derived residual offset against the relative target shape.",
+          "format": "double",
+          "type": "number"
+        },
+        "method": {
+          "description": "Versioned rule removing the target's arbitrary constant level.",
+          "type": "string"
+        },
+        "target_level_removed_db": {
+          "description": "Target level at the first frozen baseline-grid frequency.",
+          "format": "double",
+          "type": "number"
+        },
+        "target_shape_sha256": {
+          "description": "SHA256 of relative target levels rounded to 10^-9 dB for comparison only.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "target_level_removed_db",
+        "target_shape_sha256",
+        "level_offset_db"
+      ],
+      "type": "object"
+    },
     "ReportOutcome": {
       "description": "Outcome of assessing one proposed simplification or correction.\n\nThese are the only report outcomes a later stage may emit: assessment\ncode maps its internal verdicts onto this vocabulary instead of\ninventing per-stage reason strings.",
       "oneOf": [
@@ -11397,6 +11916,7 @@
               "max_attenuation_db": 12.0,
               "max_useful_output_loss_db": 3.0,
               "min_improvement_lower_bound_db": 0.0,
+              "min_primary_improvement_db": 0.25,
               "output_ceiling_dbfs": 0.0,
               "physical_drive": null,
               "physical_drive_weight": 0.0,
@@ -11519,13 +12039,22 @@
     },
     "RoomEqOutcome": {
       "description": "User-facing outcome of comparing a realized correction with its frozen\noriginal baseline. This is deliberately separate from the implementation\ndecision so an identity fallback can be reported as unchanged and a\nphase/seat evidence gap can be reported as insufficient evidence.",
-      "enum": [
-        "accepted",
-        "unchanged",
-        "rejected",
-        "insufficient_evidence"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "accepted",
+            "unchanged",
+            "rejected",
+            "insufficient_evidence"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "safe_fallback",
+          "description": "Safe adjusted baseline delivered without claiming correction benefit.",
+          "type": "string"
+        }
+      ]
     },
     "RoomOptimizerEvidence": {
       "description": "Versioned optimizer-confidence evidence used by final production\nacceptance. Superseded attempts remain visible in `runs_by_channel`, while\n`confidence` is derived only from runs marked `selected_for_output`.",
@@ -11557,7 +12086,7 @@
       "description": "Versioned limits applied to production RoomEQ output.\n\nThe output class changes only temporal limits. Spectral, spatial, boost,\nheadroom, and realization limits are invariant across filter classes.",
       "properties": {
         "max_boost_db": {
-          "description": "Ceiling for the gain backstop in dB.\n\nCompares against the electrical filter-gain bound\n(`max_electrical_boost_db`), not the acoustic response ratio:\nimproved interference near a baseline null can legitimately move\nthe ratio without any filter boosting. The acoustic\n`max_boost_db` stays reported alongside; an acoustic-only excess\nis recorded as an observation, while an unevaluable electrical\nbound fails closed to a violation.",
+          "description": "Ceiling for the gain backstop in dB.\n\nBoth the realized acoustic response ratio (`max_boost_db`) and the\nelectrical filter-gain bound (`max_electrical_boost_db`) must satisfy\nthis ceiling. Improved interference near a baseline null does not\nexempt an acoustic excess. Unevaluable electrical evidence fails closed.",
           "format": "double",
           "type": "number"
         },

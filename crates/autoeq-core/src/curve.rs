@@ -54,6 +54,11 @@ pub struct Curve {
     /// milliseconds. Never persisted.
     #[serde(default, skip_serializing)]
     pub excess_delay_ms: Option<f64>,
+    /// Original numerical sampling support, retained through interpolation.
+    /// Runtime-only metadata: denser derived grids do not establish finer
+    /// measurement resolution, and this does not authenticate acquisition.
+    #[serde(skip)]
+    pub resolution: Option<std::sync::Arc<crate::resolution::MeasurementResolution>>,
 }
 
 impl Default for Curve {
@@ -67,6 +72,7 @@ impl Default for Curve {
             min_phase: None,
             excess_phase: None,
             excess_delay_ms: None,
+            resolution: None,
         }
     }
 }
@@ -109,6 +115,7 @@ impl Curve {
             min_phase: None,
             excess_phase: None,
             excess_delay_ms: None,
+            resolution: Some(self.retained_resolution()),
         })
     }
 
@@ -174,6 +181,7 @@ impl Curve {
             min_phase: None,
             excess_phase: None,
             excess_delay_ms: None,
+            resolution: Some(self.retained_resolution()),
         })
     }
 

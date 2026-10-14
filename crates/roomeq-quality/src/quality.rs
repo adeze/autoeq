@@ -1,8 +1,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::metrics::{percentile, rms, weighted_mean, weighted_rms};
 use autoeq_core::Curve;
+mod frozen_residual_samples;
+#[doc(inline)]
+pub use frozen_residual_samples::{FrozenResidualSamples, frozen_grid_residual_samples};
 #[doc(inline)]
 pub use roomeq_model::{
     AcousticQualityScorecard, CoherentTimingEvidence, QualityPartitionMetrics,
@@ -15,8 +19,8 @@ pub struct QualityEvaluationConfig {
     pub max_freq_hz: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schroeder_hz: Option<f64>,
-    /// Remove each measurement's log-frequency-weighted broadband level before
-    /// scoring its shape, using the same measure as the residual RMS.
+    /// Freeze the pre measurement's weighted level offset for pre/post scoring.
+    /// Explicitly permitted gain shifts the post reference without fitting it.
     pub normalize_level: bool,
 }
 
@@ -276,9 +280,23 @@ pub fn evaluate_acoustic_quality_with_permitted_gain(
             .map_err(|error| error.to_string())?;
     }
 
-    let training = evaluate_partition(training_pre, training_post, target, config)?;
+    let training = evaluate_partition_with_permitted_gain(
+        training_pre,
+        training_post,
+        target,
+        config,
+        permitted_gain_db,
+    )?;
     let held_out = (!held_out_pre.is_empty())
-        .then(|| evaluate_partition(held_out_pre, held_out_post, target, config))
+        .then(|| {
+            evaluate_partition_with_permitted_gain(
+                held_out_pre,
+                held_out_post,
+                target,
+                config,
+                permitted_gain_db,
+            )
+        })
         .transpose()?;
 
     let mut corrections = Vec::new();
@@ -661,12 +679,24 @@ fn validate_pairs(label: &str, pre: &[Curve], post: &[Curve]) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(test)]
 fn evaluate_partition(
     pre: &[Curve],
     post: &[Curve],
     target: Option<&Curve>,
     config: QualityEvaluationConfig,
 ) -> Result<QualityPartitionMetrics, String> {
+    evaluate_partition_with_permitted_gain(pre, post, target, config, 0.0)
+}
+
+fn evaluate_partition_with_permitted_gain(
+    pre: &[Curve],
+    post: &[Curve],
+    target: Option<&Curve>,
+    config: QualityEvaluationConfig,
+    permitted_gain_db: f64,
+) -> Result<QualityPartitionMetrics, String> {
+    let mut frozen_grid_residual = Vec::with_capacity(pre.len());
     let mut pre_rms_values = Vec::new();
     let mut post_rms_values = Vec::new();
     let mut pre_abs = Vec::new();
@@ -676,15 +706,108 @@ fn evaluate_partition(
     let mut upper_post = Vec::new();
     let mut bass_pre_modal_roughness = Vec::new();
     let mut bass_post_modal_roughness = Vec::new();
-    for (pre, post) in pre.iter().zip(post) {
+    for (curve_index, (pre, post)) in pre.iter().zip(post).enumerate() {
         let samples = aligned_samples(pre, post, target, config)?;
         let mut pre_residual: Vec<f64> = samples.iter().map(|s| s.pre - s.target).collect();
         let mut post_residual: Vec<f64> = samples.iter().map(|s| s.post - s.target).collect();
         let frequencies: Vec<f64> = samples.iter().map(|s| s.frequency).collect();
-        if config.normalize_level {
-            center(&frequencies, &mut pre_residual);
-            center(&frequencies, &mut post_residual);
-        }
+        let reference_samples = aligned_samples(pre, pre, target, config)?;
+        let reference_frequencies: Vec<_> = reference_samples
+            .iter()
+            .map(|sample| sample.frequency)
+            .collect();
+        let mut reference_residual: Vec<_> = reference_samples
+            .iter()
+            .map(|sample| sample.pre - sample.target)
+            .collect();
+        let (reference, offset) = if config.normalize_level {
+            // Candidate-native samples stay eligible for safety metrics, but
+            // cannot change the level fitted to the uncorrected measurement.
+            let reference = reference_residual[0];
+            reference_residual
+                .iter_mut()
+                .for_each(|value| *value -= reference);
+            let offset = weighted_mean(&reference_frequencies, &reference_residual);
+            reference_residual
+                .iter_mut()
+                .for_each(|value| *value -= offset);
+            center_pair(
+                &mut pre_residual,
+                &mut post_residual,
+                reference,
+                offset,
+                permitted_gain_db,
+            );
+            (reference, offset)
+        } else {
+            (0.0, 0.0)
+        };
+        let post_reference_gain_db = if config.normalize_level {
+            permitted_gain_db
+        } else {
+            0.0
+        };
+        let band = [
+            reference_frequencies[0],
+            *reference_frequencies.last().unwrap(),
+        ];
+        let post_covers_baseline_grid = post.freq[0] <= band[0] && curve_max_freq(post)? >= band[1];
+        let fixed_pre_rms = weighted_rms(&reference_frequencies, &reference_residual);
+        let fixed_post_rms = post_covers_baseline_grid.then(|| {
+            let residual: Vec<_> = reference_samples
+                .iter()
+                .map(|sample| {
+                    sample_log(post, sample.frequency, &post.spl)
+                        - sample.target
+                        - reference
+                        - offset
+                        - post_reference_gain_db
+                })
+                .collect();
+            weighted_rms(&reference_frequencies, &residual)
+        });
+        let relative_target_reference = config.normalize_level.then(|| {
+            // A relative target's arbitrary constant cancels from the fitted
+            // residual. Express its comparison basis with a zero first target
+            // sample, retaining the original target and offset below. This
+            // changes no score, safety sample, or absolute-target contract.
+            let target_level_removed_db = reference_samples[0].target;
+            let anchored_residual: Vec<_> = reference_samples
+                .iter()
+                .map(|sample| sample.pre - (sample.target - target_level_removed_db))
+                .collect();
+            roomeq_model::RelativeTargetReference {
+                method: "first_baseline_frequency_target_level_nanodb_v1".into(),
+                target_level_removed_db,
+                target_shape_sha256: frozen_samples_sha256(reference_samples.iter().map(
+                    |sample| relative_target_hash_sample(sample.target - target_level_removed_db),
+                )),
+                level_offset_db: weighted_mean(&reference_frequencies, &anchored_residual),
+            }
+        });
+        frozen_grid_residual.push(roomeq_model::FrozenGridResidualEvidence {
+            logical_input: None,
+            curve_index,
+            frequency_grid_sha256: frozen_samples_sha256(
+                reference_samples.iter().map(|sample| sample.frequency),
+            ),
+            baseline_samples_sha256: frozen_samples_sha256(
+                reference_samples.iter().map(|sample| sample.pre),
+            ),
+            target_samples_sha256: frozen_samples_sha256(
+                reference_samples.iter().map(|sample| sample.target),
+            ),
+            sample_count: reference_samples.len(),
+            evaluated_band_hz: band,
+            normalized_to_pre: config.normalize_level,
+            level_offset_db: reference + offset,
+            relative_target_reference,
+            post_reference_gain_db,
+            pre_weighted_rms_db: fixed_pre_rms,
+            post_weighted_rms_db: fixed_post_rms,
+            improvement_db: fixed_post_rms.map(|post| fixed_pre_rms - post),
+            post_covers_baseline_grid,
+        });
         pre_rms_values.push(weighted_rms(&frequencies, &pre_residual));
         post_rms_values.push(weighted_rms(&frequencies, &post_residual));
         pre_abs.extend(pre_residual.iter().map(|value| value.abs()));
@@ -727,6 +850,8 @@ fn evaluate_partition(
         .zip(bass_post_modal_roughness_db_per_octave2)
         .map(|(pre, post)| pre - post);
     Ok(QualityPartitionMetrics {
+        configured_baseline: None,
+        frozen_grid_residual,
         curve_count: pre.len(),
         pre_weighted_rms_median_db: pre_median,
         post_weighted_rms_median_db: post_median,
@@ -744,6 +869,30 @@ fn evaluate_partition(
         bass_post_modal_roughness_db_per_octave2,
         bass_modal_roughness_improvement_db_per_octave2,
     })
+}
+
+fn frozen_samples_sha256(values: impl Iterator<Item = f64>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"roomeq-frozen-residual-f64-le-v1\0");
+    for value in values {
+        hasher.update(value.to_le_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn relative_target_hash_sample(level_db: f64) -> f64 {
+    // Comparison-only precision: one nanodecibel is far below every acoustic
+    // acceptance budget. Removing different fitted constants can otherwise
+    // leave different f64 roundoff in an identical relative target shape.
+    // Raw target hashes and all scores retain their original full precision.
+    const SAMPLES_PER_DB: f64 = 1_000_000_000.0;
+    let rounded = (level_db * SAMPLES_PER_DB).round() / SAMPLES_PER_DB;
+    // IEEE signed zeros represent the same target level.
+    if rounded == 0.0 { 0.0 } else { rounded }
 }
 
 fn modal_roughness(
@@ -1040,6 +1189,23 @@ fn center(frequencies: &[f64], values: &mut [f64]) {
     values.iter_mut().for_each(|value| *value -= mean);
 }
 
+fn center_pair(
+    pre: &mut [f64],
+    post: &mut [f64],
+    reference: f64,
+    offset: f64,
+    permitted_gain_db: f64,
+) {
+    // Derive the offset once from pre. Fitting another mean to post would
+    // erase a delivered broadband loss and change the target with the candidate.
+    // Subtract the same observed reference first to retain calibration precision.
+    pre.iter_mut().for_each(|value| *value -= reference);
+    post.iter_mut().for_each(|value| *value -= reference);
+    pre.iter_mut().for_each(|value| *value -= offset);
+    post.iter_mut()
+        .for_each(|value| *value -= offset + permitted_gain_db);
+}
+
 fn band_rms(frequencies: &[f64], values: &[f64], low: f64, high: f64) -> Option<f64> {
     let selected: Vec<(f64, f64)> = frequencies
         .iter()
@@ -1238,7 +1404,10 @@ mod tests {
         };
         let lost = curve(&frequencies, &vec![40.0; frequencies.len()]);
         let score = evaluate(&lost, &target, 0.0);
-        assert!(score.training.post_weighted_rms_median_db < 1e-10);
+        assert!(
+            score.training.post_weighted_rms_median_db >= 40.0,
+            "a fitted post level must not erase forty decibels of output loss"
+        );
         assert!((score.useful_output[0].unexplained_loss_rms_db - 40.0).abs() < 1e-9);
         assert!(!evaluate_quality_gate(&score, QualityGatePolicy::default(), true).passed);
         for gain in [-6.0, -12.0] {
@@ -1357,6 +1526,176 @@ mod tests {
             (dip.useful_output[0].unexplained_loss_rms_db - 5.0).abs() < 1e-9,
             "dip loss={}, want 5.0",
             dip.useful_output[0].unexplained_loss_rms_db
+        );
+    }
+
+    #[test]
+    fn candidate_support_cannot_refit_the_baseline_level() {
+        // The log-linear triangle has a 5 dB mean on the full baseline
+        // support. Its low-frequency fragment has a different mean.
+        let pre = curve(&[20.0, 200.0, 20_000.0], &[80.0, 90.0, 80.0]);
+        let post = curve(&[20.0, 60.0], &[85.0, 85.0]);
+        let score = evaluate_partition(&[pre], &[post], None, config()).unwrap();
+        assert!(score.post_weighted_rms_median_db < 1e-10, "{score:?}");
+        assert!(score.pre_weighted_rms_median_db > 2.0, "{score:?}");
+        let frozen = &score.frozen_grid_residual[0];
+        assert_eq!(frozen.evaluated_band_hz, [20.0, 20_000.0]);
+        assert!(!frozen.post_covers_baseline_grid);
+        assert!(frozen.post_weighted_rms_db.is_none());
+        assert!(frozen.improvement_db.is_none());
+    }
+
+    #[test]
+    fn relative_target_reference_is_invariant_to_constant_target_level() {
+        let pre = curve(&[20.0, 200.0, 20_000.0], &[80.0, 90.0, 80.0]);
+        let post = curve(&[20.0, 200.0, 20_000.0], &[81.0, 87.0, 80.0]);
+        let target = curve(&[20.0, 200.0, 20_000.0], &[0.0, -1.1357, -4.9132]);
+        let mut shifted = target.clone();
+        shifted.spl += 86.0;
+        let evaluate = |target, config| {
+            evaluate_partition(
+                std::slice::from_ref(&pre),
+                std::slice::from_ref(&post),
+                Some(target),
+                config,
+            )
+            .unwrap()
+        };
+        let original = evaluate(&target, config());
+        let changed = evaluate(&shifted, config());
+        let a = &original.frozen_grid_residual[0];
+        let b = &changed.frozen_grid_residual[0];
+        assert_ne!(a.target_samples_sha256, b.target_samples_sha256);
+        assert_ne!(a.level_offset_db, b.level_offset_db);
+        let a_relative = a.relative_target_reference.as_ref().unwrap();
+        let b_relative = b.relative_target_reference.as_ref().unwrap();
+        assert_eq!(
+            a_relative.target_shape_sha256,
+            b_relative.target_shape_sha256
+        );
+        assert_eq!(a_relative.level_offset_db, b_relative.level_offset_db);
+        assert!((original.improvement_median_db - changed.improvement_median_db).abs() < 1e-10);
+        let mut shaped = shifted.clone();
+        // Even a millionth-decibel shape change remains distinguishable.
+        shaped.spl[1] += 1e-6;
+        let reshaped = evaluate(&shaped, config());
+        assert_ne!(
+            a_relative.target_shape_sha256,
+            reshaped.frozen_grid_residual[0]
+                .relative_target_reference
+                .as_ref()
+                .unwrap()
+                .target_shape_sha256
+        );
+        let absolute = QualityEvaluationConfig {
+            normalize_level: false,
+            ..config()
+        };
+        let first = evaluate(&target, absolute);
+        let second = evaluate(&shaped, absolute);
+        assert!(
+            first.frozen_grid_residual[0]
+                .relative_target_reference
+                .is_none()
+        );
+        assert!(
+            second.frozen_grid_residual[0]
+                .relative_target_reference
+                .is_none()
+        );
+        assert!(
+            (first.pre_weighted_rms_median_db - second.pre_weighted_rms_median_db).abs() > 50.0
+        );
+    }
+
+    #[test]
+    fn frozen_grid_comparison_is_independent_of_candidate_density() {
+        let pre = curve(&[20.0, 200.0, 20_000.0], &[80.0, 90.0, 80.0]);
+        let sparse = curve(&[20.0, 200.0, 20_000.0], &[85.0; 3]);
+        let dense = curve(
+            &[20.0, 40.0, 60.0, 100.0, 200.0, 400.0, 1_000.0, 20_000.0],
+            &[85.0; 8],
+        );
+        let evaluate =
+            |post| evaluate_partition(std::slice::from_ref(&pre), &[post], None, config()).unwrap();
+        let sparse = evaluate(sparse);
+        let dense = evaluate(dense);
+        assert_eq!(sparse.frozen_grid_residual, dense.frozen_grid_residual);
+        let reference = &sparse.frozen_grid_residual[0];
+        // Three triangle samples give squared residual 25 at every point.
+        assert!((reference.pre_weighted_rms_db - 5.0).abs() < 1e-10);
+        assert_eq!(reference.sample_count, 3);
+        assert!((reference.level_offset_db - 85.0).abs() < 1e-10);
+        assert!(reference.post_weighted_rms_db.unwrap() < 1e-10);
+        assert!((sparse.pre_weighted_rms_median_db - dense.pre_weighted_rms_median_db).abs() > 0.5);
+    }
+
+    #[test]
+    fn fixed_grid_comparison_cannot_hide_a_native_cancellation_from_safety() {
+        let pre = curve(&[20.0, 200.0, 20_000.0], &[80.0, 90.0, 80.0]);
+        let post = curve(
+            &[20.0, 200.0, 201.0, 202.0, 20_000.0],
+            &[85.0, 85.0, 45.0, 85.0, 85.0],
+        );
+        let score = evaluate_acoustic_quality(
+            &[pre],
+            &[post],
+            &[],
+            &[],
+            None,
+            config(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(
+            score.training.frozen_grid_residual[0]
+                .post_weighted_rms_db
+                .unwrap()
+                < 1e-10
+        );
+        assert!((score.training.post_worst_abs_residual_db - 40.0).abs() < 1e-10);
+        assert!(!evaluate_quality_gate(&score, QualityGatePolicy::default(), true).passed);
+    }
+
+    #[test]
+    fn frozen_reference_identifies_baseline_and_target_changes() {
+        let pre = curve(&[20.0, 200.0, 20_000.0], &[80.0, 90.0, 80.0]);
+        let post = curve(&[20.0, 200.0, 20_000.0], &[85.0; 3]);
+        let original = evaluate_partition(
+            std::slice::from_ref(&pre),
+            std::slice::from_ref(&post),
+            None,
+            config(),
+        )
+        .unwrap();
+        let mut shifted = pre.clone();
+        shifted.spl += 1.0;
+        let changed =
+            evaluate_partition(&[shifted], std::slice::from_ref(&post), None, config()).unwrap();
+        assert_ne!(
+            original.frozen_grid_residual[0].baseline_samples_sha256,
+            changed.frozen_grid_residual[0].baseline_samples_sha256
+        );
+        assert_eq!(
+            original.frozen_grid_residual[0].frequency_grid_sha256,
+            changed.frozen_grid_residual[0].frequency_grid_sha256
+        );
+        let target = post.clone();
+        let targeted = evaluate_partition(&[pre], &[post], Some(&target), config()).unwrap();
+        assert_ne!(
+            original.frozen_grid_residual[0].target_samples_sha256,
+            targeted.frozen_grid_residual[0].target_samples_sha256
+        );
+        let mut legacy = serde_json::to_value(original).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("frozen_grid_residual");
+        assert!(
+            serde_json::from_value::<QualityPartitionMetrics>(legacy)
+                .unwrap()
+                .frozen_grid_residual
+                .is_empty()
         );
     }
 
@@ -1569,7 +1908,28 @@ mod tests {
             TemporalQualityEvidence::default(),
         )
         .expect("transformed");
-        assert_eq!(baseline.training, transformed.training);
+        for (before, after) in baseline
+            .training
+            .frozen_grid_residual
+            .iter()
+            .zip(transformed.training.frozen_grid_residual.iter().rev())
+        {
+            assert_eq!(before.frequency_grid_sha256, after.frequency_grid_sha256);
+            assert_ne!(
+                before.baseline_samples_sha256,
+                after.baseline_samples_sha256
+            );
+            assert!((after.level_offset_db - before.level_offset_db - 12.0).abs() < 1e-10);
+            assert_eq!(before.pre_weighted_rms_db, after.pre_weighted_rms_db);
+            assert_eq!(before.post_weighted_rms_db, after.post_weighted_rms_db);
+        }
+        // Per-curve receipts retain changed calibration and caller order;
+        // aggregate shape statistics remain invariant to both operations.
+        let mut baseline_metrics = baseline.training;
+        let mut transformed_metrics = transformed.training;
+        baseline_metrics.frozen_grid_residual.clear();
+        transformed_metrics.frozen_grid_residual.clear();
+        assert_eq!(baseline_metrics, transformed_metrics);
     }
 
     #[test]
@@ -1880,10 +2240,15 @@ mod tests {
         let frequencies = wide_grid();
         let target = flat_curve(&frequencies, 80.0);
         let hump = |level: f64| -> Vec<f64> {
-            frequencies
+            let mut values: Vec<_> = frequencies
                 .iter()
                 .map(|frequency| if *frequency <= 200.0 { level } else { 80.0 })
-                .collect()
+                .collect();
+            // Keep the fixture's broadband reference fixed so the test isolates
+            // one improved shape and one damaged shape, without a level change.
+            center(&frequencies, &mut values);
+            values.iter_mut().for_each(|value| *value += 80.0);
+            values
         };
         let seat_a_pre = curve(&frequencies, &hump(86.0));
         let seat_a_post = flat_curve(&frequencies, 80.0);
@@ -1939,9 +2304,8 @@ mod tests {
 
     #[test]
     fn quality_normalization_cannot_hide_output_loss() {
-        // F11: a 6 dB broadband loss is shape-neutral under level
-        // normalization, but the unnormalized output evidence must keep it
-        // and the gate must fail until the trim is explicitly permitted.
+        // F11: one frozen normalization must retain a 6 dB broadband loss
+        // in both residual scoring and unnormalized useful-output evidence.
         let frequencies = wide_grid();
         let pre = flat_curve(&frequencies, 80.0);
         let post = flat_curve(&frequencies, 74.0);
@@ -1955,7 +2319,8 @@ mod tests {
             temporal_for(std::slice::from_ref(&pre), std::slice::from_ref(&post)),
         )
         .unwrap();
-        assert!(scorecard.training.improvement_median_db.abs() < 1e-9);
+        assert!((scorecard.training.improvement_median_db + 6.0).abs() < 1e-9);
+        assert!((scorecard.training.post_weighted_rms_median_db - 6.0).abs() < 1e-9);
         let evidence = &scorecard.useful_output[0];
         assert!(
             (evidence.unexplained_loss_rms_db - 6.0).abs() < 1e-9,
@@ -1986,6 +2351,7 @@ mod tests {
             -6.0,
         )
         .unwrap();
+        assert!(budgeted.training.improvement_median_db.abs() < 1e-9);
         assert!(
             budgeted.useful_output[0].unexplained_loss_rms_db.abs() < 1e-9,
             "loss {}",

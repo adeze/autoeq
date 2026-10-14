@@ -213,7 +213,7 @@ pub struct TemporalIrMaskingMetrics {
 }
 
 /// EPA dimensions computed from a frequency response.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EpaScore {
     /// Evaluation: general quality (higher = better, 0-10 scale)
     pub evaluation: f64,
@@ -358,6 +358,10 @@ pub fn playback_summary(report: &CorrectionAcceptanceReport) -> PlaybackSummary 
             } else {
                 violations.join("; ")
             }
+        )],
+        RoomEqOutcome::SafeFallback => vec![format!(
+            "Safe fallback: correction removed and baseline attenuated for playback safety; headroom {}. No correction benefit claimed.",
+            headroom,
         )],
         RoomEqOutcome::Rejected => vec![format!(
             "Rejected: {}; protected baseline published.",
@@ -991,8 +995,98 @@ pub struct TemporalQualityEvidence {
     pub coherent_timing: CoherentTimingEvidence,
 }
 
+/// Canonical level reference for a target whose absolute level is unconstrained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RelativeTargetReference {
+    /// Versioned rule removing the target's arbitrary constant level.
+    pub method: String,
+    /// Target level at the first frozen baseline-grid frequency.
+    pub target_level_removed_db: f64,
+    /// SHA256 of relative target levels rounded to 10^-9 dB for comparison only.
+    pub target_shape_sha256: String,
+    /// Pre-derived residual offset against the relative target shape.
+    pub level_offset_db: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FrozenGridResidualEvidence {
+    /// Optional owner supplied by logical-input replay; never inferred from hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_input: Option<String>,
+    /// Index in this partition's evaluated curve set, not an acquisition seat ID.
+    pub curve_index: usize,
+    /// SHA256 of versioned little-endian f64 frequency samples.
+    pub frequency_grid_sha256: String,
+    /// SHA256 of unconditioned pre levels sampled on this grid.
+    pub baseline_samples_sha256: String,
+    /// SHA256 of target levels on this grid (zero for an absent relative target).
+    pub target_samples_sha256: String,
+    pub sample_count: usize,
+    pub evaluated_band_hz: [f64; 2],
+    /// Whether the pre-derived offset is applied to both residuals.
+    pub normalized_to_pre: bool,
+    pub level_offset_db: f64,
+    /// Canonical relative-level basis; original target hash and offset stay above.
+    /// Absent for absolute targets and legacy receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_target_reference: Option<RelativeTargetReference>,
+    /// Actual additional post-reference gain; zero for absolute-target scoring.
+    pub post_reference_gain_db: f64,
+    pub pre_weighted_rms_db: f64,
+    /// Absent when post does not cover the entire frozen baseline grid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_weighted_rms_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub improvement_db: Option<f64>,
+    pub post_covers_baseline_grid: bool,
+}
+
+/// Fixed configured-baseline residual for one declared physical seat.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfiguredBaselineResidual {
+    pub seat_index: usize,
+    pub physical_outputs: Vec<String>,
+    /// Actual delivered outputs; routing optimization may change branch participation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivered_physical_outputs: Vec<String>,
+    pub score: FrozenGridResidualEvidence,
+    pub baseline_support: Vec<SummationSupportEvidence>,
+    pub delivered_support: Vec<SummationSupportEvidence>,
+    /// EPA diagnostic on this configured reference and delivered physical seat.
+    /// Missing when measured support cannot establish the fixed matching band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_matched_epa: Option<crate::LevelMatchedEpaMetrics>,
+    /// Why EPA was not assessed; absence is never a non-regression verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epa_unavailable: Option<String>,
+    /// EPA spectral-error comparison on this score's frozen target reference.
+    /// Absent in legacy receipts. An unavailable assessment is an explicit
+    /// failed check with no observed scalar, never a zero regression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epa_spectral_flatness: Option<crate::StageCheck>,
+}
+
+/// Compare delivered playback against configured routing and unprocessed captures.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfiguredBaselineComparison {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_graph_sha256: Option<String>,
+    pub residuals: Vec<ConfiguredBaselineResidual>,
+    /// Incomplete reference assessment cannot supply comparable scores.
+    pub unavailable: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct QualityPartitionMetrics {
+    /// Whole-playback comparison; native marginal safety metrics remain below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_baseline: Option<ConfiguredBaselineComparison>,
+    /// Comparison-only scores on the pre/target grid. Native union-grid metrics
+    /// below remain the safety evidence. Different baseline/target/grid hashes
+    /// do not establish a common basis across modes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen_grid_residual: Vec<FrozenGridResidualEvidence>,
     pub curve_count: usize,
     pub pre_weighted_rms_median_db: f64,
     pub post_weighted_rms_median_db: f64,
@@ -1263,6 +1357,8 @@ pub enum CorrectionDecision {
     Rejected,
     RevertedStage,
     IdentityFallback,
+    /// Correction-free baseline with bounded safety attenuation or verified alignment.
+    SafeFallback,
 }
 
 /// User-facing outcome of comparing a realized correction with its frozen
@@ -1274,6 +1370,8 @@ pub enum CorrectionDecision {
 pub enum RoomEqOutcome {
     Accepted,
     Unchanged,
+    /// Safe adjusted baseline delivered without claiming correction benefit.
+    SafeFallback,
     Rejected,
     #[default]
     InsufficientEvidence,
@@ -1422,13 +1520,10 @@ pub struct RuntimeAcceptancePolicy {
     pub max_worst_position_regression_db: f64,
     /// Ceiling for the gain backstop in dB.
     ///
-    /// Compares against the electrical filter-gain bound
-    /// (`max_electrical_boost_db`), not the acoustic response ratio:
-    /// improved interference near a baseline null can legitimately move
-    /// the ratio without any filter boosting. The acoustic
-    /// `max_boost_db` stays reported alongside; an acoustic-only excess
-    /// is recorded as an observation, while an unevaluable electrical
-    /// bound fails closed to a violation.
+    /// Both the realized acoustic response ratio (`max_boost_db`) and the
+    /// electrical filter-gain bound (`max_electrical_boost_db`) must satisfy
+    /// this ceiling. Improved interference near a baseline null does not
+    /// exempt an acoustic excess. Unevaluable electrical evidence fails closed.
     pub max_boost_db: f64,
     pub min_available_headroom_db: f64,
     pub max_latency_ms: f64,
@@ -1529,7 +1624,7 @@ pub struct CorrectionAcceptanceReport {
     pub runtime_policy: Option<RuntimeAcceptancePolicy>,
     pub decision: CorrectionDecision,
     pub accepted: bool,
-    /// Stable four-state summary kept alongside the detailed decision.
+    /// Stable outcome summary kept alongside the detailed decision.
     #[serde(default)]
     pub outcome: RoomEqOutcome,
     pub metrics: CorrectionMetricSummary,
@@ -1550,11 +1645,9 @@ pub struct CorrectionAcceptanceReport {
     pub processing_fallback: Option<String>,
     /// Non-violating limit assessments recorded for audit agreement.
     ///
-    /// Entries explain why an apparent limit/value divergence is not a
-    /// violation under the defined quantity semantics (for example, an
-    /// acoustic response ratio above the gain backstop while the
-    /// electrical bound stays within it). Observations never change the
-    /// outcome; only `violations` do.
+    /// Entries record diagnostic facts that do not violate a limit.
+    /// Observations never clear acoustic boost, electrical gain, pre-ringing,
+    /// or headroom violations and never change the outcome.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1568,7 +1661,7 @@ pub struct CorrectionAcceptanceReport {
 }
 
 impl CorrectionAcceptanceReport {
-    /// Derive the stable four-state outcome vocabulary from the detailed
+    /// Derive the stable outcome vocabulary from the detailed
     /// acceptance record. An evidence limitation always wins over a generic
     /// rejection, so callers cannot mistake an unmeasured phase claim for a
     /// proven bad correction.
@@ -1584,6 +1677,23 @@ impl CorrectionAcceptanceReport {
             RoomEqOutcome::Accepted
         } else if self.decision == CorrectionDecision::IdentityFallback {
             RoomEqOutcome::Unchanged
+        } else if self.decision == CorrectionDecision::SafeFallback {
+            if self.violations.iter().any(|violation| {
+                matches!(
+                    violation.as_str(),
+                    "acoustic_quality_non_finite"
+                        | "max_boost_limit_exceeded"
+                        | "headroom_limit_exceeded"
+                        | "pre_ringing_limit_exceeded"
+                        | "latency_limit_exceeded"
+                        | "induced_group_delay_limit_exceeded"
+                        | "baseline_exceeds_output_safety_attenuation_budget"
+                ) || violation.starts_with("max_output_safety_attenuation_exceeded:")
+            }) {
+                RoomEqOutcome::Rejected
+            } else {
+                RoomEqOutcome::SafeFallback
+            }
         } else {
             RoomEqOutcome::Rejected
         }
@@ -1634,6 +1744,33 @@ mod outcome_tests {
 
     #[test]
     fn outcome_distinguishes_acceptance_identity_rejection_and_evidence_gap() {
+        assert_eq!(
+            report(
+                CorrectionDecision::SafeFallback,
+                false,
+                vec!["max_boost_limit_exceeded"]
+            )
+            .derived_outcome(),
+            RoomEqOutcome::Rejected
+        );
+        assert_eq!(
+            report(
+                CorrectionDecision::SafeFallback,
+                false,
+                vec!["baseline_requires_safety_attenuation"]
+            )
+            .derived_outcome(),
+            RoomEqOutcome::SafeFallback
+        );
+        assert_eq!(
+            report(
+                CorrectionDecision::SafeFallback,
+                false,
+                vec!["phase_evidence_missing"]
+            )
+            .derived_outcome(),
+            RoomEqOutcome::InsufficientEvidence
+        );
         assert_eq!(
             report(CorrectionDecision::Accepted, true, vec![]).derived_outcome(),
             RoomEqOutcome::Accepted
@@ -1825,6 +1962,8 @@ mod outcome_tests {
             useful_output: Vec::new(),
             final_seats: seats,
             training: QualityPartitionMetrics {
+                configured_baseline: None,
+                frozen_grid_residual: Vec::new(),
                 curve_count: 2,
                 pre_weighted_rms_median_db: 4.0,
                 post_weighted_rms_median_db: 2.0,

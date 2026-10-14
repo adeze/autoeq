@@ -34,7 +34,9 @@ def produce(request):
     """Run the shared Rust producer; never duplicate its calculations here.
 
     AUTOEQ_REPORT_PRODUCER can select a prebuilt report-producer executable.
-    Source checkouts otherwise use Cargo's cached native build.
+    Source checkouts otherwise use Cargo's cached native build. Hosts that
+    stage these scripts outside the checkout set AUTOEQ_WORKSPACE_ROOT to
+    the real workspace; it defaults to this file's own checkout root.
     """
     callback = _producer_override.get()
     if callback is not None:
@@ -48,7 +50,8 @@ def produce(request):
     if executable:
         command = [executable]
     else:
-        root = Path(__file__).resolve().parents[2]
+        workspace = os.environ.get("AUTOEQ_WORKSPACE_ROOT")
+        root = Path(workspace) if workspace else Path(__file__).resolve().parents[2]
         cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
         command = [cargo, "run", "--quiet", "--manifest-path", str(root / "Cargo.toml"),
                    "-p", "autoeq-report-wasm", "--bin", "report-producer", "--"]

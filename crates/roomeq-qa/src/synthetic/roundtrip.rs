@@ -277,13 +277,10 @@ pub(super) fn build_roundtrip_config(
     config.optimizer.num_filters = case.num_filters;
     config.optimizer.min_freq = 20.0;
     config.optimizer.max_freq = 20_000.0;
-    if config
-        .system
-        .as_ref()
-        .is_some_and(|system| system.subwoofers.is_some())
-    {
-        config.optimizer.finalization.default_input_peak = POSITIVE_ROUTED_INPUT_PEAK;
-    }
+    // Positive inverse fixtures need reserve to restore their injected dips
+    // in stereo as well as routed systems. Retain the ordinary output ceiling
+    // and attenuation limits while declaring the same bounded input stimulus.
+    config.optimizer.finalization.default_input_peak = POSITIVE_ROUTED_INPUT_PEAK;
     if let Some(seat_set) = seats {
         config.optimizer.multi_measurement = Some(roomeq_model::MultiMeasurementConfig {
             strategy: seat_set.strategy,

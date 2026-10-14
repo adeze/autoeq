@@ -8,6 +8,8 @@ pub struct PreparedObjective {
     pub(crate) evaluation_stage: super::run_control::EvaluationStage,
     pub(crate) flat: Option<PreparedFlatLoss>,
     pub(crate) asymmetric: Option<PreparedAsymmetricLoss>,
+    pub(crate) null_boost: Option<PreparedFlatLoss>,
+    pub(crate) epa_regression: Option<PreparedEpaRegression>,
     pub(crate) deadband_thresholds: Option<Vec<f64>>,
     #[allow(dead_code)]
     pub(crate) smoothing_rows: Option<Vec<Vec<(usize, f64)>>>,
@@ -38,6 +40,23 @@ impl PreparedObjective {
                 data.max_freq,
                 &data.asymmetric_loss_config,
                 data.null_suppression.as_deref(),
+            )
+        });
+        // Unit weight preserves the flat loss's dB scale and perceptual
+        // integration. Suppressed dip error cannot reward boost into a null;
+        // this separate cost also discourages spill from neighboring filters.
+        let null_boost = matches!(
+            data.loss_type,
+            LossType::SpeakerFlat | LossType::SpeakerFlatAsymmetric
+        )
+        .then(|| data.null_suppression.clone())
+        .flatten()
+        .map(|mask| {
+            PreparedFlatLoss::new_with_null_suppression(
+                &data.freqs,
+                data.min_freq,
+                data.max_freq,
+                mask,
             )
         });
         let deadband_thresholds = data
@@ -79,6 +98,9 @@ impl PreparedObjective {
             evaluation_stage: super::run_control::EvaluationStage::Search,
             flat,
             asymmetric,
+            null_boost,
+            epa_regression: (data.epa_flatness_regression_weight != 0.0)
+                .then(|| PreparedEpaRegression::new(data)),
             deadband_thresholds,
             smoothing_rows,
             smoothness,
@@ -122,6 +144,73 @@ impl PreparedObjective {
                 .sum();
         }
         true
+    }
+}
+
+/// Cached spectral EPA baseline and integration kernel, excluding diagnostics.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedEpaRegression {
+    kernel: crate::loss::enhanced_weights::PreparedWeightedLoss,
+    baseline: f64,
+    weight: f64,
+    erb_weight: f64,
+    band_weight: f64,
+    valid_band_weights: bool,
+}
+
+impl PreparedEpaRegression {
+    fn new(data: &ObjectiveData) -> Self {
+        let config = data.epa_config.clone().unwrap_or_default();
+        let valid_band_weights = [
+            config.flatness_band_weights.bass_weight,
+            config.flatness_band_weights.mid_weight,
+            config.flatness_band_weights.treble_weight,
+        ]
+        .into_iter()
+        .all(|weight| weight.is_finite() && weight >= 0.0);
+        let kernel = crate::loss::enhanced_weights::PreparedWeightedLoss::new(
+            &data.freqs,
+            data.min_freq,
+            data.max_freq,
+            config.flatness_band_weights,
+        );
+        // The uncorrected response has residual -deviation. This norm is sign
+        // symmetric, so no baseline allocation is needed beyond preparation.
+        let baseline = kernel.evaluate(
+            &data.deviation,
+            config.flatness_erb_weight,
+            config.flatness_band_weight,
+        );
+        Self {
+            kernel,
+            baseline,
+            weight: data.epa_flatness_regression_weight,
+            erb_weight: config.flatness_erb_weight,
+            band_weight: config.flatness_band_weight,
+            valid_band_weights,
+        }
+    }
+
+    pub(crate) fn evaluate(&self, error: &ndarray::Array1<f64>) -> f64 {
+        if !self.weight.is_finite()
+            || !self.valid_band_weights
+            || self.weight < 0.0
+            || !self.baseline.is_finite()
+            || !self.erb_weight.is_finite()
+            || self.erb_weight < 0.0
+            || !self.band_weight.is_finite()
+            || self.band_weight < 0.0
+            || self.erb_weight + self.band_weight <= 0.0
+        {
+            return f64::INFINITY;
+        }
+        let candidate = self
+            .kernel
+            .evaluate(error, self.erb_weight, self.band_weight);
+        if !candidate.is_finite() {
+            return f64::INFINITY;
+        }
+        self.weight * (candidate - self.baseline).max(0.0)
     }
 }
 

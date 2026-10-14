@@ -649,7 +649,7 @@ def capture_views_html(report):
     try:
         status = report.get("status")
         if status is not None:
-            if status not in ("accepted", "unchanged", "rejected", "insufficient_evidence"):
+            if status not in ("accepted", "unchanged", "safe_fallback", "rejected", "insufficient_evidence"):
                 raise ValueError("unsupported verification status")
             count = report.get("verified_captures")
             exit_code = report.get("exit_code")

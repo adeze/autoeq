@@ -942,6 +942,13 @@
             "null"
           ]
         },
+        "seat_id": {
+          "description": "Declared physical listening-seat identity, independent of microphone hardware.\nMissing preserves legacy JSON; it never supplies an inferred seat binding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skew_ppm": {
           "description": "Relative input clock skew in parts per million.",
           "format": "double",
@@ -2214,6 +2221,12 @@
         "min_improvement_lower_bound_db": {
           "default": 0.0,
           "description": "Minimum uncertainty-adjusted improvement for a candidate to ship, in dB.\n\nEvery training seat's `improvement_lower_bound_db` (improvement after\nsubtracting summation uncertainty) must exceed this floor, or the\ncandidate is rejected as showing no demonstrated benefit and selection\nfalls back to a simpler protected result. Identity candidates (no\nmeaningful correction applied) skip the floor: with nothing applied\nthere is nothing to reject, and they flow through as the protected\nbaseline. The default 0.0 is the measurement-uncertainty boundary,\nnot a perceptual threshold: raising it needs repeat-capture and\nlistening evidence (WP7), never a guess.",
+          "format": "double",
+          "type": "number"
+        },
+        "min_primary_improvement_db": {
+          "default": 0.25,
+          "description": "Minimum configured-reference training target-RMS improvement for nonidentity correction, in dB.\n\nThe default 0.25 dB is an engineering selection floor matching the\ncorrectable-fixture policy, not a calibrated hearing threshold. It\nprevents tiny numerical gains from justifying a complex correction.\nEvery-seat uncertainty and playback safety remain independent gates.\nSelection uses complete raw configured-reference receipts; native marginal\nsafety scores remain independently enforced.",
           "format": "double",
           "type": "number"
         },
@@ -3573,6 +3586,7 @@
             "max_attenuation_db": 12.0,
             "max_useful_output_loss_db": 3.0,
             "min_improvement_lower_bound_db": 0.0,
+            "min_primary_improvement_db": 0.25,
             "output_ceiling_dbfs": 0.0,
             "physical_drive": null,
             "physical_drive_weight": 0.0,
@@ -6293,6 +6307,7 @@
           "max_attenuation_db": 12.0,
           "max_useful_output_loss_db": 3.0,
           "min_improvement_lower_bound_db": 0.0,
+          "min_primary_improvement_db": 0.25,
           "output_ceiling_dbfs": 0.0,
           "physical_drive": null,
           "physical_drive_weight": 0.0,

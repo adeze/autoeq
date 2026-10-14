@@ -229,6 +229,7 @@ mod tests {
             min_phase: Some(ndarray::Array1::zeros(5)),
             excess_phase: Some(ndarray::Array1::zeros(5)),
             excess_delay_ms: Some(2.0),
+            resolution: None,
         };
         let input = PreparedChannelInput::from_measurements(PreparedChannelMeasurements::new(
             curve.clone(),

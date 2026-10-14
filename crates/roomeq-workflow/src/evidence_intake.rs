@@ -665,13 +665,14 @@ impl WorkflowIntake {
 
 /// Workflow result summary handed to root R3 and the CLI.
 ///
-/// Four stable states only: accepted, unchanged, rejected, unknown. Unknown
+/// Stable states: accepted, unchanged, safe_fallback, rejected, unknown. Unknown
 /// covers insufficient evidence; it never promotes a delivery claim.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowOutcome {
     Accepted,
     Unchanged,
+    SafeFallback,
     Rejected,
     #[default]
     Unknown,
@@ -684,6 +685,7 @@ impl WorkflowOutcome {
         match outcome {
             roomeq_model::RoomEqOutcome::Accepted => WorkflowOutcome::Accepted,
             roomeq_model::RoomEqOutcome::Unchanged => WorkflowOutcome::Unchanged,
+            roomeq_model::RoomEqOutcome::SafeFallback => WorkflowOutcome::SafeFallback,
             roomeq_model::RoomEqOutcome::Rejected => WorkflowOutcome::Rejected,
             roomeq_model::RoomEqOutcome::InsufficientEvidence => WorkflowOutcome::Unknown,
         }
@@ -2772,7 +2774,8 @@ mod tests {
         let source = MeasurementSource::Single(autoeq_core::MeasurementSingle {
             measurement: autoeq_core::MeasurementRef::Inline(autoeq_core::InlineMeasurement {
                 frequencies: vec![20.0, 30.0, 45.0, 60.0, 100.0, 200.0, 300.0, 400.0, 500.0],
-                magnitude_db: vec![80.0, 80.0, 68.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
+                // Test authorized cuts rather than filling a detected narrow null.
+                magnitude_db: vec![80.0, 80.0, 92.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
                 phase_deg: None,
                 name: Some(String::from("left")),
                 wav_path: None,

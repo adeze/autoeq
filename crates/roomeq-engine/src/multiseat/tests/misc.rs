@@ -382,7 +382,8 @@ fn test_continuous_mso_returns_valid_solution() {
         &interpolated,
         &freqs,
         2,
-        &config,
+        super::super::mso_search_options::MsoSearchOptions::from_config(&config, 20.0, 120.0)
+            .with_measurement_resolution(&ms, 48000.0),
         48000.0,
         20.0,
         120.0,

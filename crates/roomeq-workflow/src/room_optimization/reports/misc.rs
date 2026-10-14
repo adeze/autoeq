@@ -176,6 +176,23 @@ pub(in super::super) fn generate_validation_bundle_report(
     }
     advisories.push("program_material_required_for_wav_assets".to_string());
 
+    // The reference is known before writing; include it in the bound payload.
+    // Adding it after reconciliation would invalidate the delivered ledger.
+    result.metadata.validation_bundle = Some(roomeq_model::ValidationBundleReport {
+        artifact: artifact_path.to_string_lossy().to_string(),
+        target_lufs: bundle.target_lufs,
+        abx: bundle.abx,
+        mushra: bundle.mushra,
+        perceptual_regression_summary: bundle.perceptual_regression_summary,
+        advisories: advisories.clone(),
+    });
+    if result.finalized_decisions.is_some() {
+        let processing = crate::final_ledger::processing_snapshot(result)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+        crate::final_ledger::finalize_result_ledger(result, &processing, sample_rate)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    }
+
     let payload = serde_json::json!({
         "version": "roomeq-validation-bundle-v1",
         // Snapshot the same final object returned to the caller, after final-seat
@@ -209,14 +226,6 @@ pub(in super::super) fn generate_validation_bundle_report(
     });
     store.write(&artifact_path, &serde_json::to_vec_pretty(&payload)?)?;
 
-    result.metadata.validation_bundle = Some(roomeq_model::ValidationBundleReport {
-        artifact: artifact_path.to_string_lossy().to_string(),
-        target_lufs: bundle.target_lufs,
-        abx: bundle.abx,
-        mushra: bundle.mushra,
-        perceptual_regression_summary: bundle.perceptual_regression_summary,
-        advisories,
-    });
     Ok(())
 }
 

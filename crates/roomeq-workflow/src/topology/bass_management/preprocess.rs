@@ -980,16 +980,31 @@ mod tests {
 
     #[test]
     fn preprocess_multiseat_uses_selected_primary_and_strategy() {
+        // These analytic curves share a declared time origin; this fixture
+        // does not qualify any measurement-backed MSO archive.
+        let source = MeasurementSource::Multiple(autoeq_core::MeasurementMultiple {
+            measurements: [80.0, 60.0]
+                .into_iter()
+                .enumerate()
+                .map(|(seat, level)| autoeq_core::MeasurementRef::Loaded {
+                    original: Box::new(autoeq_core::MeasurementRef::Named {
+                        path: "analytic-multiseat.csv".into(),
+                        name: Some(format!("analytic-seat-{seat}")),
+                    }),
+                    loaded_response: Box::new(make_curve(16, level, Some(0.0))),
+                })
+                .collect(),
+            speaker_name: None,
+            provenance: autoeq_core::MeasurementProvenance {
+                capture_kind: autoeq_core::ProvenanceCaptureKind::StationaryIr,
+                timing_reference_id: Some("analytic-common-time-origin".into()),
+                ..Default::default()
+            },
+        });
         let group = MultiSubGroup {
             name: "subs".into(),
             speaker_name: None,
-            subwoofers: vec![
-                MeasurementSource::InMemoryMultiple(vec![
-                    make_curve(16, 80.0, Some(0.0)),
-                    make_curve(16, 60.0, Some(0.0))
-                ]);
-                2
-            ],
+            subwoofers: vec![source; 2],
             allpass_optimization: false,
             joint_optimization: false,
         };

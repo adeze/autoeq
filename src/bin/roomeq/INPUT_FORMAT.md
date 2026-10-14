@@ -1,5 +1,19 @@
 # RoomEQ Input Format
 
+Bass-managed main targets are resolved on the aligned raw measurement grid
+before correction, including the implicit flat target when no target is set.
+Their physical level is retained through final routed scoring.
+
+Measured suite diagnostics retained under `.roomeq-attempt-*` are displayed and
+audited after a native refusal. Their path and byte hash are recorded separately;
+they remain unapproved and the combination retains its native failure status.
+
+RoomEQ `flat` and asymmetric losses automatically detect narrow measurement dips
+before smoothing and penalize positive correction at those bins. The same
+prepared null mask applies to PEQ search and realized FIR candidate scoring.
+Broad dips and cuts retain their existing objective weights; final acoustic
+boost and headroom gates remain independent of this objective penalty.
+
 ## Verified capture handoff
 
 New canonical capture configurations set
@@ -148,6 +162,14 @@ without this stage omit the panel. No input configuration fields are added.
 When present, its checks must cover both views for each delivered channel exactly
 once. Malformed or incomplete inventories render an unavailable explanation.
 
+Saved long waveform views use lossless `.ir64` sidecars for full-rate evidence
+and separate `_display.csv` files containing at most 4096 extrema-preserving
+original samples. The measurement index's `pre_ir` / `post_ir` entries refer
+to full-rate evidence; optional `pre_ir_display` / `post_ir_display` entries
+refer to nonuniform display samples. Native and Python readers support both
+IR64 and legacy CSVs. Plot decimation does not change phase/timing analysis or
+acceptance evidence. See the manual's output bundle layout for the IR64 format.
+
 Playback-verification plant inputs are a separate CLI handoff, not `RoomConfig`.
 Use `--verification-prediction-inputs <JSON>` with `--verification-bundle <DIR>`;
 `--verification-graph <JSON>` generates from saved native DSP without optimization.
@@ -194,6 +216,13 @@ an old split setting pass validation.
 This processing split is **not** the speaker/subwoofer crossover configured in
 `crossovers` and referenced by bass management. It is also not the full speaker
 passband used to assess corrected playback.
+
+Hybrid selection compares complete, independently validated IIR and FIR results
+using the same frozen captures and the requested Hybrid safety budgets. This
+also applies when the initial Hybrid result is unchanged or a safe fallback.
+A configured RMS within numerical tie tolerance of zero can certify the
+nonnegative lower bound without running the two standalone searches. Reports
+identify that proof separately from evaluated candidate comparisons.
 
 Use `fir.taps` for FIR/hybrid FIR length and
 `mixed_phase.max_fir_length_ms` for the MIXED-PHASE excess-phase stage.
@@ -305,6 +334,11 @@ Measurement-backed `allpass_optimization` also requires labeled stationary
 captures with a shared timing reference across sources at each seat. Unknown,
 mismatched, or incomplete reference matrices are refused before dispatch.
 Curve-only numerical APIs do not establish acquisition provenance.
+The legacy group path selected by `optimizer.multi_seat.enabled` also requires
+a shared stationary timing reference within each seat and phase on every input,
+even when `joint_optimization` and `allpass_optimization` are false. It refuses
+unqualified inputs before per-sub EQ or coherent gain/delay optimization;
+disabling joint mode cannot bypass timing admission.
 In routed systems, select subwoofer strategy `mso`; combining explicit joint
 mode with the independent `single` strategy is rejected instead of silently
 running independent processing.
@@ -418,6 +452,49 @@ measurement-uncertainty boundary, not a perceptual threshold: raising it
 needs repeat-capture and listening evidence (see
 `docs/ROOMEQ_LISTENING_PLAN.md`), never a guess.
 
+`optimizer.finalization.min_primary_improvement_db` (default `0.25`) separately
+requires mean configured-reference training target-RMS improvement beyond this engineering
+selection floor before a nonidentity correction can ship. Tiny improvements,
+such as 0.04 dB, fall back to the protected baseline. This floor matches the
+correctable-fixture policy; it is not a calibrated hearing threshold. Setting it
+to `0.0` retains the numerical positive-improvement boundary. Every-seat
+uncertainty, acoustic boost, headroom, and pre-ringing vetoes remain independent. Routed pruning
+replays configured-reference improvement after each proposed removal and retains
+the previous graph when the removal crosses this floor or lacks complete evidence.
+
+For explicit Single/MultiSub/Topology inputs, finalization also tests configured
+controls against the correction-free optimized structural graph. Qualified
+fallbacks compete on complete configured-reference mean post error over training
+and held-out seats; native acoustic and electrical safety checks still apply to
+each graph. `configured_fallback_competition` records the scores and gate failures.
+Incomplete comparison evidence cannot promote the configured graph. Newly
+restored routed controls must also pass the declared crossover-cancellation
+budget; failed splice checks retain numeric margins. Original input-conditioning
+receipts remain attached to the original prepared measurements.
+
+A correction-free baseline requiring bounded safety attenuation reports
+`safe_fallback`, with `accepted: false`, rather than claiming correction benefit
+or unchanged playback. This outcome approves playback only after final acoustic
+and electrical safety checks; missing evidence and exceeded safety-attenuation
+budgets remain rejected or insufficient evidence.
+The same flag applies to a correction-free baseline changed by optional channel
+alignment only when all final-seat gates and independent safety checks pass.
+An altered baseline is not reported as unchanged playback.
+If optional alignment fails native replay, RoomEQ retries once without it.
+The correction-free fallback may preserve an existing channel imbalance only
+when the delivered spread does not exceed its frozen same-band baseline and
+all safety and seat non-regression checks pass. The original alignment-limit
+failure remains visible; missing baseline evidence or a worsening spread still
+rejects playback.
+Completed routed replay refusals retain numeric final-seat gate evidence;
+incomplete replay still defers acceptance. The previous graph's rejection
+marker is cleared before a fresh replay evaluates the current graph.
+Output EPA metrics optionally include `level_matched` comparisons using fixed
+1–2 kHz pressure energy, a frozen baseline grid and explicit pre/post level
+offsets. Multichannel matching preserves channel balance with one whole-set
+offset. Missing band or incomplete candidate support stays unavailable. These
+are spectral diagnostics, independent of delivered-SPL and safety acceptance.
+
 `optimizer.finalization` defines the electrical assumptions used after all
 processing and artifact assembly:
 
@@ -453,6 +530,11 @@ Input names refer to logical inputs. Omitted inputs use `default_input_peak`
 unknown names and peaks outside `(0, 1]` are errors. The ceiling must be finite
 and at most 0 dBFS. The attenuation limit is finite and between 0 and 60 dB.
 These defaults are active even when the object is omitted.
+
+Programme headroom calibration conservatively scales its normalized coherent
+peak bound by the largest declared logical-input peak; one full-scale input
+prevents uniform reserve credit. Final electrical replay still checks every
+input's own limit and the requested output ceiling independently.
 
 Optional `physical_drive` adds operator-declared sampled steady-sine limits.
 Optional `physical_drive_weight` (default `0.0`, finite and nonnegative) adds a
@@ -1017,6 +1099,14 @@ redirected-bass routes omit a duplicate group low-pass) and is reported in
 `bass_management.groups[].selected_sub_low_pass_hz` and
 `sub_output_results[].selected_low_pass_hz`.
 
+Per-sub splice selection jointly searches low-pass frequency, physical sub delay,
+and polarity on each combined main/sub response. It uses the actual routing
+matrix and per-source timing and trim controls, preserves physical gains and DBA
+steering, and rejects candidates that worsen any input’s constrained overlap
+objective or fail cancellation acceptance. The seeded search is bounded by the former three 21-point sweeps
+per output. Representative curves do not establish seat robustness; every
+selected graph still needs final physical-seat and electrical replay.
+
 ## Neutral objective, spatial risk, and preference layers
 
 The neutral flat/asymmetric objective uses the versioned
@@ -1048,6 +1138,36 @@ but are excluded from neutral quality scores. The output report records
 EPA optimization is experimental and uses spectral flatness only. Transfer-only
 loudness, roughness, sharpness, and temporal values are diagnostics rather than
 validated programme-audio or measured-decay objectives.
+
+Fixed-grid output receipts retain the original target samples and fitted level
+offset. Relative scoring also records `relative_target_reference`, using the
+target level at the first frozen frequency to define a common zero-level shape.
+Comparison shape hashes round to 10⁻⁹ dB and canonicalize signed zero; original
+target hashes and every native score keep full precision.
+This removes arbitrary constant target offsets from cross-mode comparisons;
+absolute targets and native safety scores are unaffected. Different shapes,
+baseline measurements, grids or permitted gains remain distinct comparison bases.
+
+Output partitions also record `configured_baseline` whole-playback comparisons
+for supported Single/MultiSub/explicit Topology without global CTC. The reference uses
+unprocessed captures and configured routing, excluding candidate-selected EQ,
+alignment, polarity, crossovers, and safety attenuation. Automatic crossover
+frequency uses the geometric midpoint of its configured range; automatic family
+uses its first candidate. Declared per-sub crossovers and bounded configured
+LFE gain are retained. The comparison band uses raw measurement support rather
+than mode-specific correction bounds. Explicit topology crossovers are rebuilt
+from declared driver IDs and acoustic-band order, with unity initial drive and
+no optimized alignment. Reference and delivered physical-output memberships are
+recorded separately so valid routing changes remain scoreable. Graph hashes, seat/output identities, and
+support receipts remain explicit; missing evidence records `unavailable` and
+prevents the suite from substituting a different comparison basis. Native safety
+gates remain authoritative and retain their marginal baseline semantics.
+Finalization requires complete configured receipts for nonidentity benefit and
+ranking: the primary floor uses mean training improvement, while ranking uses
+mean post error across training and held-out seats. Missing comparison evidence
+cannot justify a corrected candidate. Direct calibrated physical targets retain
+absolute scoring; coherent routed comparisons use their configured fitted level
+reference independently of the native main-only absolute-target gates.
 
 ## Audibility policy selection and staged rollout
 
@@ -1456,3 +1576,141 @@ for reproducibility. It supports native inequality constraints, with progress
 and stop callbacks after surrogate infill evaluations. Its initial Halton design
 does not use a saved candidate. Internal true-function polish is disabled; the
 existing `refine`/`local_algo` settings control RoomEQ local refinement.
+
+### Adaptive filter-count noise floor
+
+For adaptive flat losses (`min_filter_improvement > 0`), valid captured SPL/noise
+companions raise the stopping threshold above the estimated one-RMS loss
+perturbation. The log reports the requested and effective thresholds, or an
+unavailable estimate. This is not statistical confidence or demonstrated
+listener audibility. Fixed-count requests (`min_filter_improvement = 0`) retain
+their behavior. Average, weighted-sum, and minimax can use the largest input
+floor. Bootstrap minimax/CVaR propagate the per-frequency maximum captured
+noise envelope through power averaging, with no reduction for extra resamples
+or repeated draws. Variance-penalized/direct spatial-risk flat objectives use
+candidate-specific weighted-loss dispersion and captured perturbation bounds;
+this includes the quadratic noise term without independence assumptions.
+Budgeted validation refusal keeps the previous qualified filter count.
+`captured_variance_noise_v1` records the source bounds and reduction policy.
+Fixed nonnegative power-weighted RIR prototypes inherit the source envelope
+separately from their magnitude curve; phase/noise companions are not fabricated
+on the averaged curve. One active prototype adds no seat-variance noise term.
+`captured_power_average_noise_v1` identifies non-variance prototype reductions.
+Unsupported score units and uncertain weighting geometry remain separate from
+this capture-noise model; seat variation does not supply captured noise.
+
+Adaptive warm starts retain the previous filters in topology-compatible slots,
+using other frequency boxes where needed to avoid changing the transfer.
+New free slots are zero-gain peaks. Mandatory pass-filter additions or bounding
+changes are logged as changed seeds and re-evaluated before selection.
+
+### Flat-objective Q-rail regularization
+
+RoomEQ automatically applies `0.02 * |gain_db| * (Q / max_q)^4` per active
+standard or matched peak filter for `speaker-flat`, `speaker-flat-asymmetric`, and `headphone-flat`.
+The cost is shared once across measurement seats. Shelves, zero-gain filters,
+and score/EPA or non-PEQ objectives are excluded. A supported narrow correction
+can still outweigh this soft cost. `q_rail_penalty_v2` in optimizer provenance
+records the configured rail, weight, and exponent; there is no new JSON option.
+The weight is an engineering choice, not an audibility threshold or a guarantee
+of measurement-resolution support. Local-Q bounds and acoustic safety gates
+still apply independently.
+
+Single-channel FIR magnitude design applies the conservative local-null,
+coherence and noise-floor protection used by per-driver FIR. Positive broad
+basis coefficients are bounded over their complete supports, including after
+Kirkeby regularization. A protected sample prohibits positive coefficients on
+all overlapping functions; cuts remain unchanged. This avoids reintroducing
+fine features by clipping projected bins. Finite-tap realization and playback
+still require the existing boost, headroom and pre-ringing gates. A single
+capture cannot prove the physical cause of a dip.
+
+Legacy single-seat multi-sub all-pass searches intersect their 0.3–5.0 Q
+range with configured Q rails and the widest retained numerical
+sampling/smoothing floor over the complete 20–200 Hz search band. The same
+bounds apply during scoring and emission. If no supported Q remains, delay and
+all-pass controls stay disabled and the result reports
+`measurement_resolution_gain_only`. This pole-bandwidth constraint does not
+qualify phase accuracy, shared timing, or multi-seat robustness.
+
+Multi-seat and continuous-area all-pass searches also resolve a common Q
+ceiling from every original physical capture before complex-grid interpolation.
+They honor the widest retained sampling/applied-smoothing floor across the
+all-pass band. Unsupported Q floors remove only all-pass dimensions; gain,
+delay and polarity controls remain available within their existing budgets.
+This numerical constraint does not qualify timing, phase accuracy or spatial
+interpolation outside measured evidence.
+
+Crossover group sums and two-band level alignment retain every original
+driver's numerical sampling and applied-smoothing support for subsequent
+shared PEQ; a derived common grid cannot create new measurement resolution.
+
+DBA array summation and front/rear combination retain the contributing
+captures' original numerical support. Removing a routing transfer also combines
+the initial, routed-baseline and realized supports before residual FIR design;
+subtracting derived responses cannot improve measurement resolution.
+
+### Measurement bandwidth and biquad Q
+
+Prepared PEQ optimization additionally retains original numerical grids and
+applied smoothing widths through conditioning. Standard Q-controlled RBJ
+peak/pass/notch/all-pass filters share the digital pole-bandwidth ceiling in
+both search and final emission; unused gain fields cannot bypass the guard.
+Interpolation cannot increase resolution. The floor requires two original
+log-frequency intervals and honors the largest applied/objective smoothing
+width. It never crosses `min_q`; numerical-bandwidth refusal retains an
+uncorrected response and the failed optimizer receipt. There is no new JSON
+option. `measurement_biquad_bandwidth_v3` provenance identifies retained support,
+sample rate, configured Q limits, objective width and standard-family coverage.
+Model-specific Q lower boxes remain enforced; fixed-slope shelves ignore Q.
+Matched-pole peaks are qualified from actual transfer extrema and half-gain
+widths, preserving their topology and nominal gain. Unsupported widths or a
+numerator unable to reproduce nominal gain refuse correction. This does not
+authenticate acquisition resolution, authorize phase processing or establish listener benefit.
+
+Prepared single-channel magnitude FIR uses broad log-frequency basis functions
+with complete supports inside the warranted correction band; boundary gain
+reaches neutral continuously. Linear/minimum designs sample the analytic basis
+on realization FFT bins. Kirkeby projects its regularized magnitude before tap
+realization, preserving phase calculation and pre-ringing processing. Bands too
+narrow for a complete feature stay magnitude-neutral. Boost caps precede the
+projection so pointwise clipping cannot reintroduce narrow features.
+Finite-tap ripple remains subject to realized playback gates. Per-driver magnitude
+FIR uses broad log-frequency basis functions bounded over their complete support;
+null masks limit whole positive coefficients and crossover stopbands omit whole
+functions. Interpolation cannot narrow their retained source/smoothing floor.
+This does not qualify separate phase-only processing.
+
+### EPA spectral-regression cost
+
+RoomEQ flat objectives also add `max(0, EPA_spectral_post - EPA_spectral_pre)`
+per training curve, using the configured `epa_config` flatness ERB/band blend
+(default pure ERB). The uncorrected target residual supplies the cached baseline
+on the same grid and correction band. The cost sees signed residuals before
+null suppression or deadband; it has unit weight and no additional JSON option.
+PEQ and realized FIR scoring use the same term before seat aggregation.
+Optimizer provenance records `epa_spectral_regression_v1`. Captured-noise
+stopping bounds include this term's candidate and baseline perturbations.
+This is a soft spectral model cost. It is separate from level-matched EPA
+preference diagnostics, does not optimize transfer-only loudness/roughness,
+and does not guarantee either diagnostic or listener non-regression.
+
+Delivered candidate selection checks EPA spectral target-error regression on
+every configured-baseline training and held-out seat. `epa_spectral_flatness`
+uses the optimizer's ERB/band weights with the RMS receipt's frozen grid, target,
+and pre-derived level offset, without deadband, null suppression, or a new level
+fit. Missing evidence or an increase beyond `1e-9` dB numerical tolerance rejects
+that candidate; protected fallback selection remains available. No new JSON
+option is required. The `delivered_epa_non_regression` stage carries these checks.
+
+Composite transfer-spectrum EPA preference remains diagnostic-only rather than
+a validated listener-preference criterion. Configured-baseline residuals retain
+`level_matched_epa` or explicit `epa_unavailable` for insufficient shared 1–2 kHz
+matching-band support; representative channel/aggregate diagnostics remain
+reported. Bass-only target-error checks do not require an unmeasured treble
+reference. Passing either spectral calculation does not establish listener benefit.
+
+If an early unrouted safety pass reverts correction, its original kernels remain
+available internally only as a rejected refinement seed. Finalization can test
+bounded strengths instead of searching an already empty graph. This adds no
+configuration option and waives no final safety, EPA, or physical-seat check.

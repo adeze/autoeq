@@ -431,16 +431,32 @@ def read_curve_csv(path: Union[Path, bytes]) -> dict:
 
 
 def read_ir_csv(path: Union[Path, bytes]) -> dict:
-    """Read an impulse-response CSV written by the output bundle."""
+    """Read full-rate IR64 evidence or a legacy impulse-response CSV."""
     time_ms: list[float] = []
     amplitude: list[float] = []
-    with _open_curve_text(path) as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None or "time_ms" not in reader.fieldnames or "amplitude" not in reader.fieldnames:
-            raise ValueError(f"Invalid IR CSV: {path}")
-        for row in reader:
-            time_ms.append(float(row["time_ms"]))
-            amplitude.append(float(row["amplitude"]))
+    if isinstance(path, bytes):
+        header = path[:8]
+    else:
+        with Path(path).open("rb") as handle:
+            header = handle.read(8)
+    if header == b"AEQIR64\0":
+        raw = path if isinstance(path, bytes) else Path(path).read_bytes()
+        if len(raw) < 16:
+            raise ValueError("Truncated IR64 header")
+        count, = struct.unpack_from("<Q", raw, 8)
+        if len(raw) != 16 + count * 16:
+            raise ValueError("Invalid IR64 sample count or payload length")
+        for time, value in struct.iter_unpack("<dd", memoryview(raw)[16:]):
+            time_ms.append(time)
+            amplitude.append(value)
+    else:
+        with _open_curve_text(path) as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None or "time_ms" not in reader.fieldnames or "amplitude" not in reader.fieldnames:
+                raise ValueError(f"Invalid IR CSV: {path}")
+            for row in reader:
+                time_ms.append(float(row["time_ms"]))
+                amplitude.append(float(row["amplitude"]))
     if len(time_ms) != len(amplitude):
         raise ValueError(f"Mismatched IR arrays: {path}")
     if any(not math.isfinite(value) for value in time_ms + amplitude):
@@ -766,21 +782,30 @@ def load_roomeq_json(filepath: Path) -> dict:
         if verified_members is not None:
             raise
         data.measurement_index = {}
-    # Bind physical sidecars before plots replay a driver's plugin chain.
+    # Bind every convolution stage before plots replay shared or driver chains.
     # These private in-memory fields are never written back to the DSP JSON.
-    for channel in (data.get("channels") or {}).values():
-        for driver in channel.get("drivers") or []:
-            for plugin in driver.get("plugins") or []:
-                parameters = plugin.get("parameters") or {}
-                if plugin.get("plugin_type") == "convolution" and parameters.get("room_eq_fir_placement") == "per_driver":
-                    if verified_members is not None:
-                        fir_bytes = _read_verified_bundle_member_bytes(
-                            assets, parameters["ir_file"], verified_members)
-                        rate, taps = read_fir_wav(fir_bytes)
-                    else:
-                        resolved = resolve_asset(filepath, parameters["ir_file"])
-                        rate, taps = read_fir_wav(resolved)
-                    plugin["parameters"] = FirParameters(parameters, rate, taps)
+    fir_cache = {}
+    for plugin in _convolution_plugins(data):
+        if not isinstance(plugin, dict) or plugin.get("plugin_type") != "convolution":
+            continue
+        parameters = plugin.get("parameters") or {}
+        resource = parameters.get("ir_file")
+        if not isinstance(resource, str) or not resource:
+            raise ValueError("Convolution plugin requires an ir_file")
+        if resource not in fir_cache:
+            if verified_members is not None:
+                fir_bytes = _read_verified_bundle_member_bytes(assets, resource, verified_members)
+                fir_cache[resource] = read_fir_wav(fir_bytes)
+            else:
+                resolved = resolve_asset(filepath, resource)
+                if (not resolved.is_file()
+                        and parameters.get("room_eq_fir_placement") != "per_driver"):
+                    # Legacy external references can remain loadable. Replay
+                    # still refuses an unavailable resource rather than omitting it.
+                    continue
+                fir_cache[resource] = read_fir_wav(resolved)
+        rate, taps = fir_cache[resource]
+        plugin["parameters"] = FirParameters(parameters, rate, taps)
     # Re-freeze after overlay injection and FIR binding above: those mutate
     # the wrapped dict after construction, so the wrap-time identity is stale.
     data.native_report_provenance = frozen_slim_provenance(data)

@@ -258,6 +258,28 @@ fn cap_measurement_curve(curve: Curve, frequency_samples: usize) -> Curve {
             }
         }
     }
+    // Bass bins above were restored from the unsmoothed source. Retain the
+    // actual half-octave smoothing floor only in the remaining upper band.
+    let upper_widths: Vec<_> = resampled
+        .freq
+        .iter()
+        .copied()
+        .filter(|frequency| *frequency > 500.0)
+        .map(|frequency| {
+            (
+                frequency,
+                1.0 / ROOM_EQ_RESAMPLE_SMOOTHING_BANDS_PER_OCTAVE as f64,
+            )
+        })
+        .collect();
+    let support = resampled.retained_resolution();
+    smoothed.resolution = Some(if upper_widths.is_empty() {
+        support
+    } else {
+        support.with_smoothing(upper_widths).unwrap_or_else(|| {
+            std::sync::Arc::new(autoeq_core::resolution::MeasurementResolution::unsupported())
+        })
+    });
     smoothed
 }
 
@@ -390,6 +412,7 @@ fn merge_conditioned_segments(
         min_phase: None,
         excess_phase: None,
         excess_delay_ms: None,
+        resolution: Some(full.retained_resolution()),
     };
     result.validate("band-isolated conditioned measurement")?;
     Ok(result)
@@ -583,6 +606,25 @@ fn require_contiguous_source_support(source: &MeasurementSource) -> Result<Optio
 mod tests {
     use super::*;
     use roomeq_model::MeasurementSingle;
+
+    #[test]
+    fn conditioning_resolution_records_upper_smoothing_without_erasing_bass_support() {
+        let grid =
+            Array1::from_iter((0..=960).map(|index| 20.0 * 2.0_f64.powf(index as f64 / 96.0)));
+        let original = Curve {
+            spl: Array1::zeros(grid.len()),
+            freq: grid,
+            ..Default::default()
+        };
+        let conditioned = cap_measurement_curve(original.clone(), 128);
+        let resolution = conditioned.retained_resolution();
+        assert_eq!(
+            resolution.width_octaves(80.0),
+            original.retained_resolution().width_octaves(80.0)
+        );
+        assert_eq!(resolution.width_octaves(1000.0), Some(0.5));
+        assert!(resolution.max_peak_q(80.0, 48000.0, 0.0).unwrap() > 6.0);
+    }
 
     #[test]
     fn curve_only_workflow_load_refuses_disjoint_support() {

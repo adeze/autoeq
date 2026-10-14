@@ -68,6 +68,15 @@ pub(super) fn compute_sum_gd(
         .map(|ch_idx| decode_channel_params(params, ch_idx, config))
         .collect();
 
+    compute_sum_gd_with_controls(channels, &ch_params, band_indices, config)
+}
+
+pub(super) fn compute_sum_gd_with_controls(
+    channels: &[ChannelMeasurementInput],
+    ch_params: &[ChannelParams],
+    band_indices: &[usize],
+    config: &GdOptConfig,
+) -> Vec<f64> {
     // We need adjacent in-band bins for finite-difference GD computation.
     // Interior bins use forward differences; the final bin uses a backward
     // difference so it is not pulled toward an out-of-band raw-grid neighbor.

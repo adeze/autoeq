@@ -584,6 +584,15 @@ mod tests {
                 population: 6,
                 seed: Some(7),
                 parallel_threads: Some(1),
+                // Positive export control: the declared bright EPA target
+                // favors removing the injected bass peak. Default EPA does not.
+                epa_config: Some(roomeq_model::EpaConfig {
+                    target_sharpness: 1.8,
+                    evaluation_weight: 1.0,
+                    potency_weight: 0.0,
+                    activity_weight: 0.0,
+                    ..Default::default()
+                }),
                 min_freq: 20.0,
                 max_freq: 500.0,
                 min_db: -0.5,
@@ -603,6 +612,13 @@ mod tests {
                     aggregation: roomeq_model::BudgetAggregation::Max,
                     ..Default::default()
                 }),
+                // This sub-dB plant exercises export/pruning consistency.
+                // Keep positive benefit required, with the engineering floor
+                // separately exercised by finalization's acceptance tests.
+                finalization: roomeq_model::FinalizationConfig {
+                    min_primary_improvement_db: 0.0,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             provenance: Default::default(),

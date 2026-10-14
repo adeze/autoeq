@@ -1,5 +1,5 @@
 use super::super::consts::decide_schroeder_override;
-use super::super::misc::build_optim_params;
+use super::super::misc::{apply_q_rail_penalty, build_optim_params};
 use super::super::optimize::{OptimizerStopped, latch_observer_stop};
 use super::super::representative::measure_bass_rt60;
 use super::super::resources::{self, EqResources};
@@ -230,8 +230,14 @@ pub(in super::super) fn prepare_single_channel_eq_with_spin(
         return Err("single-channel EQ requires at least two aligned frequency/SPL samples".into());
     }
     // Clamp optimizer frequency range to measurement data range.
-    let data_min_freq = curve.freq[0];
-    let data_max_freq = curve.freq[curve.freq.len() - 1];
+    let source_band = curve.retained_resolution().support_band_hz();
+    // Missing common support retains the unsupported marker in the objective.
+    // Let the existing native bandwidth-refusal lane keep identity rather than
+    // failing before it can record why correction was unavailable.
+    let data_min_freq = source_band.map_or(curve.freq[0], |[low, _]| curve.freq[0].max(low));
+    let data_max_freq = source_band.map_or(curve.freq[curve.freq.len() - 1], |[_, high]| {
+        curve.freq[curve.freq.len() - 1].min(high)
+    });
     let [configured_min_freq, configured_max_freq] = config.active_correction_band();
     let effective_min_freq = configured_min_freq.max(data_min_freq);
     let effective_max_freq = configured_max_freq.min(data_max_freq);
@@ -307,6 +313,7 @@ pub(in super::super) fn prepare_single_channel_eq_with_spin(
         freq: curve.freq.clone(),
         spl: &curve.spl - mean_spl,
         phase: curve.phase.clone(),
+        resolution: Some(curve.retained_resolution()),
         ..Default::default()
     };
     let identity = |curve: &Curve| -> Result<String, Box<dyn Error>> {
@@ -596,7 +603,7 @@ pub(in super::super) fn prepare_single_channel_eq_with_spin(
     };
 
     // Build OptimParams template (num_filters and maxeval will be overridden per pass)
-    let args_template = build_optim_params(
+    let mut args_template = build_optim_params(
         config,
         effective_min_freq,
         effective_max_freq,
@@ -604,6 +611,13 @@ pub(in super::super) fn prepare_single_channel_eq_with_spin(
         loss_type,
         peq_model,
     );
+
+    // Keep log10 -> Hz round trips strictly inside retained source edges.
+    // The comparison/normalization band remains the exact physical interval.
+    for _ in 0..8 {
+        args_template.min_freq = args_template.min_freq.next_up();
+        args_template.max_freq = args_template.max_freq.next_down();
+    }
 
     // Create deviation curve
     let raw_deviation = &target_curve.spl - &normalized_curve.spl;
@@ -651,6 +665,9 @@ pub(in super::super) fn prepare_single_channel_eq_with_spin(
         &deviation_curve,
         &spin_data,
     )?;
+
+    apply_q_rail_penalty(&mut objective_data, config);
+    super::super::misc::apply_resolution_guard(&mut objective_data, &normalized_curve, config);
 
     // Propagate frequency-dependent boost/cut envelopes for per-filter gain clamping
     objective_data.max_boost_envelope = config.max_boost_envelope.clone();
@@ -772,6 +789,7 @@ pub(in super::super) struct OptimizationPassExecution<'backend, 'control, 'run> 
     pub(in super::super) backend: &'backend dyn OptimizerBackend,
     pub(in super::super) control: Option<&'control EqRunControl<'run>>,
     pub(in super::super) exact: Option<crate::eq::exact_recovery::ExactDERecoveryOptions>,
+    pub(in super::super) initial_parameters: Option<&'backend [f64]>,
 }
 
 /// Run a single optimization pass with the given number of filters.
@@ -805,8 +823,189 @@ pub(in super::super) fn run_optimization_pass(
             backend,
             control,
             exact: None,
+            initial_parameters: None,
         },
     )
+}
+
+/// Seed a larger model with compatible previous filters and neutral additions.
+/// Returns whether the initial transfer is preserved without bounding changes.
+fn extend_previous_solution(
+    initial: &mut [f64],
+    previous: &[f64],
+    lower: &[f64],
+    upper: &[f64],
+    model: PeqModel,
+) -> Result<bool, Box<dyn Error>> {
+    use autoeq_core::iir::BiquadFilterType;
+    let width = model.params_per_filter();
+    if previous.len() > initial.len()
+        || !previous.len().is_multiple_of(width)
+        || !initial.len().is_multiple_of(width)
+        || lower.len() != initial.len()
+        || upper.len() != initial.len()
+        || previous
+            .iter()
+            .chain(initial.iter())
+            .any(|value| !value.is_finite())
+        || lower
+            .iter()
+            .zip(upper)
+            .any(|(low, high)| !low.is_finite() || !high.is_finite() || low > high)
+    {
+        return Err("adaptive warm start has invalid parameters, bounds or filter count".into());
+    }
+    let old_count = previous.len() / width;
+    let new_count = initial.len() / width;
+    let layout = model.layout();
+    if let Some(type_index) = layout.type_idx
+        && (0..new_count).any(|slot| {
+            lower[slot * width + type_index] < 0.0 || upper[slot * width + type_index] >= 12.0
+        })
+    {
+        return Err("adaptive warm start has invalid free-filter type bounds".into());
+    }
+    let mut values = Vec::with_capacity(old_count);
+    let mut kinds = Vec::with_capacity(old_count);
+    for index in 0..old_count {
+        let params = model.get_filter_params(previous, index);
+        if params
+            .filter_type
+            .is_some_and(|kind| !(0.0..12.0).contains(&kind))
+        {
+            return Err("adaptive warm start has an invalid previous filter type".into());
+        }
+        let kind = model.determine_filter_type(index, old_count, params.filter_type);
+        let mut canonical = previous[index * width..(index + 1) * width].to_vec();
+        if let Some(type_index) = layout.type_idx {
+            // A free-model interior slot may ignore its stored discriminator.
+            // Encode the actual old topology before moving it to a free end.
+            canonical[type_index] = autoeq_core::param_utils::encode_filter_type(kind);
+        }
+        kinds.push(kind);
+        values.push(canonical);
+    }
+    let tail = match model {
+        PeqModel::PkLsHs => old_count.min(2),
+        PeqModel::LsPkHs | PeqModel::HpPkLp | PeqModel::FreePkFree if old_count >= 2 => 1,
+        _ => 0,
+    };
+    let compatible = |old: usize, slot: usize| {
+        let kind = layout.type_idx.map(|index| {
+            values[old][index].clamp(lower[slot * width + index], upper[slot * width + index])
+        });
+        model.determine_filter_type(slot, new_count, kind) == kinds[old]
+    };
+    let mut edges = Vec::with_capacity(old_count);
+    for (old, parameters) in values.iter().enumerate() {
+        let preferred = if old >= old_count - tail {
+            new_count - (old_count - old)
+        } else {
+            old
+        };
+        let mut slots: Vec<_> = (0..new_count)
+            .filter(|slot| {
+                compatible(old, *slot)
+                    && parameters
+                        .iter()
+                        .enumerate()
+                        .zip(
+                            lower[*slot * width..(*slot + 1) * width]
+                                .iter()
+                                .zip(&upper[*slot * width..(*slot + 1) * width]),
+                        )
+                        .all(|((index, value), (low, high))| {
+                            layout.type_idx == Some(index) || (value >= low && value <= high)
+                        })
+            })
+            .collect();
+        slots.sort_by_key(|slot| slot.abs_diff(preferred));
+        edges.push(slots);
+    }
+    fn assign(
+        old: usize,
+        edges: &[Vec<usize>],
+        owners: &mut [Option<usize>],
+        visited: &mut [bool],
+    ) -> bool {
+        for &slot in &edges[old] {
+            if visited[slot] {
+                continue;
+            }
+            visited[slot] = true;
+            if owners[slot].is_none_or(|previous| assign(previous, edges, owners, visited)) {
+                owners[slot] = Some(old);
+                return true;
+            }
+        }
+        false
+    }
+    let mut owners = vec![None; new_count];
+    for old in 0..old_count {
+        assign(old, &edges, &mut owners, &mut vec![false; new_count]);
+    }
+    let mut exact = owners.iter().filter(|owner| owner.is_some()).count() == old_count;
+    // When progressive boxes prevent exact reuse, keep the topology and use
+    // a bounded seed. Its transfer must be re-evaluated, never called neutral.
+    for (old, parameters) in values.iter().enumerate() {
+        if owners.contains(&Some(old)) {
+            continue;
+        }
+        let slot = (0..new_count)
+            .filter(|slot| owners[*slot].is_none() && compatible(old, *slot))
+            .min_by(|a, b| {
+                let distance = |slot: usize| {
+                    parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(parameter, value)| {
+                            let low = lower[slot * width + parameter];
+                            let high = upper[slot * width + parameter];
+                            let span = (high - low).max(f64::EPSILON);
+                            ((value - value.clamp(low, high)) / span).powi(2)
+                        })
+                        .sum::<f64>()
+                };
+                distance(*a).total_cmp(&distance(*b))
+            })
+            .ok_or("adaptive warm start cannot retain a previous filter topology")?;
+        owners[slot] = Some(old);
+    }
+    for (slot, owner) in owners.into_iter().enumerate() {
+        let offset = slot * width;
+        if let Some(old) = owner {
+            for (parameter, value) in values[old].iter().enumerate() {
+                initial[offset + parameter] =
+                    value.clamp(lower[offset + parameter], upper[offset + parameter]);
+            }
+        } else {
+            if let Some(type_index) = layout.type_idx
+                && lower[offset + type_index] <= 0.0
+                && upper[offset + type_index] >= 0.0
+            {
+                initial[offset + type_index] = 0.0;
+            }
+            initial[offset + layout.gain_idx] = 0.0;
+            for parameter in 0..width {
+                initial[offset + parameter] = initial[offset + parameter]
+                    .clamp(lower[offset + parameter], upper[offset + parameter]);
+            }
+            let params = model.get_filter_params(initial, slot);
+            let kind = model.determine_filter_type(slot, new_count, params.filter_type);
+            let neutral = params.gain == 0.0
+                && matches!(
+                    kind,
+                    BiquadFilterType::Peak
+                        | BiquadFilterType::PeakMatched
+                        | BiquadFilterType::Lowshelf
+                        | BiquadFilterType::Highshelf
+                        | BiquadFilterType::LowshelfOrf
+                        | BiquadFilterType::HighshelfOrf
+                );
+            exact &= neutral;
+        }
+    }
+    Ok(exact)
 }
 
 /// Run one prepared pass with optional exact-DE recovery state.
@@ -844,6 +1043,7 @@ pub(in super::super) fn run_optimization_pass_with_exact_checkpoint(
 
 /// Run a pass using a prepared single- or multi-measurement objective.
 #[allow(clippy::type_complexity)]
+#[cfg(test)]
 pub(in super::super) fn run_optimization_pass_with_context(
     context: &OptimizationPassContext<'_>,
     num_filters: usize,
@@ -871,6 +1071,7 @@ pub(in super::super) fn run_optimization_pass_with_context(
             backend,
             control,
             exact: None,
+            initial_parameters: None,
         },
     )
 }
@@ -897,6 +1098,7 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
         backend,
         control,
         exact,
+        initial_parameters,
     } = execution;
     let has_exact_checkpoint = exact.is_some();
     if has_exact_checkpoint && config.refine {
@@ -943,6 +1145,82 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
     // additional hard sub-Schroeder clamp is applied here.
     let mut x =
         autoeq_optim::optim::setup::initial_guess(&optim_params, &lower_bounds, &upper_bounds);
+    if let Some(previous) = initial_parameters {
+        if has_exact_checkpoint {
+            return Err("exact DE continuation cannot admit an adaptive warm start".into());
+        }
+        let preserved = extend_previous_solution(
+            &mut x,
+            previous,
+            &lower_bounds,
+            &upper_bounds,
+            context.peq_model,
+        )?;
+        if !preserved {
+            log::info!(
+                "Adaptive warm start includes bounded or structural changes; evaluating its new transfer before selection"
+            );
+        }
+    }
+
+    // CMA-ES and its local refinement consume one pass budget, rather than
+    // each spending max_iter independently. Other native iteration semantics
+    // and caller-supplied controls retain their existing contracts.
+    let global_profile = backend.evaluation_budget_profile(
+        &lower_bounds,
+        &upper_bounds,
+        &optim_params,
+        None,
+        max_iter,
+    );
+    let minimum_global = global_profile
+        .as_ref()
+        .and_then(|profile| profile.profile.as_ref())
+        .map_or(1, |profile| profile.minimum_complete_batch);
+    // Ordinary CMA-ES already floors its native budget at one complete batch.
+    // Preserve that floor; explicit controlled runs continue to refuse budgets
+    // too small for their declared complete search unit.
+    let pass_budget = max_iter.max(minimum_global);
+    let shared_budget = if control.is_none()
+        && !has_exact_checkpoint
+        && config.refine
+        && backend.supports_controlled_runs()
+        && global_profile
+            .as_ref()
+            .is_some_and(|profile| profile.backend == "autoeq:cmaes")
+    {
+        std::num::NonZeroUsize::new(pass_budget)
+            .map(autoeq_optim::optim::run_control::OptimizerRunControl::new)
+    } else {
+        None
+    };
+    if shared_budget.is_some()
+        && let Err(reason) = autoeq_optim::constraints::project_min_spacing(
+            &x,
+            &lower_bounds,
+            &upper_bounds,
+            context.peq_model,
+            optim_params
+                .min_spacing_oct
+                .max(context.objective_data.min_spacing_oct),
+        )
+        && autoeq_optim::constraints::is_definite_spacing_infeasibility(&reason)
+    {
+        // Structural infeasibility must remain visible even when the solver's
+        // minimum complete batch cannot fit the requested evaluation budget.
+        return Err(reason.into());
+    }
+    // Reserve at most a fifth for local search, while fitting the global
+    // solver's minimum batch. Unspent global evaluations remain available.
+    let local_reserve = (pass_budget / 5).min(pass_budget.saturating_sub(minimum_global));
+    let automatic_global = shared_budget.as_ref().map(|budget| {
+        EqRunControl::new(
+            budget,
+            std::num::NonZeroUsize::new(pass_budget - local_reserve)
+                .expect("nonzero shared budget"),
+        )
+    });
+    let control = control.or(automatic_global.as_ref());
 
     // Global optimization
     let (callback, observer_stopped) = latch_observer_stop(callback);
@@ -996,12 +1274,21 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
                 global_evidence.status
             );
         } else {
+            if let Some(loss) = super::super::misc::resolution_refusal_identity_loss(
+                context.objective_data,
+                &global_evidence,
+            ) {
+                global_evidence.selected_for_output = false;
+                let (single, multi) = context.normalization_records();
+                global_evidence.input_normalization = single;
+                global_evidence.multi_input_normalization = multi;
+                return Ok((Vec::new(), loss, Vec::new(), vec![global_evidence]));
+            }
             // Definite spacing infeasibility is typed so the adaptive
             // search can back off to fewer filters. Fixed-count passes
             // propagate it unchanged (Display preserves the message).
-            if autoeq_optim::constraints::is_definite_spacing_infeasibility(
-                &global_evidence.status,
-            ) {
+            if autoeq_optim::constraints::is_definite_spacing_infeasibility(&global_evidence.status)
+            {
                 return Err(Box::new(EqSpacingRefusal(global_evidence)));
             }
             return Err(format!(
@@ -1043,7 +1330,12 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
             global_loss
         );
         let x_before_refine = x.to_vec();
-        let stage_index = control.map(EqRunControl::stage_count);
+        let automatic_local = shared_budget.as_ref().and_then(|budget| {
+            std::num::NonZeroUsize::new(budget.remaining_evaluations())
+                .map(|remaining| EqRunControl::new(budget, remaining))
+        });
+        let local_control = automatic_local.as_ref().or(control);
+        let stage_index = local_control.map(EqRunControl::stage_count);
         let local_result = run_optimizer(
             backend,
             &mut x,
@@ -1053,15 +1345,15 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
             &optim_params,
             Some(&optim_params.local_algo),
             None,
-            control,
+            local_control,
         );
-        if let (Some(control), Some(index)) = (control, stage_index)
+        if let (Some(control), Some(index)) = (local_control, stage_index)
             && control.stage_count() > index
         {
             let (input, multi_input) = context.normalization_records();
             control.attach_stage_normalization(index, input, multi_input);
         }
-        let (mut local_evidence, local_refused) = match local_result {
+        let (mut local_evidence, mut local_refused) = match local_result {
             Ok(evidence) => (evidence, false),
             Err(error) if error.is::<EqBudgetRefusal>() => (
                 error
@@ -1078,19 +1370,26 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
                 local_evidence.status
             );
         }
-        if !local_refused {
-            crate::evidence_gate::verify_emission_candidate(
+        if !local_refused
+            && let Err(reason) = crate::evidence_gate::verify_emission_candidate(
                 context.candidate_id(true),
                 &x,
                 context.objective_data,
                 &optim_params,
                 &mut local_evidence,
             )
-            .map_err(|reason| format!("prepared refine candidate refused at emission: {reason}"))?;
+        {
+            local_refused = true;
+            local_evidence.confidence = autoeq_optim::optim::OptimizerConfidence::Unusable;
+            local_evidence.status =
+                format!("{}; emission_refused: {reason}", local_evidence.status);
+            log::warn!(
+                "Local refinement refused at emission; retaining verified global candidate: {reason}"
+            );
         }
         let local_loss = local_evidence.objective.unwrap_or(f64::INFINITY);
-        let use_local = local_evidence.confidence
-            != autoeq_optim::optim::OptimizerConfidence::Unusable
+        let use_local = !local_refused
+            && local_evidence.confidence != autoeq_optim::optim::OptimizerConfidence::Unusable
             && local_loss < global_loss;
         local_evidence.selected_for_output = use_local;
         optimizer_evidence[0].selected_for_output = !use_local;
@@ -1137,8 +1436,15 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
         context.objective_data.null_suppression.as_deref(),
         context.peq_model,
     );
-    let final_loss =
-        autoeq_optim::optim::compute_fitness_penalties_ref(&x_final, context.objective_data);
+    let owned = autoeq_optim::optim::OwnedConstraintSpec::from_params(&optim_params)?;
+    let final_candidate = autoeq_optim::optim::finalize_candidate(
+        context.candidate_id(false),
+        &x_final,
+        context.objective_data,
+        &owned.as_spec(),
+    )?;
+    let x_final = final_candidate.params;
+    let final_loss = final_candidate.loss;
     for evidence in &mut optimizer_evidence {
         match context.normalization {
             OptimizationPassNormalization::Single(normalization) => {
@@ -1150,6 +1456,7 @@ pub(in super::super) fn run_optimization_pass_with_context_and_exact_checkpoint(
         }
         if evidence.selected_for_output {
             evidence.objective = Some(final_loss);
+            evidence.constraint_report = Some(final_candidate.constrained.clone());
         }
     }
 
@@ -1326,6 +1633,187 @@ fn bind_prepared_objective_identity(
     let fingerprint =
         roomeq_model::decision_ledger::canonical_value_identity(&identity).fingerprint;
     Ok(format!("{run_identity}:prepared-objective:{fingerprint}"))
+}
+
+#[cfg(test)]
+mod adaptive_warm_start_tests {
+    use super::extend_previous_solution;
+    use autoeq_core::PeqModel;
+
+    #[test]
+    fn peaks_retain_the_previous_correction_and_new_peaks_are_neutral() {
+        let previous = [2.0, 1.2, -3.0, 3.0, 0.8, -1.0];
+        let mut initial = [1.7, 1.0, 2.0, 2.7, 1.0, 2.0, 3.7, 1.0, 2.0];
+        extend_previous_solution(
+            &mut initial,
+            &previous,
+            &[1.0, 0.1, -12.0].repeat(3),
+            &[4.0, 6.0, 6.0].repeat(3),
+            PeqModel::Pk,
+        )
+        .expect("valid warm start");
+        assert_eq!(&initial[..6], &previous);
+        assert_eq!(&initial[6..], &[3.7, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn tilt_shelves_keep_their_positions_when_a_peak_is_added() {
+        let previous = [2.0, 1.2, -3.0, 1.5, 0.8, -1.0, 3.5, 0.7, 1.0];
+        let mut initial = [2.2, 1.0, 2.0, 2.8, 1.0, 2.0, 1.5, 0.7, 0.0, 3.5, 0.7, 0.0];
+        extend_previous_solution(
+            &mut initial,
+            &previous,
+            &[1.0, 0.1, -12.0].repeat(4),
+            &[4.0, 6.0, 6.0].repeat(4),
+            PeqModel::PkLsHs,
+        )
+        .expect("valid tilt warm start");
+        assert_eq!(&initial[..3], &previous[..3]);
+        assert_eq!(&initial[3..6], &[2.8, 1.0, 0.0]);
+        assert_eq!(&initial[6..], &previous[3..]);
+    }
+
+    fn assert_same_transfer(previous: &[f64], expanded: &[f64], model: PeqModel) {
+        let before = autoeq_core::x2peq::x2peq(previous, 48_000.0, model);
+        let after = autoeq_core::x2peq::x2peq(expanded, 48_000.0, model);
+        for bin in 0..1024 {
+            let frequency = 20.0 * 1000.0_f64.powf(bin as f64 / 1023.0);
+            let transfer = |filters: &autoeq_core::iir::Peq| {
+                filters
+                    .iter()
+                    .map(|(_, filter)| filter.complex_response(frequency))
+                    .product::<num_complex::Complex64>()
+            };
+            assert!(
+                (transfer(&before) - transfer(&after)).norm() < 1e-9,
+                "changed transfer at {frequency} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn free_model_additions_are_neutral_even_when_initial_types_are_pass_or_notch() {
+        for model in [PeqModel::Free, PeqModel::FreePkFree] {
+            let previous = [2.0, 2.0, 0.7, 0.0, 7.0, 3.0, 1.0, 0.0];
+            let mut initial = [1.0, 2.0, 0.7, 4.0, 7.0, 2.7, 1.0, 4.0, 1.0, 3.0, 1.0, 4.0];
+            assert!(
+                extend_previous_solution(
+                    &mut initial,
+                    &previous,
+                    &[0.0, 1.0, 0.1, -12.0].repeat(3),
+                    &[11.999, 4.3, 6.0, 6.0].repeat(3),
+                    model
+                )
+                .unwrap()
+            );
+            assert_same_transfer(&previous, &initial, model);
+        }
+    }
+
+    #[test]
+    fn progressive_frequency_boxes_move_old_peak_without_clamping_its_response() {
+        let previous = [5000.0_f64.log10(), 1.2, -5.0];
+        let mut initial = [2.0, 1.0, 3.0, 3.3, 1.0, 3.0];
+        assert!(
+            extend_previous_solution(
+                &mut initial,
+                &previous,
+                &[1.0, 0.1, -12.0, 3.0, 0.1, -12.0],
+                &[3.0, 6.0, 6.0, 4.3, 6.0, 6.0],
+                PeqModel::Pk
+            )
+            .unwrap()
+        );
+        assert_eq!(&initial[3..], &previous);
+        assert_same_transfer(&previous, &initial, PeqModel::Pk);
+    }
+
+    #[test]
+    fn ignored_interior_discriminator_cannot_turn_a_moved_peak_into_a_notch() {
+        let previous = [
+            0.0, 2.0, 1.0, -2.0, 7.0, 3.8, 1.2, -4.0, 0.0, 3.2, 0.8, -1.0,
+        ];
+        let mut initial = [
+            7.0, 2.0, 1.0, 3.0, 7.0, 2.8, 1.0, 3.0, 7.0, 3.2, 1.0, 3.0, 7.0, 3.8, 1.0, 3.0,
+        ];
+        assert!(
+            extend_previous_solution(
+                &mut initial,
+                &previous,
+                &[
+                    0.0, 1.0, 0.1, -12.0, 0.0, 2.5, 0.1, -12.0, 0.0, 3.0, 0.1, -12.0, 0.0, 3.5,
+                    0.1, -12.0
+                ],
+                &[
+                    11.999, 2.5, 6.0, 6.0, 11.999, 3.0, 6.0, 6.0, 11.999, 3.5, 6.0, 6.0, 11.999,
+                    4.3, 6.0, 6.0
+                ],
+                PeqModel::FreePkFree
+            )
+            .unwrap()
+        );
+        assert_eq!(initial[12], 0.0);
+        assert_same_transfer(&previous, &initial, PeqModel::FreePkFree);
+    }
+
+    #[test]
+    fn mandatory_lowpass_addition_is_reported_as_a_structural_change() {
+        let previous = [2.0, 0.7, 0.0];
+        let mut initial = [2.0, 0.7, 0.0, 3.0, 0.7, 0.0];
+        assert!(
+            !extend_previous_solution(
+                &mut initial,
+                &previous,
+                &[1.0, 0.1, -12.0].repeat(2),
+                &[4.0, 6.0, 6.0].repeat(2),
+                PeqModel::HpPkLp
+            )
+            .unwrap()
+        );
+        let before = autoeq_core::x2peq::x2peq(&previous, 48_000.0, PeqModel::HpPkLp);
+        let after = autoeq_core::x2peq::x2peq(&initial, 48_000.0, PeqModel::HpPkLp);
+        for frequency in [20.0, 100.0, 1000.0, 10_000.0] {
+            assert!(
+                (before[0].1.complex_response(frequency) - after[0].1.complex_response(frequency))
+                    .norm()
+                    < 1e-12
+            );
+        }
+        assert!(after[1].1.complex_response(10_000.0).norm() < 0.1);
+    }
+
+    #[test]
+    fn free_type_bounds_cannot_silently_relabel_a_previous_notch_as_a_peak() {
+        let previous = [7.0, 3.0, 1.0, 0.0];
+        let mut initial = [0.0, 3.0, 1.0, 0.0, 0.0, 3.0, 1.0, 0.0];
+        assert!(
+            extend_previous_solution(
+                &mut initial,
+                &previous,
+                &[0.0, 1.0, 0.1, -12.0].repeat(2),
+                &[0.999, 4.0, 6.0, 6.0].repeat(2),
+                PeqModel::Free
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_previous_solution_is_refused() {
+        let mut initial = [2.0, 1.0, 0.0];
+        for previous in [&[2.0, 1.0][..], &[2.0, f64::NAN, 0.0][..]] {
+            assert!(
+                extend_previous_solution(
+                    &mut initial,
+                    previous,
+                    &[1.0, 0.1, -12.0],
+                    &[4.0, 6.0, 6.0],
+                    PeqModel::Pk,
+                )
+                .is_err()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1595,5 +2083,197 @@ mod combined_boost_tests {
         );
         assert!((parameters[2] - 6.0).abs() < 1e-5);
         assert!((parameters[5] - 6.0).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod retained_support_tests {
+    use super::*;
+    use ndarray::Array1;
+
+    #[test]
+    fn retained_support_limits_prepared_peq_domain_before_search() {
+        let source = Curve {
+            freq: Array1::logspace(10.0, 20.5_f64.log10(), 199.5_f64.log10(), 256),
+            spl: Array1::from_elem(256, 80.0),
+            ..Default::default()
+        };
+        let derived =
+            autoeq_core::interpolate_response(&Array1::linspace(20.0, 200.0, 512), &source);
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 200.0,
+            ..Default::default()
+        };
+        let prep =
+            prepare_single_channel_eq_with_spin(&derived, &config, None, 48_000.0, None, None)
+                .unwrap();
+        let support = source.retained_resolution();
+        let [low, high] = support.support_band_hz().unwrap();
+        assert_eq!(prep.input_normalization.correction_band_hz, [low, high]);
+        assert!(prep.args_template.min_freq > low);
+        assert!(prep.args_template.max_freq < high);
+        let (lower, upper) = autoeq_optim::optim::setup::setup_bounds(&prep.args_template);
+        for index in 0..prep.args_template.num_filters {
+            for bound in [lower[index * 3], upper[index * 3]] {
+                assert!(support.width_octaves(10.0_f64.powf(bound)).is_some());
+            }
+        }
+        assert_eq!(derived.freq[0], 20.0);
+        assert_eq!(derived.freq[511], 200.0);
+    }
+
+    #[test]
+    fn retained_support_unavailable_keeps_identity_without_inventing_resolution() {
+        let curve = Curve {
+            freq: Array1::linspace(50.0, 8000.0, 256),
+            spl: Array1::from_elem(256, 80.0),
+            resolution: Some(Arc::new(
+                autoeq_core::resolution::MeasurementResolution::unsupported(),
+            )),
+            ..Default::default()
+        };
+        let config = OptimizerConfig {
+            min_freq: 50.0,
+            max_freq: 8000.0,
+            num_filters: 1,
+            max_iter: 20,
+            population: 4,
+            seed: Some(84),
+            refine: false,
+            ..Default::default()
+        };
+        let prep = prepare_single_channel_eq_with_spin(&curve, &config, None, 48000.0, None, None)
+            .unwrap();
+        assert!(
+            prep.objective_data
+                .peak_resolution_guard
+                .as_ref()
+                .unwrap()
+                .support
+                .support_band_hz()
+                .is_none()
+        );
+        let context = OptimizationPassContext {
+            objective_data: &prep.objective_data,
+            args_template: &prep.args_template,
+            peq_model: prep.peq_model,
+            sample_rate: prep.sample_rate,
+            normalization: OptimizationPassNormalization::Single(&prep.input_normalization),
+        };
+        let (filters, loss, parameters, evidence) = run_optimization_pass_with_context(
+            &context,
+            1,
+            20,
+            &config,
+            None,
+            &autoeq_optim::optim::RealOptimizerBackend::new(),
+            None,
+        )
+        .unwrap();
+        assert!(filters.is_empty());
+        assert!(parameters.is_empty());
+        assert!(loss.is_finite());
+        assert_eq!(evidence.len(), 1);
+        assert!(!evidence[0].selected_for_output);
+        assert!(evidence[0].status.contains("measurement resolution"));
+    }
+
+    struct InvalidLocalBackend;
+
+    impl OptimizerBackend for InvalidLocalBackend {
+        fn optimize_filters(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            objective: autoeq_optim::ObjectiveData,
+            _params: &autoeq_optim::OptimParams,
+        ) -> Result<(String, f64), (String, f64)> {
+            x.copy_from_slice(&[100.0_f64.log10(), 1.0, -1.0]);
+            Ok((
+                "test global completed".into(),
+                autoeq_optim::optim::compute_fitness_penalties_ref(x, &objective),
+            ))
+        }
+
+        fn optimize_filters_with_callback(
+            &self,
+            x: &mut [f64],
+            lower: &[f64],
+            upper: &[f64],
+            objective: autoeq_optim::ObjectiveData,
+            params: &autoeq_optim::OptimParams,
+            mut callback: autoeq_optim::optim::OptimProgressCallback,
+        ) -> Result<(String, f64), (String, f64)> {
+            let result = self.optimize_filters(x, lower, upper, objective, params);
+            if let Ok((_, loss)) = &result {
+                let _ = callback(1, *loss, None);
+            }
+            result
+        }
+
+        fn optimize_filters_with_algo_override(
+            &self,
+            x: &mut [f64],
+            _lower: &[f64],
+            _upper: &[f64],
+            _objective: autoeq_optim::ObjectiveData,
+            _params: &autoeq_optim::OptimParams,
+            _algorithm: Option<&str>,
+        ) -> Result<(String, f64), (String, f64)> {
+            // A superficially better local result has no original support.
+            x[0] = 19.0_f64.log10();
+            Ok(("test local completed".into(), -100.0))
+        }
+    }
+
+    #[test]
+    fn retained_support_refusal_keeps_verified_global_candidate() {
+        let source = Curve {
+            freq: Array1::logspace(10.0, 20.0_f64.log10(), 200.0_f64.log10(), 256),
+            spl: Array1::from_elem(256, 80.0),
+            ..Default::default()
+        };
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 200.0,
+            num_filters: 1,
+            min_db: -6.0,
+            max_db: 3.0,
+            refine: true,
+            ..Default::default()
+        };
+        let prep =
+            prepare_single_channel_eq_with_spin(&source, &config, None, 48_000.0, None, None)
+                .unwrap();
+        let context = OptimizationPassContext {
+            objective_data: &prep.objective_data,
+            args_template: &prep.args_template,
+            peq_model: prep.peq_model,
+            sample_rate: prep.sample_rate,
+            normalization: OptimizationPassNormalization::Single(&prep.input_normalization),
+        };
+        let (filters, loss, parameters, evidence) = run_optimization_pass_with_context(
+            &context,
+            1,
+            20,
+            &config,
+            None,
+            &InvalidLocalBackend,
+            None,
+        )
+        .unwrap();
+        assert_eq!(filters.len(), 1);
+        assert!(loss.is_finite());
+        assert_eq!(parameters[0], 100.0_f64.log10());
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence[0].selected_for_output);
+        assert!(!evidence[1].selected_for_output);
+        assert!(evidence[1].status.contains("emission_refused"));
+        assert_eq!(
+            evidence[1].confidence,
+            autoeq_optim::optim::OptimizerConfidence::Unusable
+        );
     }
 }

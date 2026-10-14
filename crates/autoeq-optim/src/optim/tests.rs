@@ -1475,6 +1475,76 @@ mod backend_tests {
     }
 
     #[test]
+    fn de_progress_callback_preserves_native_completion_and_candidate() {
+        use super::super::optimize::{
+            optimize_filters_detailed, optimize_filters_with_callback_detailed,
+        };
+
+        let (objective, mut params, lower, upper, initial) = scalar_objective();
+        params.algo = "autoeq:de".into();
+        // Force the native population-spread criterion to be reached promptly,
+        // independent of this fixture's acoustic optimum.
+        params.atolerance = 1_000_000.0;
+        params.maxeval = 200;
+        let mut plain_x = initial.clone();
+        let plain =
+            optimize_filters_detailed(&mut plain_x, &lower, &upper, objective.clone(), &params);
+        let mut callback_x = initial;
+        let progress = optimize_filters_with_callback_detailed(
+            &mut callback_x,
+            &lower,
+            &upper,
+            objective,
+            &params,
+            Box::new(|_, _, _| crate::de::CallbackAction::Continue),
+        );
+        assert!(plain.converged, "{plain:?}");
+        assert!(progress.converged, "{progress:?}");
+        assert_eq!(plain_x, callback_x);
+        assert_eq!(plain.objective, progress.objective);
+        assert_eq!(plain.evaluation_count, progress.evaluation_count);
+        assert_eq!(
+            plain.backend_evaluation_count,
+            progress.backend_evaluation_count
+        );
+        assert!(
+            progress
+                .backend_evaluation_count
+                .is_some_and(|count| count > 0)
+        );
+        assert_eq!(plain.generation_count, progress.generation_count);
+        assert!(progress.generation_count.is_some());
+        assert!(progress.generation_limit.is_some());
+    }
+
+    #[test]
+    fn de_progress_stop_cannot_be_reported_as_convergence() {
+        use super::super::optimize::OptimizerTermination;
+        use super::super::optimize::optimize_filters_with_callback_detailed;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:de".into();
+        params.atolerance = 1_000_000.0;
+        params.maxeval = 200;
+        let progress = optimize_filters_with_callback_detailed(
+            &mut x,
+            &lower,
+            &upper,
+            objective,
+            &params,
+            Box::new(|_, _, _| crate::de::CallbackAction::Stop),
+        );
+        assert_eq!(progress.termination, OptimizerTermination::UserStopped);
+        assert!(!progress.converged);
+        assert!(progress.evaluation_count.is_some_and(|count| count > 0));
+        assert!(
+            progress
+                .backend_evaluation_count
+                .is_some_and(|count| count > 0)
+        );
+    }
+
+    #[test]
     fn perform_optimization_with_progress_runs() {
         let (obj, _params, _lower, _upper, _x) = scalar_objective();
         let mut args = small_args();

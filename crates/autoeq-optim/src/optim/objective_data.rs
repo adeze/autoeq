@@ -2,7 +2,7 @@ use super::super::loss::{
     AsymmetricLossConfig, DriversLossData, HeadphoneLossData, LossType, SpeakerLossData,
 };
 use super::super::x2peq::x2spl;
-use super::de::optimize_filters_autoeq_with_callback;
+use super::de::optimize_filters_autoeq_with_callback_and_completion;
 use super::loss::{
     AsymmetricStrategy, DriversMode, DriversStrategy, EpaStrategy, FlatStrategy,
     HeadphoneScoreStrategy, Objective, ObjectiveContext, SpeakerScoreStrategy,
@@ -97,8 +97,8 @@ pub struct ObjectiveData {
     pub min_cut_envelope: Option<Vec<(f64, f64)>>,
     /// Experimental EPA diagnostics and active spectral-flatness blend.
     ///
-    /// Used only when `loss_type == LossType::Epa`. When `None`, the
-    /// optimizer falls back to `EpaConfig::default()`.
+    /// Used by the EPA objective and optional flat-objective spectral regression
+    /// cost. When `None`, the optimizer uses `EpaConfig::default()`.
     pub epa_config: Option<crate::loss::epa::score::EpaConfig>,
     /// Detected modal ringing data retained for EPA diagnostic compatibility.
     ///
@@ -138,6 +138,27 @@ pub struct ObjectiveData {
     /// Optional smoothness regularizer on the correction curve.
     /// `None` disables the penalty.
     pub smoothness_penalty: Option<SmoothnessPenaltyConfig>,
+    /// Optional peak-filter Q-rail regularizer `(rail_q, relative_gain_weight)`.
+    ///
+    /// Adds weight times absolute gain times `(Q / rail_q)^4`, summed over
+    /// active standard/matched peaks. Shelves, neutral filters, and non-PEQ losses are
+    /// excluded. This is an engineering complexity cost, not audibility proof.
+    pub q_rail_penalty: Option<(f64, f64)>,
+    /// Optional measurement-derived peak bandwidth guard for RoomEQ.
+    /// Search and final emission project peak Q using the same retained grids.
+    pub peak_resolution_guard: Option<super::resolution_guard::PeakResolutionGuard>,
+    /// Captured one-RMS perturbation bound for this prepared scalar loss.
+    ///
+    /// Runtime RoomEQ evidence for adaptive stopping, not statistical confidence.
+    /// `None` means unavailable; spatial variation must not supply this value.
+    pub captured_loss_perturbation_bound: Option<f64>,
+    /// Weight for regression in EPA spectral error against the frozen baseline.
+    ///
+    /// Zero disables this cost. Uses the EPA flatness configuration without
+    /// residual deadband or null suppression. It does not optimize transfer-only
+    /// loudness, roughness, sharpness, or preference diagnostics.
+    /// Only flat PEQ and flat realized-response objectives consult this weight.
+    pub epa_flatness_regression_weight: f64,
     /// Optional audibility/JND deadband applied to residual errors before
     /// spectral objective scoring.
     pub audibility_deadband: Option<crate::roomeq::AudibilityDeadbandConfig>,
@@ -323,6 +344,16 @@ impl std::fmt::Debug for ObjectiveData {
             .field("null_suppression", &self.null_suppression)
             .field("asymmetric_loss_config", &self.asymmetric_loss_config)
             .field("smoothness_penalty", &self.smoothness_penalty)
+            .field("q_rail_penalty", &self.q_rail_penalty)
+            .field("peak_resolution_guard", &self.peak_resolution_guard)
+            .field(
+                "captured_loss_perturbation_bound",
+                &self.captured_loss_perturbation_bound,
+            )
+            .field(
+                "epa_flatness_regression_weight",
+                &self.epa_flatness_regression_weight,
+            )
             .field("audibility_deadband", &self.audibility_deadband)
             .finish()
     }
@@ -361,7 +392,7 @@ pub(super) fn run_autoeq_de_with_epa_callback(
     params: &crate::OptimParams,
     autoeq_name: &str,
     mut callback: OptimProgressCallback,
-) -> Result<(String, f64), (String, f64)> {
+) -> super::de::AutoeqDeCompletionResult {
     const EPA_INTERVAL: usize = 10;
 
     let epa_config = objective_data.epa_config.clone();
@@ -401,7 +432,7 @@ pub(super) fn run_autoeq_de_with_epa_callback(
             };
             callback(intermediate.iter, intermediate.fun, epa)
         });
-    optimize_filters_autoeq_with_callback(
+    optimize_filters_autoeq_with_callback_and_completion(
         x,
         lower_bounds,
         upper_bounds,

@@ -1053,19 +1053,21 @@ mod refusal_contract_tests {
     #[test]
     fn only_all_seed_structural_refusals_satisfy_the_contract() {
         let causes = [42, 59, 83, 115, 151].map(|seed| format!(
-            "seed {seed}: optimization failed: structural baseline requires 15.563 dB safety attenuation beyond 12.000 dB limit (physical output peaks: Sub1=15.563 dBFS)"
+            "seed {seed}: optimization failed: structural baseline needs 19.000 dB attenuation on non-subwoofer output 'L' beyond 12.000 dB limit (required physical-output cuts: L=19.000 dB (main), Sub1=29.900 dB (subwoofer, exempt))"
         )).join("; ");
         let valid =
             format!("5 of 5 QA seeds failed; reliability evidence recorded; causes: {causes}");
         assert_eq!(
             super::structural_refusal_requirements(&valid),
-            Some(vec![15.563; 5])
+            Some(vec![19.0; 5])
         );
         for invalid in [
-            valid.replace("15.563 dB safety", "11.000 dB safety"),
+            valid.replace("19.000 dB attenuation", "11.000 dB attenuation"),
             valid.replace("12.000 dB limit", "18.000 dB limit"),
-            valid.replace("15.563 dB safety", "NaN dB safety"),
-            valid.replacen("structural baseline requires", "missing timing evidence", 1),
+            valid.replace("19.000 dB attenuation", "NaN dB attenuation"),
+            valid.replacen("structural baseline needs", "missing timing evidence", 1),
+            valid.replace("non-subwoofer output 'L'", "non-subwoofer output 'Sub1'"),
+            valid.replace("seed 59:", "seed 42:"),
             "unexpected successful output".into(),
         ] {
             assert!(
@@ -1096,18 +1098,24 @@ fn structural_refusal_requirements(error: &str) -> Option<Vec<f64>> {
     if seeds.len() != 5 {
         return None;
     }
+    let mut unique_seeds = std::collections::BTreeSet::new();
     seeds
         .into_iter()
         .map(|cause| {
             let (seed, detail) =
-                cause.split_once(": optimization failed: structural baseline requires ")?;
-            seed.parse::<u64>().ok()?;
-            let (required, rest) = detail.split_once(
-                " dB safety attenuation beyond 12.000 dB limit (physical output peaks: ",
-            )?;
+                cause.split_once(": optimization failed: structural baseline needs ")?;
+            if !unique_seeds.insert(seed.parse::<u64>().ok()?) {
+                return None;
+            }
+            let (required, rest) =
+                detail.split_once(" dB attenuation on non-subwoofer output '")?;
+            let (output, rest) =
+                rest.split_once("' beyond 12.000 dB limit (required physical-output cuts: ")?;
             let required = required.parse::<f64>().ok()?;
             (required.is_finite()
                 && required > 12.0
+                && matches!(output, "C" | "L" | "R" | "SL" | "SR")
+                && rest.contains(&format!("{output}={required:.3} dB (main)"))
                 && rest.ends_with(')')
                 && rest.contains("Sub1="))
             .then_some(required)
@@ -1407,9 +1415,13 @@ fn run_parameter_row(
     // Explicit synthetic stimulus bound, not a relaxed safety budget or
     // rescaling of the acoustic measurements. Keep the full-scale cases.
     config.optimizer.finalization.default_input_peak = if refusals_only { 1.0 } else { 0.1 };
+    // Subwoofer-only cuts are exempt from the general attenuation cap. Demand
+    // explicit main-output reserve to exercise an actual bounded refusal.
+    config.optimizer.finalization.output_ceiling_dbfs = if refusals_only { -24.0 } else { 0.0 };
     anyhow::ensure!(
         config.optimizer.finalization.max_attenuation_db == 12.0
-            && config.optimizer.finalization.output_ceiling_dbfs == 0.0
+            && config.optimizer.finalization.output_ceiling_dbfs
+                == if refusals_only { -24.0 } else { 0.0 }
             && config.optimizer.finalization.input_peak_limits.is_empty(),
         "parameter matrix safety assumptions changed"
     );

@@ -12,6 +12,106 @@ import math
 from pathlib import Path
 
 from src.payload_binding import ALGORITHM, payload_digest
+from epa_evidence import inspect_level_matched_epa, inspect_epa_spectral_flatness
+from roomeq_suite_report import frozen_grid_scores
+
+
+def primary_improvement(report, stages):
+    """Honor the binary's declared selection basis without reinterpreting older runs."""
+    bases = set()
+    for stage in stages:
+        if stage.get("stage") == "final_correction_selection":
+            bases.update(advisory.split("=", 1)[1] for advisory in stage.get("advisories", [])
+                         if isinstance(advisory, str) and advisory.startswith("selection_score_basis="))
+        if stage.get("stage") == "final_candidate_objective":
+            for check in stage.get("checks", []):
+                if check.get("id") != "delivered_candidate_score":
+                    continue
+                try:
+                    diagnostic = json.loads(check.get("diagnostic", "{}"))
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(diagnostic, dict) and "score_basis" in diagnostic:
+                    bases.add(diagnostic["score_basis"])
+    if not bases:
+        return report["metrics"]["improvement_db"], "native_marginal_legacy"
+    if bases != {"configured_routing_unprocessed_captures_v1"}:
+        raise ValueError("invalid declared primary selection score basis")
+    training = (report.get("acoustic_quality") or {}).get("training") or {}
+    configured = training.get("configured_baseline")
+    if not isinstance(configured, dict) or frozen_grid_scores(report) is None:
+        raise ValueError("configured primary selection lacks complete fixed-grid evidence")
+    rows = configured["residuals"]
+    return (sum(row["score"]["improvement_db"] for row in rows) / len(rows),
+            "configured_routing_unprocessed_captures_v1")
+
+
+def validate_channel_alignment(metadata, report):
+    """Require alignment or a certified non-worsening structural baseline."""
+    stages = metadata.get("stage_outcomes", [])
+    alignment = [stage for stage in stages
+                 if stage["stage"] == "final_delivered_channel_alignment"]
+    if len(alignment) != 1 or not alignment[0].get("checks"):
+        raise ValueError("routed graph has no terminal channel-alignment evidence")
+    checks = alignment[0]["checks"]
+    absolute_passes = any(check["id"] == "delivered_channel_level_spread_db" and check["passed"] for check in checks)
+    if all(check["passed"] or (absolute_passes and check["id"] == "delivered_channel_imbalance_does_not_exceed_baseline") for check in checks):
+        return
+    failed = [check for check in checks if not check["passed"]]
+    references = [check for stage in stages
+                  if stage["stage"] == "structural_baseline_channel_alignment_reference"
+                  for check in stage.get("checks", [])
+                  if check["id"] == "structural_baseline_channel_level_spread_db"]
+    bounds = [check for check in checks
+              if check["id"] == "delivered_channel_imbalance_does_not_exceed_baseline"]
+    structural = any(stage["stage"] == "final_correction_selection"
+                     and "structural_baseline_published" in stage.get("advisories", [])
+                     for stage in stages)
+    valid = (not report.get("accepted") and structural
+             and report.get("outcome") in ("unchanged", "safe_fallback")
+             and len(failed) == len(references) == len(bounds) == 1
+             and failed[0]["id"] == "delivered_channel_level_spread_db"
+             and bounds[0]["passed"])
+    if valid:
+        spread, reference = failed[0].get("observed"), references[0].get("observed")
+        values = [spread, reference, bounds[0].get("observed"), bounds[0].get("limit")]
+        valid = (all(isinstance(value, (int, float)) and math.isfinite(value) for value in values)
+                 and spread >= 0.0 and reference >= 0.0
+                 and abs(bounds[0]["observed"] - spread) <= 1e-9
+                 and abs(bounds[0]["limit"] - (reference + 1e-6)) <= 1e-9
+                 and spread <= reference + 1e-6)
+        try:
+            band = json.loads(references[0].get("diagnostic", "null"))
+            valid = valid and len(band) == 2 and 0 < band[0] < band[1]
+            valid = valid and any(
+                text.startswith(f"replayed_band_hz={band[0]:.1f}-{band[1]:.1f};")
+                for text in alignment[0].get("advisories", []))
+        except (TypeError, ValueError):
+            valid = False
+    quality, policy = report.get("acoustic_quality") or {}, report.get("runtime_policy") or {}
+    temporal = quality.get("temporal") or {}
+    safety = [(quality.get("max_boost_db"), policy.get("max_boost_db"), 0.5),
+              (quality.get("max_electrical_boost_db"), policy.get("max_boost_db"), 0.5),
+              (temporal.get("pre_ringing_audible_db"), policy.get("max_pre_ringing_audible_db"), 0.0),
+              (temporal.get("latency_ms"), policy.get("max_latency_ms"), 0.0)]
+    valid = (valid and quality.get("finite") and temporal.get("temporal_evidence_available")
+             and bool(quality.get("final_seats")))
+    for value, limit, tolerance in safety:
+        valid = (valid and isinstance(value, (int, float)) and math.isfinite(value)
+                 and isinstance(limit, (int, float)) and math.isfinite(limit)
+                 and value <= limit + tolerance)
+    headroom, minimum = temporal.get("available_headroom_db"), policy.get("min_available_headroom_db")
+    valid = (valid and isinstance(headroom, (int, float)) and math.isfinite(headroom)
+             and isinstance(minimum, (int, float)) and math.isfinite(minimum)
+             and headroom >= minimum - 0.5)
+    budget = policy.get("max_worst_position_regression_db")
+    valid = valid and isinstance(budget, (int, float)) and math.isfinite(budget) and budget >= 0
+    for seat in quality.get("final_seats", []):
+        bound = seat.get("improvement_lower_bound_db")
+        valid = (valid and isinstance(bound, (int, float)) and math.isfinite(bound)
+                 and bound >= -budget)
+    if not valid:
+        raise ValueError("delivered routed graph has incorrect channel levels")
 
 
 def finite_tree(value, location="result"):
@@ -153,7 +253,7 @@ def inspect(path):
     validate_runtime_limiters(data, electrical_checks, optimizer.get("finalization") or {})
     report = metadata["correction_acceptance"]
     outcome = report["outcome"]
-    if outcome not in {"accepted", "unchanged", "rejected", "insufficient_evidence"}:
+    if outcome not in {"accepted", "unchanged", "safe_fallback", "rejected", "insufficient_evidence"}:
         raise ValueError(f"invalid outcome: {outcome}")
     if outcome in {"rejected", "insufficient_evidence"}:
         raise ValueError(f"graph is not approved for playback: {outcome}")
@@ -163,6 +263,26 @@ def inspect(path):
         raise ValueError("accepted outcome contradicts detailed decision")
     metrics = report["metrics"]
     quality = report.get("acoustic_quality") or {}
+    if outcome == "safe_fallback":
+        if report["accepted"] or report["decision"] != "safe_fallback":
+            raise ValueError("safe fallback contradicts detailed decision")
+        policy = report.get("runtime_policy") or {}
+        temporal = quality.get("temporal") or {}
+        limits = [
+            (quality.get("max_boost_db"), policy.get("max_boost_db"), False, 0.5),
+            (quality.get("max_electrical_boost_db"), policy.get("max_boost_db"), False, 0.5),
+            (temporal.get("pre_ringing_audible_db"), policy.get("max_pre_ringing_audible_db"), False, 0.0),
+            (temporal.get("available_headroom_db"), policy.get("min_available_headroom_db"), True, 0.5),
+            (temporal.get("latency_ms"), policy.get("max_latency_ms"), False, 0.0),
+        ]
+        if (not quality.get("finite") or not quality.get("final_seats")
+                or not temporal.get("temporal_evidence_available")):
+            raise ValueError("safe fallback lacks finite final-seat safety evidence")
+        for value, limit, minimum, tolerance in limits:
+            if (not isinstance(value, (int, float)) or not math.isfinite(value)
+                    or not isinstance(limit, (int, float)) or not math.isfinite(limit)
+                    or (value < limit - tolerance if minimum else value > limit + tolerance)):
+                raise ValueError("safe fallback violates or lacks runtime safety evidence")
     if outcome == "accepted" and not quality.get("final_seats"):
         raise ValueError("accepted correction has no physical-seat replay evidence")
     if outcome == "accepted":
@@ -193,14 +313,14 @@ def inspect(path):
             if not subwoofer and loss > budget:
                 raise ValueError(f"useful-output loss {loss:.3f} dB exceeds {budget:.3f} dB budget")
     if (metadata.get("bass_management") or {}).get("routing_graph"):
-        alignment = [stage for stage in metadata.get("stage_outcomes", [])
-                     if stage["stage"] == "final_delivered_channel_alignment"]
-        if len(alignment) != 1 or not alignment[0].get("checks"):
-            raise ValueError("routed graph has no terminal channel-alignment evidence")
-        if any(not check["passed"] for check in alignment[0]["checks"]):
-            raise ValueError("delivered routed graph has incorrect channel levels")
-    if outcome == "accepted" and metrics["improvement_db"] <= 1e-6:
+        validate_channel_alignment(metadata, report)
+    minimum_improvement = (optimizer.get("finalization") or {}).get("min_primary_improvement_db", 1e-6)
+    selected_improvement, selection_basis = (primary_improvement(report, metadata.get("stage_outcomes", []))
+                                            if outcome == "accepted" else (None, "not_applied_to_fallback"))
+    if outcome == "accepted" and selected_improvement <= 1e-6:
         raise ValueError("accepted correction has no measured improvement")
+    if outcome == "accepted" and selected_improvement <= minimum_improvement:
+        raise ValueError("accepted correction does not reach its declared measured-improvement floor")
     if report["decision"] == "identity_fallback":
         quality = report.get("acoustic_quality") or {}
         for seat in quality.get("final_seats", []):
@@ -248,11 +368,16 @@ def inspect(path):
         "outcome": outcome,
         "before_rms_db": metrics["pre_target_weighted_rms_db"] if scored else None,
         "after_rms_db": metrics["post_target_weighted_rms_db"] if scored else None,
+        "selection_improvement_db": selected_improvement,
+        "selection_score_basis": selection_basis,
         "final_seats": len(quality.get("final_seats", [])),
         "observation_band_hz": quality.get("evaluated_band_hz"),
         "requested_correction_band_hz": [optimizer.get("min_freq"), optimizer.get("max_freq")],
         "convolutions_verified": convolution_count,
         "violations": report.get("violations", []),
+        "level_matched_epa": inspect_level_matched_epa(metadata),
+        "epa_spectral_flatness": inspect_epa_spectral_flatness(metadata),
+        "pre_ringing_audible_db": (quality.get("temporal") or {}).get("pre_ringing_audible_db"),
     }
 
 

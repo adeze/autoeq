@@ -24,6 +24,7 @@ pub mod measurement_quality;
 pub mod param_utils;
 pub mod peq_model;
 pub mod phase_utils;
+pub mod resolution;
 pub mod response;
 pub mod serialized_dsp;
 pub mod x2peq;

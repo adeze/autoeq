@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "math-dsp"
-version = "0.5.33"
+version = "0.5.34"
 dependencies = [
  "clap",
  "hound",
@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "math-iir-fir"
-version = "0.5.25"
+version = "0.5.26"
 dependencies = [
  "base64",
  "byteorder",
@@ -4187,6 +4187,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "sotf-nalgebra",
  "tempfile",
 ]

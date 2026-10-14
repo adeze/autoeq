@@ -31,6 +31,7 @@ pub mod fir_response;
 pub mod gain_summary;
 pub mod grid;
 pub mod ir_group_delay;
+mod plot_sampling;
 pub mod prepared_report;
 pub mod producer;
 pub mod report_assembly;

@@ -271,27 +271,13 @@ pub(super) fn run_optimizer(
         }
         return Ok(run.evidence);
     }
-    let result = if algo_override.is_some() {
-        backend.optimize_filters_with_algo_override(
-            x,
-            lower,
-            upper,
-            objective,
-            params,
-            algo_override,
-        )
-    } else if let Some(callback) = callback {
-        backend.optimize_filters_with_callback(x, lower, upper, objective, params, callback)
-    } else {
-        backend.optimize_filters(x, lower, upper, objective, params)
-    };
-    Ok(OptimizerRunEvidence::from_backend_result(
-        algo_override.unwrap_or(&params.algo),
-        result,
+    Ok(backend.optimize_filters_evidence(
         x,
         lower,
         upper,
-        params.maxeval,
-        params.seed,
+        objective,
+        params,
+        algo_override,
+        callback,
     ))
 }

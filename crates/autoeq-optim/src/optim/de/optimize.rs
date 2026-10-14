@@ -118,7 +118,30 @@ pub fn optimize_filters_autoeq_with_callback(
     params: &crate::OptimParams,
     callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
 ) -> crate::optim::OptimizerOutcome {
-    optimize_filters_autoeq_with_callback_and_initial(
+    optimize_filters_autoeq_with_callback_and_completion(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        autoeq_name,
+        params,
+        callback,
+    )
+    .0
+}
+
+/// Retain native DE completion while reporting external iteration progress.
+pub(crate) fn optimize_filters_autoeq_with_callback_and_completion(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
+    autoeq_name: &str,
+    params: &crate::OptimParams,
+    callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+) -> AutoeqDeCompletionResult {
+    let mut completion = None;
+    let result = optimize_filters_autoeq_with_callback_and_initial_and_exact(
         x,
         lower_bounds,
         upper_bounds,
@@ -127,7 +150,10 @@ pub fn optimize_filters_autoeq_with_callback(
         params,
         None,
         callback,
-    )
+        None,
+        Some(&mut completion),
+    );
+    (result, completion)
 }
 
 /// AutoEQ DE optimization whose first individual is an explicit candidate

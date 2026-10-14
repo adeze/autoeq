@@ -52,6 +52,16 @@ fn config(measurements: usize, report_only: bool) -> RoomConfig {
             max_db: 0.5,
             min_filter_improvement: 0.0,
             psychoacoustic: false,
+            // Pruning mechanics need retained EQ. Declare the bright spectral
+            // diagnostic target for which removing this bass peak is beneficial;
+            // the default EPA target instead prefers that injected bass energy.
+            epa_config: Some(roomeq_model::EpaConfig {
+                target_sharpness: 1.8,
+                evaluation_weight: 1.0,
+                potency_weight: 0.0,
+                activity_weight: 0.0,
+                ..Default::default()
+            }),
             refine: false,
             multi_measurement: (measurements > 1).then_some(MultiMeasurementConfig {
                 strategy: MultiMeasurementStrategy::WeightedSum,
@@ -75,6 +85,7 @@ fn config(measurements: usize, report_only: bool) -> RoomConfig {
             // still fail closed, and the floor itself is covered by
             // finalization unit tests plus measured-matrix flips.
             finalization: roomeq_model::FinalizationConfig {
+                min_primary_improvement_db: 0.0,
                 min_improvement_lower_bound_db: -1e9,
                 ..Default::default()
             },
@@ -138,15 +149,22 @@ fn qa_roomeq_pruning_conditions_exported_single_and_multi_matrix() {
 
 #[test]
 fn qa_roomeq_pruning_conditions_exported_hybrid_matrix() {
+    let mut retained_fir_rows = 0;
     for crossover in [true, false] {
         for measurement_count in [1, 2] {
             for report_only in [true, false] {
                 let mut config = config(measurement_count, report_only);
                 // Hybrid acceptance requires explicit phase evidence. These analytic
                 // fixtures declare a zero-phase transfer, unlike magnitude-only rows.
+                // Plant a high-band defect too: a bass-only plant cannot require
+                // a retained high-band FIR after native acceptance removes identity.
+                config.optimizer.max_freq = 2_000.0;
                 let curves: Vec<_> = (0..measurement_count)
                     .map(|seat| {
                         let mut curve = measurement(seat);
+                        curve.spl += &curve.freq.mapv(|frequency| {
+                            3.0 * (-((frequency / 1_000.0).log2() / 0.5).powi(2)).exp()
+                        });
                         curve.phase = Some(Array1::zeros(curve.freq.len()));
                         curve
                     })
@@ -178,6 +196,83 @@ fn qa_roomeq_pruning_conditions_exported_hybrid_matrix() {
                 let rendered = serde_json::to_vec(&graph).unwrap();
                 let decoded: roomeq_model::DspGraph = serde_json::from_slice(&rendered).unwrap();
                 let chain = &decoded.channels["left"];
+                let part_selection = decoded
+                    .metadata
+                    .as_ref()
+                    .unwrap()
+                    .stage_outcomes
+                    .iter()
+                    .find(|stage| stage.stage == "hybrid_best_part_selection")
+                    .filter(|stage| {
+                        stage
+                            .advisories
+                            .iter()
+                            .any(|a| a == "selected=iir" || a == "selected=fir")
+                    });
+                if let Some(selection) = part_selection {
+                    // The whole better standalone graph replaces the split Hybrid.
+                    // Check its actual receipt and export instead of requiring the
+                    // discarded candidate's split/merge or pruning metadata.
+                    assert_eq!(selection.checks.len(), 2);
+                    assert!(
+                        selection
+                            .checks
+                            .iter()
+                            .all(|c| c.observed.is_some_and(f64::is_finite))
+                    );
+                    assert!(selection.checks.iter().any(|c| c.observed.unwrap() > 1e-9));
+                    let acceptance = decoded
+                        .metadata
+                        .as_ref()
+                        .unwrap()
+                        .correction_acceptance
+                        .as_ref()
+                        .unwrap();
+                    assert!(matches!(
+                        acceptance.outcome,
+                        roomeq_model::RoomEqOutcome::Accepted
+                            | roomeq_model::RoomEqOutcome::Unchanged
+                            | roomeq_model::RoomEqOutcome::SafeFallback
+                    ));
+                    assert!(chain.plugins.iter().all(|plugin| !matches!(
+                        plugin.plugin_type.as_str(),
+                        "band_split" | "band_merge"
+                    )));
+                    if selection.advisories.contains(&"selected=iir".into()) {
+                        roomeq_export::roundtrip::verify_biquad_json_roundtrip(
+                            &decoded, 48000.0, 1e-10,
+                        )
+                        .unwrap();
+                        assert!(!chain.plugins.iter().any(|p| p.plugin_type == "convolution"));
+                    } else {
+                        // Coefficient-only export cannot represent the selected
+                        // FIR graph. Validate its actual graph and WAV below.
+                        assert!(decoded.validate().is_ok());
+                        let error = roomeq_export::roundtrip::verify_biquad_json_roundtrip(
+                            &decoded, 48000.0, 1e-10,
+                        )
+                        .unwrap_err();
+                        assert!(error.to_string().contains("convolution"));
+                        let convolution = chain
+                            .plugins
+                            .iter()
+                            .find(|p| p.plugin_type == "convolution")
+                            .expect("selected standalone FIR must retain its deployed FIR");
+                        retained_fir_rows += 1;
+                        let reference = convolution.parameters["ir_file"].as_str().unwrap();
+                        let mut reader =
+                            hound::WavReader::open(directory.path().join(reference)).unwrap();
+                        assert_eq!(reader.spec().sample_rate, 48000);
+                        assert_eq!(reader.spec().channels, 1);
+                        let samples: Vec<_> = reader.samples::<f32>().map(Result::unwrap).collect();
+                        let expected = result.channel_results["left"].fir_coeffs.as_ref().unwrap();
+                        assert_eq!(samples.len(), expected.len());
+                        for (sample, expected) in samples.iter().zip(expected) {
+                            assert_eq!(*sample, *expected as f32);
+                        }
+                    }
+                    continue;
+                }
                 let adjudication = &decoded
                     .metadata
                     .as_ref()
@@ -187,14 +282,57 @@ fn qa_roomeq_pruning_conditions_exported_hybrid_matrix() {
                     .expect("hybrid must retain pruning evidence")["left"];
                 assert_eq!(adjudication.enforced, !report_only);
                 assert_eq!(adjudication.removed_filter_indices.is_empty(), report_only);
+                let acceptance = decoded
+                    .metadata
+                    .as_ref()
+                    .unwrap()
+                    .correction_acceptance
+                    .as_ref()
+                    .unwrap();
+                if !report_only && acceptance.outcome == roomeq_model::RoomEqOutcome::Unchanged {
+                    // Removing fitted low-band PEQs may leave a Hybrid branch
+                    // that cannot pass native replay. Finalization must then
+                    // publish an honest identity, not restore pruned filters.
+                    assert!(!acceptance.accepted);
+                    assert_eq!(
+                        acceptance.realized_processing,
+                        Some(roomeq_model::RealizedProcessing::Identity)
+                    );
+                    assert!(acceptance.metrics.improvement_db.abs() < 1e-6);
+                    assert!(chain.plugins.iter().all(|plugin| !matches!(
+                        plugin.plugin_type.as_str(),
+                        "eq" | "convolution" | "band_split" | "band_merge"
+                    )));
+                    roomeq_export::roundtrip::verify_biquad_json_roundtrip(
+                        &decoded, 48000.0, 1e-10,
+                    )
+                    .unwrap();
+                    continue;
+                }
                 assert_eq!(
-                    chain
-                        .plugins
-                        .iter()
-                        .any(|plugin| plugin.plugin_type == "eq"),
+                    chain.plugins.iter().any(|plugin| {
+                        plugin.plugin_type == "eq"
+                            && plugin.parameters["label"] != "final_electrical_headroom_spectral"
+                    }),
                     report_only,
-                    "hybrid graph: {decoded:#?}"
+                    "fitted EQ: crossover={crossover}, seats={measurement_count}, report_only={report_only}"
                 );
+                // Finalization may add a separately validated spectral
+                // headroom candidate after fitted-filter pruning. It must
+                // remain cut-only and cannot stand in for the removed EQ.
+                for plugin in &chain.plugins {
+                    if plugin.plugin_type == "eq"
+                        && plugin.parameters["label"] == "final_electrical_headroom_spectral"
+                    {
+                        assert!(plugin.parameters["filters"].as_array().unwrap().iter().all(
+                            |filter| {
+                                filter["db_gain"]
+                                    .as_f64()
+                                    .is_some_and(|gain| gain.is_finite() && gain <= 0.0)
+                            }
+                        ));
+                    }
+                }
                 assert_eq!(
                     chain
                         .plugins
@@ -214,6 +352,7 @@ fn qa_roomeq_pruning_conditions_exported_hybrid_matrix() {
                     .iter()
                     .find(|plugin| plugin.plugin_type == "convolution")
                     .expect("hybrid must export its FIR branch");
+                retained_fir_rows += 1;
                 let reference = convolution.parameters["ir_file"].as_str().unwrap();
                 let path = directory.path().join(reference);
                 let mut reader = hound::WavReader::open(path).unwrap();
@@ -228,6 +367,10 @@ fn qa_roomeq_pruning_conditions_exported_hybrid_matrix() {
             }
         }
     }
+    assert!(
+        retained_fir_rows > 0,
+        "The pruning matrix must exercise real retained FIR artifacts"
+    );
 }
 
 #[test]
@@ -393,7 +536,10 @@ fn qa_roomeq_pruning_conditions_exported_routed_matrix() {
         let mut config = config(2, true);
         config.optimizer.filter_audibility = None;
         config.optimizer.parallel_threads = Some(1);
-        config.optimizer.max_iter = 100;
+        // This export fixture needs a beneficial full-passband correction.
+        // A narrow solve's inferred target level is not a full-band target:
+        // native replay correctly rejects its unintended upper-band offset.
+        config.optimizer.max_freq = 20_000.0;
         config.optimizer.min_db = -6.0;
         config.optimizer.max_db = 6.0;
         // Two correlated programme inputs have declared quarter-scale peaks;

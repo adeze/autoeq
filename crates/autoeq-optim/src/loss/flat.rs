@@ -72,6 +72,18 @@ impl PreparedFlatLoss {
             }
         }
     }
+
+    /// Score actual positive correction, independently of target residuals.
+    pub(crate) fn evaluate_null_boost(&self, correction: &Array1<f64>) -> f64 {
+        self.null_suppression.as_deref().map_or(0.0, |mask| {
+            self.weighted.evaluate_null_boost(
+                correction,
+                DEFAULT_FLAT_ERB_WEIGHT,
+                DEFAULT_FLAT_BAND_WEIGHT,
+                mask.as_slice().unwrap_or(&[]),
+            )
+        })
+    }
 }
 
 /// Compute the flat loss as an ERB + band weighted combination of `error`

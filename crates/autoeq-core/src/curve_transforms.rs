@@ -234,6 +234,7 @@ pub fn interpolate_log_space(output_frequencies: &Array1<f64>, curve: &Curve) ->
         phase,
         coherence,
         noise_floor_db,
+        resolution: Some(curve.retained_resolution()),
         ..Default::default()
     }
 }
@@ -271,6 +272,7 @@ pub fn interpolate(output_frequencies: &Array1<f64>, curve: &Curve) -> Curve {
             freq: output_frequencies.clone(),
             spl,
             phase,
+            resolution: Some(curve.retained_resolution()),
             ..Default::default()
         };
     }
@@ -300,6 +302,7 @@ pub fn interpolate(output_frequencies: &Array1<f64>, curve: &Curve) -> Curve {
         freq: output_frequencies.clone(),
         spl,
         phase,
+        resolution: Some(curve.retained_resolution()),
         ..Default::default()
     }
 }
@@ -485,6 +488,22 @@ pub fn smooth_psychoacoustic(curve: &Curve, config: &PsychoacousticSmoothingConf
         phase: curve.phase.clone(),
         coherence: curve.coherence.clone(),
         noise_floor_db: curve.noise_floor_db.clone(),
+        resolution: Some(
+            curve
+                .retained_resolution()
+                .with_smoothing(
+                    curve
+                        .freq
+                        .iter()
+                        .copied()
+                        .filter(|f| *f > 0.0)
+                        .map(|f| (f, 1.0 / calculate_variable_n(f, config)))
+                        .collect(),
+                )
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(crate::resolution::MeasurementResolution::unsupported())
+                }),
+        ),
         ..Default::default()
     }
 }
@@ -511,8 +530,263 @@ pub fn smooth_one_over_n_octave(curve: &Curve, bands_per_octave: usize) -> Curve
         phase: curve.phase.clone(),
         coherence: curve.coherence.clone(),
         noise_floor_db: curve.noise_floor_db.clone(),
+        resolution: Some(
+            curve
+                .retained_resolution()
+                .with_smoothing(
+                    curve
+                        .freq
+                        .iter()
+                        .copied()
+                        .filter(|f| *f > 0.0)
+                        .map(|f| (f, 1.0 / bands_per_octave as f64))
+                        .collect(),
+                )
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(crate::resolution::MeasurementResolution::unsupported())
+                }),
+        ),
         ..Default::default()
     }
+}
+
+/// Broad log-frequency magnitude features on retained measurement support.
+///
+/// Raised-cosine functions have FWHM and spacing at least the widest original
+/// sampling/smoothing floor in the active band. Their full supports fit inside
+/// that band, so boundaries cannot truncate a feature into a narrow transition.
+/// This constrains magnitude design, not acquisition accuracy or finite-tap ripple.
+#[derive(Debug, Clone)]
+pub struct ResolutionMagnitudeBasis {
+    width_octaves: f64,
+    coefficients: Vec<(f64, f64)>,
+}
+
+impl ResolutionMagnitudeBasis {
+    /// Project a magnitude proposal onto full-width supported features.
+    ///
+    /// Uses log-frequency integral means over complete supports. Bands narrower
+    /// than one complete function stay neutral; interpolation cannot enlarge
+    /// source support. Original measurement magnitude and phase remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid arrays, bandwidth, band, or unsupported active samples.
+    pub fn new(
+        source: &Curve,
+        correction_db: &Array1<f64>,
+        additional_octaves: f64,
+        band_hz: [f64; 2],
+    ) -> Result<Self, String> {
+        if source.freq.len() != correction_db.len()
+            || source.freq.len() < 2
+            || !additional_octaves.is_finite()
+            || additional_octaves < 0.0
+            || !band_hz[0].is_finite()
+            || !band_hz[1].is_finite()
+            || band_hz[0] <= 0.0
+            || band_hz[1] <= band_hz[0]
+            || correction_db.iter().any(|value| !value.is_finite())
+            || source
+                .freq
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            || source
+                .freq
+                .windows(2)
+                .into_iter()
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(String::from(
+                "invalid resolution-constrained correction inputs",
+            ));
+        }
+        let first = source
+            .freq
+            .iter()
+            .position(|frequency| *frequency > 0.0)
+            .ok_or("resolution-constrained correction has no positive frequencies")?;
+        let frequencies = Array1::from_iter(source.freq.iter().skip(first).copied());
+        let values = Array1::from_iter(correction_db.iter().skip(first).copied());
+        let integral = LogFrequencyIntegral::new(&frequencies, &values)
+            .ok_or("resolution-constrained correction needs two positive samples")?;
+        let support = source.retained_resolution();
+        let supported = support
+            .support_band_hz()
+            .ok_or("missing original correction support")?;
+        // Fail closed for extrapolated active bins, even when a subset of the
+        // requested band intersects valid original support.
+        for frequency in source
+            .freq
+            .iter()
+            .copied()
+            .filter(|frequency| (band_hz[0]..=band_hz[1]).contains(frequency))
+        {
+            support
+                .width_octaves(frequency)
+                .ok_or_else(|| format!("no original resolution support at {frequency:.3} Hz"))?;
+        }
+        let low = band_hz[0].max(supported[0]).max(frequencies[0]);
+        let high = band_hz[1]
+            .min(supported[1])
+            .min(frequencies[frequencies.len() - 1]);
+        if low >= high {
+            return Err(String::from(
+                "correction band has no original resolution support",
+            ));
+        }
+        let width = support
+            .max_width_octaves([low, high])
+            .ok_or("correction band has no finite original feature width")?
+            .max(additional_octaves);
+        let mut basis = Self {
+            width_octaves: width,
+            coefficients: Vec::new(),
+        };
+        if high.log2() - low.log2() < 2.0 * width {
+            return Ok(basis);
+        }
+        let mut center = low.log2() + width;
+        while center + width <= high.log2() {
+            let gain = integral
+                .mean(2.0_f64.powf(center - width), 2.0_f64.powf(center + width))
+                .ok_or("resolution-constrained correction has an empty full-width support")?;
+            if !gain.is_finite() {
+                return Err(String::from(
+                    "nonfinite resolution-constrained correction coefficient",
+                ));
+            }
+            basis.coefficients.push((center, gain));
+            let next = center + width;
+            if next <= center {
+                return Err(String::from(
+                    "resolution feature lattice cannot advance numerically",
+                ));
+            }
+            center = next;
+        }
+        Ok(basis)
+    }
+
+    /// Cap positive coefficients over their complete supports.
+    ///
+    /// The supplied nonnegative envelope is linear in log frequency. Its
+    /// minimum over every overlapping feature bounds that entire coefficient;
+    /// cuts stay unchanged. No pointwise clipping can create a narrow feature.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid envelopes or envelopes not covering the complete basis.
+    pub fn cap_positive_support(
+        &mut self,
+        frequencies: &Array1<f64>,
+        upper_db: &Array1<f64>,
+    ) -> Result<(), String> {
+        if frequencies.len() != upper_db.len()
+            || frequencies.len() < 2
+            || frequencies.iter().any(|f| !f.is_finite() || *f < 0.0)
+            || frequencies
+                .windows(2)
+                .into_iter()
+                .any(|pair| pair[0] >= pair[1])
+            || upper_db.iter().any(|cap| !cap.is_finite() || *cap < 0.0)
+        {
+            return Err("invalid broad magnitude upper envelope".into());
+        }
+        let first = frequencies
+            .iter()
+            .position(|f| *f > 0.0)
+            .ok_or("broad magnitude envelope has no positive support")?;
+        let grid: Vec<_> = frequencies.iter().skip(first).map(|f| f.log2()).collect();
+        if grid.len() < 2 {
+            return Err("broad magnitude envelope needs two positive samples".into());
+        }
+        let at = |logarithm: f64| {
+            let logarithm = logarithm.clamp(grid[0], grid[grid.len() - 1]);
+            let right = grid
+                .partition_point(|value| *value < logarithm)
+                .clamp(1, grid.len() - 1);
+            let fraction = (logarithm - grid[right - 1]) / (grid[right] - grid[right - 1]);
+            // Convex interpolation avoids subtracting near-f64::MAX caps.
+            (1.0 - fraction) * upper_db[first + right - 1] + fraction * upper_db[first + right]
+        };
+        for &(center, _) in &self.coefficients {
+            if center - self.width_octaves < grid[0] - 1e-12
+                || center + self.width_octaves > grid[grid.len() - 1] + 1e-12
+            {
+                return Err("broad magnitude envelope does not cover feature support".into());
+            }
+        }
+        for (center, gain) in &mut self.coefficients {
+            if *gain <= 0.0 {
+                continue;
+            }
+            let low = *center - self.width_octaves;
+            let high = *center + self.width_octaves;
+            let begin = grid.partition_point(|value| *value < low);
+            let end = grid.partition_point(|value| *value <= high);
+            let cap = upper_db
+                .iter()
+                .skip(first + begin)
+                .take(end - begin)
+                .copied()
+                .fold(at(low).min(at(high)), f64::min);
+            *gain = gain.min(cap);
+        }
+        Ok(())
+    }
+
+    /// Evaluate the analytic magnitude basis at one frequency.
+    ///
+    /// Outside complete feature supports, or for invalid frequencies, returns
+    /// neutral correction. At most two lattice neighbours overlap. Sampling this
+    /// basis on an FFT grid does not introduce new optimization parameters.
+    pub fn at(&self, frequency: f64) -> f64 {
+        if !frequency.is_finite() || frequency <= 0.0 {
+            return 0.0;
+        }
+        let logarithm = frequency.log2();
+        let right = self
+            .coefficients
+            .partition_point(|(center, _)| *center <= logarithm);
+        self.coefficients[right.saturating_sub(1)..(right + 1).min(self.coefficients.len())]
+            .iter()
+            .map(|&(center, gain)| {
+                let distance = (logarithm - center) / self.width_octaves;
+                if distance.abs() < 1.0 {
+                    gain * 0.5 * (1.0 + (std::f64::consts::PI * distance).cos())
+                } else {
+                    0.0
+                }
+            })
+            .sum()
+    }
+
+    /// Evaluate the analytic basis on a supplied numerical grid.
+    pub fn evaluate(&self, frequencies: &Array1<f64>) -> Array1<f64> {
+        frequencies.mapv(|frequency| self.at(frequency))
+    }
+}
+
+/// Project correction magnitudes onto full-width retained-support features.
+///
+/// Returns neutral samples outside complete basis supports, including band
+/// boundaries. Original magnitude and phase remain unchanged. This is a design
+/// constraint, not a hearing or acquisition assessment.
+///
+/// # Errors
+///
+/// Returns the refusal from [`ResolutionMagnitudeBasis::new`].
+pub fn smooth_correction_to_resolution(
+    source: &Curve,
+    correction_db: &Array1<f64>,
+    additional_octaves: f64,
+    band_hz: [f64; 2],
+) -> Result<Array1<f64>, String> {
+    Ok(
+        ResolutionMagnitudeBasis::new(source, correction_db, additional_octaves, band_hz)?
+            .evaluate(&source.freq),
+    )
 }
 
 /// Apply Gaussian smoothing to a scalar signal.
@@ -708,5 +982,57 @@ mod tests {
             assert_eq!(output.coherence, input.coherence);
             assert!(output.min_phase.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod magnitude_envelope_tests {
+    use super::*;
+
+    #[test]
+    fn positive_support_caps_preserve_cuts_and_broad_feature_widths() {
+        let mut basis = ResolutionMagnitudeBasis {
+            width_octaves: 0.5,
+            coefficients: vec![(8.0, 6.0), (9.0, -4.0), (10.0, 6.0)],
+        };
+        let frequencies = Array1::from_iter((0..=32).map(|i| 2.0_f64.powf(7.0 + i as f64 / 8.0)));
+        let caps = frequencies.mapv(|f| if f == 256.0 { 0.0 } else { 3.5 });
+        basis.cap_positive_support(&frequencies, &caps).unwrap();
+        assert_eq!(basis.width_octaves, 0.5);
+        assert_eq!(
+            basis.coefficients,
+            vec![(8.0, 0.0), (9.0, -4.0), (10.0, 3.5)]
+        );
+        assert_eq!(basis.at(256.0), 0.0);
+        assert_eq!(basis.at(512.0), -4.0);
+        assert_eq!(basis.at(1024.0), 3.5);
+        for i in 0..16384 {
+            let frequency = 128.0 * 16.0_f64.powf(i as f64 / 16383.0);
+            assert!(basis.at(frequency) <= 3.5 + 1e-12);
+        }
+    }
+
+    #[test]
+    fn envelope_support_boundaries_are_checked_between_knots() {
+        let mut basis = ResolutionMagnitudeBasis {
+            width_octaves: 0.5,
+            coefficients: vec![(8.5, 10.0)],
+        };
+        let frequencies = Array1::from_vec(vec![128.0, 300.0, 600.0, 1024.0]);
+        let caps = Array1::from_vec(vec![0.0, 8.0, 8.0, 0.0]);
+        basis.cap_positive_support(&frequencies, &caps).unwrap();
+        let expected = (8.0 * (256.0_f64 / 128.0).ln() / (300.0_f64 / 128.0).ln())
+            .min(8.0 * (1024.0_f64 / 512.0).ln() / (1024.0_f64 / 600.0).ln());
+        assert!((basis.coefficients[0].1 - expected).abs() < 1e-12);
+        let previous = basis.coefficients.clone();
+        assert!(
+            basis
+                .cap_positive_support(
+                    &Array1::from_vec(vec![300.0, 600.0]),
+                    &Array1::from_vec(vec![3.0, 3.0])
+                )
+                .is_err()
+        );
+        assert_eq!(basis.coefficients, previous);
     }
 }

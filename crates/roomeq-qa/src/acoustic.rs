@@ -1971,6 +1971,8 @@ mod tests {
         };
 
         let partition = |post_rms, post_p95, improvement| roomeq_quality::QualityPartitionMetrics {
+            configured_baseline: None,
+            frozen_grid_residual: Vec::new(),
             curve_count: 2,
             pre_weighted_rms_median_db: post_rms + improvement,
             post_weighted_rms_median_db: post_rms,

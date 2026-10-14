@@ -201,6 +201,29 @@ impl PreparedWeightedLoss {
         })
     }
 
+    /// Penalize positive correction at detected nulls using the same integration.
+    pub(crate) fn evaluate_null_boost(
+        &self,
+        correction: &Array1<f64>,
+        erb_mix: f64,
+        band_mix: f64,
+        null_suppression: &[f64],
+    ) -> f64 {
+        if null_suppression.len() != correction.len()
+            || null_suppression.iter().any(|value| !value.is_finite())
+            || correction.iter().any(|value| !value.is_finite())
+        {
+            return f64::INFINITY;
+        }
+        self.evaluate_weighted(correction, erb_mix, band_mix, |active_index, value| {
+            if value > 0.0 {
+                1.0 - null_suppression[self.indices[active_index]].clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        })
+    }
+
     /// Evaluate with sign-dependent, precomputed per-sample multipliers.
     pub fn evaluate_asymmetric(
         &self,

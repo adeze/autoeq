@@ -810,13 +810,17 @@ pub fn constrain_candidate(
         data.max_boost_envelope.as_deref(),
         data.min_cut_envelope.as_deref(),
     );
-    let (params, q_adjustments) = enforce_local_q_at_centers(
+    let (params, mut q_adjustments) = enforce_local_q_at_centers(
         &params,
         data.peq_model,
         data.loss_type,
         spec.global_max_q,
         spec.local_q_knots,
     )?;
+    let params = super::resolution_guard::guarded_parameters(&params, data, |adjustment| {
+        q_adjustments.push(adjustment);
+    })?
+    .into_owned();
     let boost = spec.boost_knots.or(data.max_boost_envelope.as_deref());
     let cut = spec.cut_knots.or(data.min_cut_envelope.as_deref());
     let composite_breaches = check_composite_gain_envelope(

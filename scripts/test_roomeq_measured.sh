@@ -53,20 +53,45 @@ for scenario in "${scenarios[@]}"; do
 done
 
 $CARGO build --release --locked --features cli --bin roomeq
-BIN=${CARGO_TARGET_DIR:-./target}/release/roomeq
+# Freeze the executable for this run: a concurrent rebuild must not change
+# optimization behavior halfway through the measured matrix.
+BUILD_BIN=${CARGO_TARGET_DIR:-./target}/release/roomeq
+mkdir -p "$OUT/.run-bin"
+RUN_BIN_DIR=$(mktemp -d "$OUT/.run-bin/run.XXXXXX")
+BIN="$RUN_BIN_DIR/roomeq"
+cp "$BUILD_BIN" "$BIN"
+chmod a-w "$BIN"
+
+# Reporting must not launch Cargo inside its 120-second render timeout or
+# change implementations when another task rebuilds the shared target tree.
+if [[ -z ${AUTOEQ_REPORT_PRODUCER:-} ]]; then
+    $CARGO build --release --locked -p autoeq-report-wasm --bin report-producer
+    BUILD_REPORT_BIN=${CARGO_TARGET_DIR:-./target}/release/report-producer
+else
+    BUILD_REPORT_BIN=$AUTOEQ_REPORT_PRODUCER
+fi
+REPORT_BIN="$RUN_BIN_DIR/report-producer"
+cp "$BUILD_REPORT_BIN" "$REPORT_BIN"
+chmod a-w "$REPORT_BIN"
+export AUTOEQ_REPORT_PRODUCER="$ROOT/$REPORT_BIN"
+# OUT may also be an absolute path.
+if [[ "$REPORT_BIN" = /* ]]; then AUTOEQ_REPORT_PRODUCER=$REPORT_BIN; fi
 
 # WP1 run manifest preamble: identify this run before any optimization.
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
 if command -v sha256sum >/dev/null 2>&1; then
     BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
+    REPORT_BIN_SHA=$(sha256sum "$REPORT_BIN" | awk '{print $1}')
 else
     BIN_SHA=$(shasum -a 256 "$BIN" | awk '{print $1}')
+    REPORT_BIN_SHA=$(shasum -a 256 "$REPORT_BIN" | awk '{print $1}')
 fi
 GIT_REV=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 if [ -z "$(git status --porcelain 2>/dev/null)" ]; then GIT_DIRTY=false; else GIT_DIRTY=true; fi
 STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RUN_ID="$RUN_ID" BIN_SHA="$BIN_SHA" GIT_REV="$GIT_REV" GIT_DIRTY="$GIT_DIRTY" \
 STARTED_UTC="$STARTED_UTC" SCENARIOS="$SCENARIOS" MODES="$MODES" BIN_PATH="$BIN" \
+REPORT_BIN_PATH="$AUTOEQ_REPORT_PRODUCER" REPORT_BIN_SHA="$REPORT_BIN_SHA" \
     "$PYTHON" - "$OUT/manifest.json" "$0" "$@" <<'PYEOF'
 import json, os, sys
 manifest = {
@@ -77,6 +102,8 @@ manifest = {
     "modes": os.environ["MODES"].split(),
     "roomeq_bin": os.environ["BIN_PATH"],
     "roomeq_sha256": os.environ["BIN_SHA"],
+    "report_producer_bin": os.environ["REPORT_BIN_PATH"],
+    "report_producer_sha256": os.environ["REPORT_BIN_SHA"],
     "git_revision": os.environ["GIT_REV"],
     "git_dirty": os.environ["GIT_DIRTY"] == "true",
     "finished_utc": None,
@@ -129,19 +156,56 @@ for scenario in "${scenarios[@]}"; do
         if (( run_status != 0 )); then
             echo "--- FAILED RoomEQ measured: $scenario / $mode (roomeq exit $run_status) ---" | tee -a "$mode_out/run.log"
             failures+=("$scenario/$mode: roomeq exit $run_status")
-            continue
         fi
-        if ! "$PYTHON" ./ui/display-roomeq "$result" \
-            --output "$mode_out/dsp-$mode.html"; then
-            failures+=("$scenario/$mode: display failed")
-            continue
+        display_status=0
+        audit_status=0
+        inspected_result="$result"
+        if (( run_status != 0 )); then
+            # A refused graph is retained inside its diagnostic attempt, not
+            # published at the canonical playback path. Inspect that artifact
+            # without treating it as a successful or approved result.
+            inspected_result=$("$PYTHON" - "$mode_out" "dsp-$mode.json" <<'PYEOF'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+candidates = list(root.glob(f".roomeq-attempt-*/{sys.argv[2]}"))
+if len(candidates) == 1 and candidates[0].is_file():
+    candidate = candidates[0]
+    receipt = {"path": str(candidate.relative_to(root)),
+               "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+               "scope": "not_approved_for_playback"}
+    (root / "diagnostic-artifact.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    print(candidate)
+PYEOF
+            )
         fi
-        if ! "$PYTHON" ./scripts/check_roomeq_measured_result.py "$result" \
-            | tee "$mode_out/audit.jsonl"; then
-            failures+=("$scenario/$mode: audit failed")
-            continue
+        if [[ -n "$inspected_result" && -f "$inspected_result" ]]; then
+            "$PYTHON" ./ui/display-roomeq "$inspected_result" \
+                --output "$mode_out/dsp-$mode.html" \
+                > "$mode_out/display.log" 2>&1 || display_status=$?
+            if (( display_status != 0 )); then
+                cat "$mode_out/display.log" >&2
+                failures+=("$scenario/$mode: display failed")
+            fi
+            "$PYTHON" ./scripts/check_roomeq_measured_result.py "$inspected_result" \
+                > "$mode_out/audit.jsonl" 2> "$mode_out/audit.log" || audit_status=$?
+            cat "$mode_out/audit.jsonl"
+            if (( audit_status != 0 )); then
+                cat "$mode_out/audit.log" >&2
+                failures+=("$scenario/$mode: audit failed")
+            fi
+            if (( run_status == 0 )); then results+=("$result"); fi
+        else
+            display_status=skipped
+            audit_status=skipped
         fi
-        results+=("$result")
+        "$PYTHON" - "$mode_out/stages.json" "$run_status" "$display_status" "$audit_status" <<'PYEOF'
+import json, sys
+stages = {name: int(value) if value != "skipped" else None
+          for name, value in zip(("roomeq", "display", "audit"), sys.argv[2:])}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(stages, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PYEOF
     done
     if (( ${#results[@]} > 1 )); then
         # Recheck all earlier FIRs after the final mode has written its assets.
@@ -155,17 +219,22 @@ for scenario in "${scenarios[@]}"; do
     fi
 done
 # WP1: always publish machine-readable reports, even on failure.
-if ! "$PYTHON" ./scripts/roomeq_suite_report.py "$OUT"; then
-    failures+=("suite: report generation failed")
+if "$PYTHON" ./scripts/roomeq_suite_report.py "$OUT" --in-dir "$IN" \
+    --scenarios "$SCENARIOS" --modes "$MODES" --check; then
+    REPORT_CHECK_EXIT=0
+else
+    REPORT_CHECK_EXIT=$?
+    failures+=("suite: report generation or comparison evidence check failed")
 fi
 FINISHED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if (( ${#failures[@]} > 0 )); then SUITE_EXIT=1; else SUITE_EXIT=0; fi
-"$PYTHON" - "$OUT/manifest.json" "$FINISHED_UTC" "$SUITE_EXIT" <<'PYEOF'
+"$PYTHON" - "$OUT/manifest.json" "$FINISHED_UTC" "$SUITE_EXIT" "$REPORT_CHECK_EXIT" <<'PYEOF'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     manifest = json.load(handle)
 manifest["finished_utc"] = sys.argv[2]
 manifest["suite_exit"] = int(sys.argv[3])
+manifest["comparison_check"] = {"requested": True, "exit": int(sys.argv[4])}
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)
     handle.write("\n")

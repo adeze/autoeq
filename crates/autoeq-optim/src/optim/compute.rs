@@ -9,6 +9,7 @@ use super::objective_data::ObjectiveData;
 use super::smoothness_penalty_config::SmoothnessPenaltyConfig;
 use super::types::MultiObjectiveData;
 use crate::PeqModel;
+use crate::param_utils::PeqLayout;
 use ndarray::Array1;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -222,6 +223,23 @@ fn compute_multi_objective_fitness(x: &[f64], mo: &MultiObjectiveData) -> f64 {
 /// needs a richer physical transfer than this scalar response interface.
 pub fn compute_response_fitness(responses: &[Array1<f64>], data: &ObjectiveData) -> Option<f64> {
     let evaluate = |response: &Array1<f64>, objective_data: &ObjectiveData| {
+        if matches!(
+            objective_data.loss_type,
+            LossType::SpeakerFlat | LossType::HeadphoneFlat | LossType::SpeakerFlatAsymmetric
+        ) {
+            if response.len() != objective_data.freqs.len()
+                || response.len() != objective_data.deviation.len()
+                || response.iter().any(|value| !value.is_finite())
+            {
+                return Some(f64::INFINITY);
+            }
+            let mut error = response - &*objective_data.deviation;
+            return Some(evaluate_prepared_flat_response(
+                response,
+                &mut error,
+                objective_data,
+            ));
+        }
         let objective = objective_data
             .objective
             .clone()
@@ -305,6 +323,15 @@ pub(crate) fn try_compute_pareto_objectives(
 }
 
 fn compute_pareto_objectives_uncontrolled(x: &[f64], data: &ObjectiveData) -> Vec<f64> {
+    let Ok(projected) = super::resolution_guard::guarded_parameters(x, data, |_| {}) else {
+        return vec![
+            f64::INFINITY;
+            data.multi_objective
+                .as_ref()
+                .map_or(1, |multi| multi.objectives.len())
+        ];
+    };
+    let x = projected.as_ref();
     if let Some(ref mo) = data.multi_objective {
         // Evaluate each per-measurement loss once; the scalarisation and the
         // shared penalty are pure reductions over those values, so no
@@ -392,6 +419,10 @@ pub fn compute_smoothness_penalty(
 /// Compute the base fitness for a single ObjectiveData (no multi-objective delegation).
 /// This is the inner implementation that does not check `multi_objective`.
 fn compute_base_fitness_single(x: &[f64], data: &ObjectiveData) -> f64 {
+    let Ok(projected) = super::resolution_guard::guarded_parameters(x, data, |_| {}) else {
+        return f64::INFINITY;
+    };
+    let x = projected.as_ref();
     if matches!(
         data.loss_type,
         LossType::SpeakerFlat | LossType::HeadphoneFlat | LossType::SpeakerFlatAsymmetric
@@ -443,7 +474,6 @@ fn compute_base_fitness_single(x: &[f64], data: &ObjectiveData) -> f64 {
 }
 
 fn compute_prepared_flat_fitness(x: &[f64], data: &ObjectiveData) -> f64 {
-    let prepared = data.prepared();
     EVALUATION_SCRATCH.with(|slot| {
         let mut scratch = slot.borrow_mut();
         scratch.ensure_frequency_len(data.freqs.len());
@@ -496,28 +526,47 @@ fn compute_prepared_flat_fitness(x: &[f64], data: &ObjectiveData) -> f64 {
         {
             *value = correction - deviation;
         }
-        prepared.apply_deadband(error.as_slice_mut().expect("contiguous error scratch"));
-        let base = match data.loss_type {
-            LossType::SpeakerFlat | LossType::HeadphoneFlat => prepared
-                .flat
-                .as_ref()
-                .expect("prepared flat loss")
-                .evaluate(error),
-            LossType::SpeakerFlatAsymmetric => prepared
-                .asymmetric
-                .as_ref()
-                .expect("prepared asymmetric loss")
-                .evaluate(error),
-            _ => unreachable!("prepared flat path only handles flat objectives"),
-        };
-        base + prepared
+        evaluate_prepared_flat_response(response, error, data)
+    })
+}
+
+fn evaluate_prepared_flat_response(
+    response: &Array1<f64>,
+    error: &mut Array1<f64>,
+    data: &ObjectiveData,
+) -> f64 {
+    let prepared = data.prepared();
+    // Score the unsuppressed signed error before deadband mutates the scratch.
+    let epa_regression = prepared
+        .epa_regression
+        .as_ref()
+        .map_or(0.0, |cost| cost.evaluate(error));
+    prepared.apply_deadband(error.as_slice_mut().expect("contiguous error scratch"));
+    let base = match data.loss_type {
+        LossType::SpeakerFlat | LossType::HeadphoneFlat => prepared
+            .flat
+            .as_ref()
+            .expect("prepared flat loss")
+            .evaluate(error),
+        LossType::SpeakerFlatAsymmetric => prepared
+            .asymmetric
+            .as_ref()
+            .expect("prepared asymmetric loss")
+            .evaluate(error),
+        _ => unreachable!("prepared flat path only handles flat objectives"),
+    };
+    base + epa_regression
+        + prepared
+            .null_boost
+            .as_ref()
+            .map_or(0.0, |penalty| penalty.evaluate_null_boost(response))
+        + prepared
             .smoothness
             .as_ref()
             .map(|penalty| {
                 penalty.evaluate(response.as_slice().expect("contiguous response scratch"))
             })
             .unwrap_or(0.0)
-    })
 }
 
 /// Evaluate a PEQ ceiling constraint using the response left by the objective
@@ -567,6 +616,10 @@ pub(crate) fn compute_ceiling_violation_into(
 /// This is the unified fitness function used by both NLOPT and metaheuristics optimizers.
 /// If `multi_objective` is set, delegates to multi-objective fitness computation.
 pub fn compute_base_fitness(x: &[f64], data: &ObjectiveData) -> f64 {
+    let Ok(projected) = super::resolution_guard::guarded_parameters(x, data, |_| {}) else {
+        return f64::INFINITY;
+    };
+    let x = projected.as_ref();
     // If multi-objective data is present, delegate to multi-objective fitness
     if let Some(ref mo) = data.multi_objective {
         return compute_multi_objective_fitness(x, mo);
@@ -581,11 +634,11 @@ pub fn compute_base_fitness(x: &[f64], data: &ObjectiveData) -> f64 {
 /// (e.g., metaheuristics). Avoids cloning ObjectiveData on every evaluation.
 /// Constraint penalty terms for `x`, in application order.
 ///
-/// Returns `[ceiling, spacing, min_gain]`; each entry is `0.0` when its
+/// Returns `[ceiling, spacing, min_gain, q_rail]`; each entry is `0.0` when its
 /// penalty is disabled or inapplicable. Split out so the Pareto path can add
 /// the shared penalty to precomputed per-objective losses without
 /// re-evaluating any objective.
-fn penalty_terms(x: &[f64], data: &ObjectiveData) -> [f64; 3] {
+fn penalty_terms(x: &[f64], data: &ObjectiveData) -> [f64; 4] {
     // PEQ-specific penalties only apply when the parameter vector has PEQ layout
     // (freq/Q/gain triplets). DriversFlat and MultiSubFlat use a different layout
     // (gains/delays/crossovers) and these penalty functions would misinterpret the values.
@@ -594,7 +647,7 @@ fn penalty_terms(x: &[f64], data: &ObjectiveData) -> [f64; 3] {
         LossType::DriversFlat | LossType::MultiSubFlat
     );
 
-    let mut terms = [0.0; 3];
+    let mut terms = [0.0; 4];
     if data.penalty_w_ceiling > 0.0 && is_peq_loss {
         let viol =
             compute_ceiling_violation_into(&data.freqs, x, data.srate, data.peq_model, data.max_db);
@@ -609,6 +662,29 @@ fn penalty_terms(x: &[f64], data: &ObjectiveData) -> [f64; 3] {
     if data.penalty_w_mingain > 0.0 && data.min_db > 0.0 && is_peq_loss {
         let viol = viol_min_gain_from_xs(x, data.peq_model, data.min_db);
         terms[2] = data.penalty_w_mingain * viol * viol;
+    }
+
+    if is_peq_loss && let Some((rail, weight)) = data.q_rail_penalty {
+        if !rail.is_finite() || rail <= 0.0 || !weight.is_finite() || weight < 0.0 {
+            terms[3] = f64::INFINITY;
+        } else if weight > 0.0 {
+            let count = data.peq_model.num_filters(x);
+            for index in 0..count {
+                let filter = data.peq_model.get_filter_params(x, index);
+                if !matches!(
+                    data.peq_model
+                        .determine_filter_type(index, count, filter.filter_type),
+                    crate::iir::BiquadFilterType::Peak | crate::iir::BiquadFilterType::PeakMatched
+                ) {
+                    continue;
+                }
+                let frequency = 10.0_f64.powf(filter.freq);
+                if frequency < data.min_freq || frequency > data.max_freq {
+                    continue;
+                }
+                terms[3] += weight * filter.gain.abs() * (filter.q / rail).powi(4);
+            }
+        }
     }
 
     terms
@@ -638,6 +714,10 @@ pub(crate) fn try_compute_fitness_penalties_ref(
 }
 
 fn compute_fitness_penalties_uncontrolled(x: &[f64], data: &ObjectiveData) -> f64 {
+    let Ok(projected) = super::resolution_guard::guarded_parameters(x, data, |_| {}) else {
+        return f64::INFINITY;
+    };
+    let x = projected.as_ref();
     let fit = compute_base_fitness(x, data);
 
     // When penalties are enabled (weights > 0), add them to the base fit so that
@@ -899,7 +979,7 @@ mod multi_objective_and_base_fitness_tests {
         EVALUATION_SCRATCH, ObjectiveData, RESPONSE_COMPUTATIONS, compute_base_fitness,
         compute_base_fitness_single, compute_fitness_penalties, compute_fitness_penalties_ref,
         compute_multi_objective_fitness, compute_pareto_objectives,
-        compute_sorted_freqs_and_adjacent_octave_spacings, variance_penalized_loss,
+        compute_sorted_freqs_and_adjacent_octave_spacings, penalty_terms, variance_penalized_loss,
     };
     use crate::MultiObjectiveData;
     use crate::ObjectiveDataBuilder;
@@ -1135,6 +1215,63 @@ mod multi_objective_and_base_fitness_tests {
     }
 
     #[test]
+    fn null_boost_cost_preserves_peq_fir_parity_and_cut_preference() {
+        for loss_type in [LossType::SpeakerFlat, LossType::SpeakerFlatAsymmetric] {
+            let frequencies = freqs();
+            let make = |mask| {
+                ObjectiveDataBuilder::new(
+                    frequencies.clone(),
+                    Array1::zeros(frequencies.len()),
+                    Array1::from_elem(frequencies.len(), 5.0),
+                    48_000.0,
+                    PeqModel::Pk,
+                    loss_type,
+                )
+                .freq_range(20.0, 20_000.0)
+                .null_suppression(Array1::from_elem(frequencies.len(), mask))
+                .build()
+                .unwrap()
+            };
+            let null = make(0.0);
+            let broad = make(1.0);
+            let identity = x();
+            let boost = vec![500_f64.log10(), 1.0, 3.0];
+            let cut = vec![500_f64.log10(), 1.0, -3.0];
+            assert_eq!(compute_base_fitness_single(&identity, &null), 0.0);
+            assert!(compute_base_fitness_single(&boost, &null) > 0.0);
+            for candidate in [&identity, &boost, &cut] {
+                let response = crate::x2peq::x2spl(&frequencies, candidate, 48_000.0, PeqModel::Pk);
+                let peq = compute_base_fitness_single(candidate, &null);
+                let fir = super::compute_response_fitness(&[response], &null).unwrap();
+                assert!((peq - fir).abs() < 1e-12, "{loss_type:?}: {peq} != {fir}");
+            }
+            let correction = Array1::from_elem(frequencies.len(), -3.0);
+            assert_eq!(
+                null.prepared()
+                    .null_boost
+                    .as_ref()
+                    .unwrap()
+                    .evaluate_null_boost(&correction),
+                0.0
+            );
+            assert_eq!(
+                broad
+                    .prepared()
+                    .null_boost
+                    .as_ref()
+                    .unwrap()
+                    .evaluate_null_boost(&Array1::from_elem(frequencies.len(), 3.0)),
+                0.0
+            );
+            assert!(
+                compute_base_fitness_single(&boost, &broad)
+                    < compute_base_fitness_single(&identity, &broad),
+                "broad correctable dips should still reward useful boost"
+            );
+        }
+    }
+
+    #[test]
     fn base_fitness_missing_data_rejected_by_builder() {
         let f = freqs();
         let n = f.len();
@@ -1249,6 +1386,189 @@ mod multi_objective_and_base_fitness_tests {
         assert!(
             drivers_penalized.is_infinite()
                 || drivers_penalized == compute_base_fitness(&x(), &obj)
+        );
+    }
+
+    #[test]
+    fn q_rail_penalty_preserves_gain_sign_neutral_filters_and_layouts() {
+        let mut data = base_objective(LossType::SpeakerFlat);
+        data.q_rail_penalty = Some((6.0, 0.02));
+        let peak = [500.0_f64.log10(), 6.0, -12.0];
+        assert!((penalty_terms(&peak, &data)[3] - 0.24).abs() < 1e-12);
+        let broad = [peak[0], 3.0, -12.0];
+        assert!((penalty_terms(&broad, &data)[3] - 0.015).abs() < 1e-12);
+        assert_eq!(
+            penalty_terms(&[peak[0], 6.0, 12.0], &data)[3],
+            penalty_terms(&peak, &data)[3]
+        );
+        let mut with_neutral = peak.to_vec();
+        with_neutral.extend([peak[0], 6.0, 0.0]);
+        assert_eq!(
+            penalty_terms(&with_neutral, &data)[3],
+            penalty_terms(&peak, &data)[3]
+        );
+        data.peq_model = PeqModel::LsPkHs;
+        assert_eq!(
+            penalty_terms(
+                &[peak[0], 6.0, -12.0, peak[0], 6.0, 0.0, peak[0], 6.0, 12.0],
+                &data
+            )[3],
+            0.0
+        );
+        data.peq_model = PeqModel::Free;
+        assert!(
+            (penalty_terms(&[11.0, peak[0], 6.0, -12.0], &data)[3] - 0.24).abs() < 1e-12,
+            "matched peaks must not bypass the same rail complexity cost"
+        );
+        assert_eq!(penalty_terms(&[11.0, peak[0], 6.0, 0.0], &data)[3], 0.0);
+        data.loss_type = LossType::DriversFlat;
+        assert_eq!(penalty_terms(&[], &data)[3], 0.0);
+    }
+
+    #[test]
+    fn epa_spectral_regression_matches_reference_and_peq_fir_paths() {
+        let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 20000.0_f64.log10(), 401);
+        let mut data = ObjectiveDataBuilder::speaker_flat(
+            frequencies.clone(),
+            Array1::zeros(401),
+            Array1::from_elem(401, 2.0),
+            48000.0,
+            PeqModel::Pk,
+        )
+        .freq_range(20.0, 20000.0)
+        .build()
+        .unwrap();
+        let x = [1000.0_f64.log10(), 1.0, -6.0];
+        let response = crate::x2peq::x2spl(&frequencies, &x, 48000.0, PeqModel::Pk);
+        let unpenalized = compute_base_fitness(&x, &data);
+        data.epa_flatness_regression_weight = 1.0;
+        data.epa_config = Some(EpaConfig {
+            flatness_erb_weight: 0.4,
+            flatness_band_weight: 0.6,
+            ..Default::default()
+        });
+        data.prepared = Arc::new(std::sync::OnceLock::new());
+        let config = data.epa_config.as_ref().unwrap();
+        let expected_cost = (crate::loss::epa::score::epa_flatness(
+            &frequencies,
+            &(&response - &*data.deviation),
+            20.0,
+            20000.0,
+            config,
+        ) - crate::loss::epa::score::epa_flatness(
+            &frequencies,
+            &data.deviation,
+            20.0,
+            20000.0,
+            config,
+        ))
+        .max(0.0);
+        assert!(expected_cost > 0.0);
+        let penalized = compute_base_fitness(&x, &data);
+        assert!((penalized - unpenalized - expected_cost).abs() < 1e-10);
+        assert!(
+            (super::compute_response_fitness(&[response], &data).unwrap() - penalized).abs()
+                < 1e-10
+        );
+        assert!((compute_base_fitness(&[], &data) - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn epa_spectral_regression_cannot_be_hidden_by_null_suppression() {
+        let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 20000.0_f64.log10(), 101);
+        let mut data = ObjectiveDataBuilder::speaker_flat(
+            frequencies,
+            Array1::zeros(101),
+            Array1::from_elem(101, 2.0),
+            48000.0,
+            PeqModel::Pk,
+        )
+        .freq_range(20.0, 20000.0)
+        .build()
+        .unwrap();
+        data.null_suppression = Some(Arc::new(Array1::zeros(101)));
+        data.epa_flatness_regression_weight = 1.0;
+        let score = |correction: f64| {
+            super::compute_response_fitness(&[Array1::from_elem(101, correction)], &data).unwrap()
+        };
+        assert!(score(0.0).abs() < 1e-10);
+        assert!((score(-1.0) - 1.0).abs() < 1e-10);
+        // The independent null-boost term still charges positive correction;
+        // EPA adds nothing when the target residual is exactly zero.
+        assert!((score(2.0) - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn epa_spectral_regression_uses_each_seat_baseline_before_aggregation() {
+        let mut first = base_objective(LossType::SpeakerFlat);
+        first.deviation = Arc::new(Array1::from_elem(5, 2.0));
+        first.epa_flatness_regression_weight = 1.0;
+        let mut second = base_objective(LossType::SpeakerFlat);
+        second.deviation = Arc::new(Array1::from_elem(5, 4.0));
+        second.epa_flatness_regression_weight = 1.0;
+        let responses = [Array1::from_elem(5, -1.0), Array1::from_elem(5, -3.0)];
+        // First seat: raw loss3 plus EPA regression1. Second: loss7 plus3.
+        for (strategy, expected) in [
+            (MultiMeasurementStrategy::Average, 7.0),
+            (MultiMeasurementStrategy::WeightedSum, 8.5),
+            (MultiMeasurementStrategy::Minimax, 10.0),
+        ] {
+            let mut data = first.clone();
+            let mut multi = multi_objective(strategy);
+            multi.objectives = vec![first.clone(), second.clone()];
+            multi.weights = vec![0.25, 0.75];
+            data.multi_objective = Some(multi);
+            let score = super::compute_response_fitness(&responses, &data).unwrap();
+            assert!((score - expected).abs() < 1e-10, "{strategy:?}: {score}");
+        }
+    }
+
+    #[test]
+    fn q_rail_shared_penalty_is_added_once_for_scalar_and_pareto_seats() {
+        let mut data = base_objective(LossType::SpeakerFlat);
+        data.q_rail_penalty = Some((6.0, 0.02));
+        let x = [500.0_f64.log10(), 6.0, -12.0];
+        data.multi_objective = Some(multi_objective(MultiMeasurementStrategy::Minimax));
+        let unpenalized = compute_base_fitness(&x, &data);
+        // Other configured penalty terms are kept separate, so the test catches
+        // seat replication or scalarization of this shared parameter cost.
+        data.penalty_w_ceiling = 0.0;
+        data.penalty_w_spacing = 0.0;
+        data.penalty_w_mingain = 0.0;
+        assert!((compute_fitness_penalties_ref(&x, &data) - unpenalized - 0.24).abs() < 1e-10);
+        let pareto = compute_pareto_objectives(&x, &data);
+        for (actual, seat) in pareto
+            .iter()
+            .zip(&data.multi_objective.as_ref().unwrap().objectives)
+        {
+            assert!((actual - compute_base_fitness_single(&x, seat) - 0.24).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn q_rail_cost_does_not_ban_a_supported_narrow_defect() {
+        let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 2000.0_f64.log10(), 401);
+        let narrow = [80.0_f64.log10(), 6.0, -12.0];
+        let broad = [narrow[0], 3.0, narrow[2]];
+        let deviation = crate::x2peq::x2spl(&frequencies, &narrow, 48000.0, PeqModel::Pk);
+        let mut data = ObjectiveDataBuilder::speaker_flat(
+            frequencies.clone(),
+            Array1::zeros(frequencies.len()),
+            deviation,
+            48000.0,
+            PeqModel::Pk,
+        )
+        .freq_range(20.0, 2000.0)
+        .build()
+        .unwrap();
+        data.q_rail_penalty = Some((6.0, 0.02));
+        assert!(
+            compute_fitness_penalties_ref(&narrow, &data)
+                < compute_fitness_penalties_ref(&broad, &data)
+        );
+        assert!(
+            compute_fitness_penalties_ref(&narrow, &data)
+                < compute_fitness_penalties_ref(&[], &data)
         );
     }
 

@@ -185,6 +185,7 @@ pub fn interpolate_log_space(freq_out: &Array1<f64>, curve: &Curve) -> Curve {
         phase: phase_out,
         coherence: coherence_out,
         noise_floor_db: noise_floor_db_out,
+        resolution: Some(curve.retained_resolution()),
         ..Default::default()
     }
 }

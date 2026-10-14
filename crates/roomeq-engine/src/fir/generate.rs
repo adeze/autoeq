@@ -278,6 +278,75 @@ fn checked_coefficients(
     Ok(coefficients)
 }
 
+// Apply the warrant to the regularized design spectrum, retaining original
+// acquisition support rather than inferring it from the dense FFT grid.
+pub(super) fn generate_resolved_kirkeby(
+    measurement: &Curve,
+    target: &Curve,
+    optimizer: &OptimizerConfig,
+    design: &math_audio_iir_fir::FirDesignConfig,
+) -> Result<Vec<f64>, Box<dyn Error>> {
+    let support = measurement.retained_resolution();
+    let [source_low, source_high] = support
+        .support_band_hz()
+        .ok_or("Kirkeby correction has no common measurement resolution support")?;
+    let band = [
+        design.min_freq.max(source_low),
+        design.max_freq.min(source_high),
+    ];
+    if band[0] >= band[1] {
+        return Err("Kirkeby correction band has no measurement resolution support".into());
+    }
+    let upper_envelope = fir_boost_envelope(measurement, optimizer);
+    let mut context = math_audio_iir_fir::FirDesignContext::new();
+    context.generate_kirkeby_correction_with_magnitude_projection(
+        &measurement.freq.to_vec(),
+        &measurement.spl.to_vec(),
+        measurement
+            .phase
+            .as_ref()
+            .map(|phase| phase.to_vec())
+            .as_deref(),
+        &target.spl.to_vec(),
+        design,
+        |frequencies, magnitude| -> Result<(), Box<dyn Error>> {
+            let spectrum = Curve {
+                freq: Array1::from_vec(frequencies.to_vec()),
+                spl: Array1::from_vec(magnitude.to_vec()),
+                resolution: Some(support.clone()),
+                ..Default::default()
+            };
+            let mut basis = autoeq_core::curve_transforms::ResolutionMagnitudeBasis::new(
+                &spectrum,
+                &spectrum.spl,
+                1.0 / optimizer.smooth_n.max(1) as f64,
+                band,
+            )?;
+            basis.cap_positive_support(&measurement.freq, &upper_envelope)?;
+            let constrained = basis.evaluate(&spectrum.freq);
+            magnitude.copy_from_slice(
+                constrained
+                    .as_slice()
+                    .ok_or("Noncontiguous FIR magnitude")?,
+            );
+            Ok(())
+        },
+    )
+}
+
+fn fir_boost_envelope(measurement: &Curve, config: &OptimizerConfig) -> Array1<f64> {
+    let cap = config
+        .fir
+        .as_ref()
+        .and_then(|fir| fir.max_boost_db)
+        .unwrap_or(f64::MAX / 4.0);
+    Array1::from_iter(
+        super::fir_null_mask(measurement)
+            .into_iter()
+            .map(|protected| if protected { 0.0 } else { cap }),
+    )
+}
+
 fn generate_fir_correction_prepared_raw(
     measurement: &Curve,
     config: &OptimizerConfig,
@@ -346,25 +415,48 @@ fn generate_fir_correction_prepared_raw(
     measurement.validate("prepared FIR measurement")?;
     target_curve.validate("prepared FIR target")?;
 
-    // Optional boost cap: clamp the target-vs-measurement delta to at most
-    // `max_boost_db` of positive correction per frequency before designing
-    // the filter, so the FIR cannot chase deep nulls past the runtime
-    // acceptance policy's boost guard.
-    let capped_target;
-    let target_curve = if let Some(max_boost_db) = fir_config.max_boost_db {
-        let mut capped = target_curve.clone();
-        capped.spl = ndarray::Array1::from_iter(
-            target_curve
-                .spl
-                .iter()
-                .zip(measurement.spl.iter())
-                .map(|(&target, &measured)| measured + (target - measured).min(max_boost_db)),
-        );
-        capped_target = capped;
-        &capped_target
+    // Constrain the magnitude proposal on the original numerical support.
+    // Preserve the measurement itself: changing it would also change the
+    // minimum/excess-phase decomposition used by Kirkeby inversion.
+    let correction = &target_curve.spl - &measurement.spl;
+    if !fir_config.phase.eq_ignore_ascii_case("kirkeby")
+        && fir_config.max_boost_db.is_none()
+        && correction
+            .iter()
+            .any(|gain| !10.0_f64.powf(*gain / 20.0).is_finite())
+    {
+        // Conditioning must not turn an unrepresentable inversion into an
+        // apparently valid neutral result merely because support is sparse.
+        return Err("FIR proposal would produce nonfinite coefficients".into());
+    }
+    let correction = if let Some(max_boost) = fir_config.max_boost_db {
+        correction.mapv(|gain| gain.min(max_boost))
     } else {
-        target_curve
+        correction
     };
+    // Cap the input proposal before projection. Clipping individual projected
+    // samples afterwards could reintroduce unsupported narrow features.
+    let [source_min, source_max] = measurement
+        .retained_resolution()
+        .support_band_hz()
+        .ok_or("prepared FIR has no original measurement resolution support")?;
+    let supported_band = [
+        active_min_freq.max(source_min),
+        active_max_freq.min(source_max),
+    ];
+    // The basis stays neutral outside full supported features. An extrapolated
+    // display grid must neither acquire correction support nor abort the fit.
+    let mut magnitude_basis = autoeq_core::curve_transforms::ResolutionMagnitudeBasis::new(
+        measurement,
+        &correction,
+        1.0 / config.smooth_n.max(1) as f64,
+        supported_band,
+    )?;
+    magnitude_basis
+        .cap_positive_support(&measurement.freq, &fir_boost_envelope(measurement, config))?;
+    let mut resolved_target = target_curve.clone();
+    resolved_target.spl = &measurement.spl + &magnitude_basis.evaluate(&measurement.freq);
+    let target_curve = &resolved_target;
 
     if fir_config.phase.to_lowercase() == "kirkeby" {
         // Use Kirkeby regularized inversion with optional excess phase correction
@@ -376,99 +468,56 @@ fn generate_fir_correction_prepared_raw(
                     threshold_db: pr.threshold_db,
                     max_time_s: pr.max_time_s,
                 });
-        let coeffs =
-            match autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing_checked(
-                measurement,
-                target_curve,
-                sample_rate,
-                n_taps,
-                active_min_freq,
-                active_max_freq,
-                fir_config.correct_excess_phase,
-                fir_config.phase_smoothing,
-                pre_ringing,
-            ) {
-                Ok(coeffs) => coeffs,
-                // Missing phase is a measurement limitation, not a design bug.
-                // Fall back to magnitude-only inversion (multisub gain-only
-                // precedent) instead of failing the channel. Corrupt phase
-                // (NonFinitePhase) still errors via the arm below.
-                Err(autoeq_fir::FirDesignError::MissingPhase) => {
-                    MISSING_PHASE_FALLBACK_WARNING.call_once(|| {
-                        log::warn!(
-                            "Excess-phase FIR correction requested but measurement has no phase data; falling back to magnitude-only Kirkeby inversion"
-                        );
-                    });
-                    autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing(
-                        measurement,
-                        target_curve,
-                        sample_rate,
-                        n_taps,
-                        active_min_freq,
-                        active_max_freq,
-                        false,
-                        fir_config.phase_smoothing,
-                        fir_config.pre_ringing.as_ref().map(|pr| {
-                            math_audio_iir_fir::PreRingingConfig {
-                                threshold_db: pr.threshold_db,
-                                max_time_s: pr.max_time_s,
-                            }
-                        }),
-                    )
-                }
-                Err(error) => return Err(error.into()),
-            };
-        let correction_rms =
-            correction_rms_db(measurement, target_curve, active_min_freq, active_max_freq);
-        let coeffs = recover_excess_phase_identity(
-            coeffs,
-            fir_config.correct_excess_phase,
-            correction_rms,
-            || {
-                autoeq_fir::generate_kirkeby_correction_with_smoothing_and_pre_ringing(
-                    measurement,
-                    target_curve,
-                    sample_rate,
-                    n_taps,
-                    active_min_freq,
-                    active_max_freq,
-                    false,
-                    fir_config.phase_smoothing,
-                    fir_config.pre_ringing.as_ref().map(|pr| {
-                        math_audio_iir_fir::PreRingingConfig {
-                            threshold_db: pr.threshold_db,
-                            max_time_s: pr.max_time_s,
-                        }
-                    }),
-                )
-            },
-        );
-        checked_coefficients(coeffs, n_taps)
-    } else {
-        // Standard magnitude-based generation
-        // Generic FIR generation has no native correction-band parameter.
-        // Keep the realized filter neutral outside the active support so a
-        // narrowed policy cannot turn into an implicit high-pass/low-pass.
-        let correction_spl = ndarray::Array1::from_iter(
-            target_curve
-                .spl
-                .iter()
-                .zip(measurement.spl.iter())
-                .zip(measurement.freq.iter())
-                .map(|((&target, &measured), &frequency)| {
-                    if (active_min_freq..=active_max_freq).contains(&frequency) {
-                        target - measured
-                    } else {
-                        0.0
-                    }
-                }),
-        );
-        let correction_curve = Curve {
-            freq: measurement.freq.clone(),
-            spl: correction_spl,
-            phase: None,
+        let design = math_audio_iir_fir::FirDesignConfig {
+            n_taps,
+            sample_rate,
+            phase: FirPhase::Kirkeby,
+            min_freq: active_min_freq,
+            max_freq: active_max_freq,
+            correct_excess_phase: fir_config.correct_excess_phase && measurement.phase.is_some(),
+            phase_smoothing_octaves: fir_config.phase_smoothing,
+            pre_ringing,
             ..Default::default()
         };
+        if fir_config.correct_excess_phase && measurement.phase.is_none() {
+            MISSING_PHASE_FALLBACK_WARNING.call_once(|| {
+                log::warn!(
+                    "Excess-phase FIR correction requested but measurement has no phase data; falling back to magnitude-only Kirkeby inversion"
+                );
+            });
+        }
+        let coeffs = generate_resolved_kirkeby(measurement, target_curve, config, &design)?;
+        let correction_rms =
+            correction_rms_db(measurement, target_curve, active_min_freq, active_max_freq);
+        let coeffs = if design.correct_excess_phase
+            && correction_rms > 0.1
+            && is_effectively_identity_fir(&coeffs)
+        {
+            let magnitude_design = math_audio_iir_fir::FirDesignConfig {
+                correct_excess_phase: false,
+                ..design
+            };
+            let fallback =
+                generate_resolved_kirkeby(measurement, target_curve, config, &magnitude_design)?;
+            recover_excess_phase_identity(coeffs, true, correction_rms, || fallback)
+        } else {
+            coeffs
+        };
+        checked_coefficients(coeffs, n_taps)
+    } else {
+        // Evaluate the supported analytic basis on the designer's exact FFT
+        // bins; interpolation of a coarse sampled proposal must not reshape
+        // the boundary transitions. A sub-bin neutral anchor fixes DC.
+        let fft_size = (n_taps * 8).next_power_of_two().max(4096);
+        let step = sample_rate / fft_size as f64;
+        let anchor = (step * 0.5).min(active_min_freq * 0.5);
+        let freqs: Vec<f64> = std::iter::once(anchor)
+            .chain((1..=fft_size / 2).map(|index| index as f64 * step))
+            .collect();
+        let magnitude_db: Vec<f64> = freqs
+            .iter()
+            .map(|&frequency| magnitude_basis.at(frequency))
+            .collect();
 
         let phase_type = match fir_config.phase.to_lowercase().as_str() {
             "linear" => FirPhase::Linear,
@@ -503,8 +552,6 @@ fn generate_fir_correction_prepared_raw(
             ..Default::default()
         };
 
-        let freqs: Vec<f64> = correction_curve.freq.to_vec();
-        let magnitude_db: Vec<f64> = correction_curve.spl.to_vec();
         let coeffs = math_audio_iir_fir::generate_fir_from_response(
             &freqs,
             &magnitude_db,

@@ -197,6 +197,17 @@ pub fn process_mixed_crossover(
         fir_bulk_delay_ms,
         None,
     );
+    // A frequency split changes realization, not the requested acoustic target.
+    let target_shape = request.target.target_tilt_curve.as_ref().map_or_else(
+        || crate::eq::resources::target_curve(request.curve, Some(request.eq_resources)),
+        |tilt| autoeq_core::interpolate_log_space(&request.curve.freq, tilt),
+    );
+    channel.target_curve = Some(CurveData {
+        freq: target_shape.freq.to_vec(),
+        spl: (&target_shape.spl + request.mean_spl).to_vec(),
+        phase: None,
+        ..Default::default()
+    });
     if !request.excursion_filters.is_empty() {
         channel.plugins.insert(
             0,

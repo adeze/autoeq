@@ -462,9 +462,9 @@ fn validation_bundle_matches_final_pipeline_playback_evidence() {
         bundle["requested_optimizer"],
         serde_json::to_value(&config.optimizer).unwrap()
     );
-    let mut graph = result.to_dsp_chain_output();
-    // The bundle cannot contain its own just-created report pointer.
-    graph.metadata.as_mut().unwrap().validation_bundle = None;
+    let graph = result.to_dsp_chain_output();
+    // The bundle reference is known before writing and belongs to the binding.
+    roomeq_engine::room_result::FinalizedDecisions::from_output(&graph).unwrap();
     let expected: serde_json::Value =
         serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
     assert_eq!(bundle["final_playback"], expected);

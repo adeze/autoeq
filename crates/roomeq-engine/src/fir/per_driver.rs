@@ -74,6 +74,7 @@ fn sum(branches: &[Curve], taps: &[Vec<f64>], fs: f64) -> Curve {
         phase: Some(Array1::from_iter(
             response.iter().map(|v| v.arg().to_degrees()),
         )),
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(branches.iter()),
         ..Curve::default()
     }
 }
@@ -221,9 +222,140 @@ fn band_weight(f: f64, lo: f64, hi: f64) -> f64 {
         .clamp(0.0, 1.0)
 }
 
+// Raised-cosine functions spaced by their FWHM form a nonnegative partition
+// with total weight at most one. Bound each coefficient over its entire support
+// rather than clipping individual bins after conditioning.
+#[derive(Debug)]
+struct MagnitudeBasis {
+    width_octaves: f64,
+    coefficients: Vec<(f64, f64)>,
+}
+
+impl MagnitudeBasis {
+    fn at(&self, frequency: f64) -> f64 {
+        if frequency <= 0.0 {
+            return 0.0;
+        }
+        let logarithm = frequency.log2();
+        let right = self
+            .coefficients
+            .partition_point(|(center, _)| *center <= logarithm);
+        // At most two lattice neighbours overlap; omitted stopband kernels
+        // contribute zero and must not stretch the neighbouring supports.
+        self.coefficients[right.saturating_sub(1)..(right + 1).min(self.coefficients.len())]
+            .iter()
+            .map(|&(center, gain)| {
+                let distance = (logarithm - center) / self.width_octaves;
+                if distance.abs() < 1.0 {
+                    gain * 0.5 * (1.0 + (std::f64::consts::PI * distance).cos())
+                } else {
+                    0.0
+                }
+            })
+            .sum()
+    }
+}
+
+fn magnitude_basis(
+    branch: &Curve,
+    measurement: &Curve,
+    baseline: &Curve,
+    target: &Curve,
+    protected: &[bool],
+    config: &OptimizerConfig,
+    boost: f64,
+) -> Result<MagnitudeBasis, String> {
+    let support =
+        autoeq_core::resolution::MeasurementResolution::combine([branch, measurement, baseline])
+            .ok_or("per-driver FIR has no measurement resolution support")?;
+    let [source_low, source_high] = support
+        .support_band_hz()
+        .ok_or("per-driver FIR has no common measurement resolution support")?;
+    let [requested_low, requested_high] = config.active_correction_band();
+    let low = requested_low.max(source_low);
+    let high = requested_high.min(source_high);
+    if low >= high {
+        return Err("per-driver FIR band has no common measurement resolution support".into());
+    }
+    // A common width avoids narrowing transitions between variable-width
+    // kernels. Query original knots, including those absent from a derived grid.
+    let width = support
+        .max_width_octaves([low, high])
+        .ok_or("per-driver FIR band has no finite measurement resolution warrant")?
+        .max(1.0 / config.smooth_n.max(1) as f64);
+    let mut basis = MagnitudeBasis {
+        width_octaves: width,
+        coefficients: Vec::new(),
+    };
+    let mut center = low.log2() + width;
+    // Full support is twice the FWHM. Never shrink a kernel at band boundaries.
+    while center + width <= high.log2() {
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+        let mut cap = boost;
+        let mut stopband = false;
+        let frequencies = target
+            .freq
+            .as_slice()
+            .ok_or("per-driver FIR needs a contiguous frequency grid")?;
+        let first =
+            frequencies.partition_point(|frequency| *frequency <= 2.0_f64.powf(center - width));
+        let last =
+            frequencies.partition_point(|frequency| *frequency < 2.0_f64.powf(center + width));
+        for (i, &frequency) in frequencies.iter().enumerate().take(last).skip(first) {
+            let distance = (frequency.log2() - center) / width;
+            if distance.abs() >= 1.0 {
+                continue;
+            }
+            let weight = 0.5 * (1.0 + (std::f64::consts::PI * distance).cos());
+            // Log-frequency quadrature prevents denser display regions from
+            // receiving more authority. Endpoint cells use one adjacent span.
+            let left = if i > 0 && target.freq[i - 1] > 0.0 {
+                (frequency / target.freq[i - 1]).ln()
+            } else {
+                0.0
+            };
+            let right = if i + 1 < target.freq.len() {
+                (target.freq[i + 1] / frequency).ln()
+            } else {
+                0.0
+            };
+            let cell = if left > 0.0 && right > 0.0 {
+                0.5 * (left + right)
+            } else {
+                left.max(right)
+            };
+            weighted_sum += weight * cell * (target.spl[i] - baseline.spl[i]);
+            weight_sum += weight * cell;
+            let retained_boost = (branch.spl[i] - measurement.spl[i]).max(0.0);
+            cap = cap.min(if protected[i] {
+                0.0
+            } else {
+                (boost - retained_boost).max(0.0)
+            });
+            stopband |= branch.spl[i] < baseline.spl[i] - 30.0;
+        }
+        if weight_sum > 0.0 && !stopband {
+            // The existing 12 dB cut bound applies to the whole partition.
+            let gain = (weighted_sum / weight_sum).clamp(-12.0, cap);
+            basis.coefficients.push((center, gain));
+        }
+        center += width;
+    }
+    Ok(basis)
+}
+
 /// Real, centered Hann-windowed FIR, with inverse FFT normalization 1/N.
-/// Frequency sampling is interpolated on log Hz; DC/Nyquist remain real.
-fn realize(freq: &Array1<f64>, db: &[f64], phase: &[f64], taps: usize, fs: f64) -> Vec<f64> {
+/// Phase is interpolated on log Hz; analytic magnitude is sampled directly.
+/// DC/Nyquist remain real.
+fn realize(
+    freq: &Array1<f64>,
+    phase: &[f64],
+    magnitude: Option<&MagnitudeBasis>,
+    strength: f64,
+    taps: usize,
+    fs: f64,
+) -> Vec<f64> {
     let n = (taps * 4).max(65536).next_power_of_two();
     let mut spectrum = vec![Complex64::new(1.0, 0.0); n];
     for k in 1..n / 2 {
@@ -238,15 +370,13 @@ fn realize(freq: &Array1<f64>, db: &[f64], phase: &[f64], taps: usize, fs: f64) 
             }
         }
         let j = left;
-        let (gain, angle) = if j == 0 || j == freq.len() {
-            (0.0, 0.0)
+        let angle = if j == 0 || j == freq.len() {
+            0.0
         } else {
             let t = (f / freq[j - 1]).ln() / (freq[j] / freq[j - 1]).ln();
-            (
-                db[j - 1] + t * (db[j] - db[j - 1]),
-                phase[j - 1] + t * (phase[j] - phase[j - 1]),
-            )
+            phase[j - 1] + t * (phase[j] - phase[j - 1])
         };
+        let gain = magnitude.map_or(0.0, |basis| strength * basis.at(f));
         spectrum[k] = Complex64::from_polar(10.0_f64.powf(gain / 20.0), angle.to_radians());
         spectrum[n - k] = spectrum[k].conj();
     }
@@ -370,6 +500,30 @@ pub fn generate_per_driver_firs(
             }
         })
         .collect::<Result<_, String>>()?;
+    let magnitudes = if phase_only {
+        Vec::new()
+    } else {
+        branches
+            .iter()
+            .enumerate()
+            .map(|(driver, branch)| {
+                let protected: Vec<_> = masks[driver]
+                    .iter()
+                    .zip(&combined_mask)
+                    .map(|(individual, combined)| *individual || *combined)
+                    .collect();
+                magnitude_basis(
+                    branch,
+                    &measurements[driver],
+                    &baseline,
+                    target,
+                    &protected,
+                    config,
+                    boost,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
     // Joint search: every candidate is a complete set, never a collection of
     // independently accepted full-target inverses.
     for phase_strength in [0.0, 0.25, 0.5, 1.0] {
@@ -384,48 +538,47 @@ pub fn generate_per_driver_firs(
                 .iter()
                 .enumerate()
                 .map(|(driver, branch)| {
-                    let mut db = vec![0.0; target.freq.len()];
-                    let mut phase = db.clone();
-                    for i in 0..db.len() {
+                    let mut phase = vec![0.0; target.freq.len()];
+                    for i in 0..phase.len() {
                         let band = band_weight(target.freq[i], active_min_freq, active_max_freq);
-                        let protected = masks[driver][i] || combined_mask[i];
-                        // Do not invert crossover stopbands or supply energy into
-                        // a measured null. The group residual is the only target.
-                        let retained_boost = (branch.spl[i] - measurements[driver].spl[i]).max(0.0);
-                        let cap = if protected {
-                            0.0
-                        } else {
-                            (boost - retained_boost).max(0.0)
-                        };
-                        if !phase_only {
-                            db[i] = strength
-                                * band
-                                * (target.spl[i] - baseline.spl[i]).clamp(-12.0, cap);
-                        }
                         if !masks[driver][i] {
                             // The assessment already negates and tapers the excess
                             // phase. Search only bounded strengths of that proposal.
                             phase[i] = phase_strength * band * phases[driver][i];
                         }
                         if branch.spl[i] < baseline.spl[i] - 30.0 {
-                            db[i] = 0.0;
                             phase[i] = 0.0;
                         }
                     }
+                    let magnitude = (!phase_only).then(|| &magnitudes[driver]);
                     if minimum_phase {
-                        let correction = Curve {
-                            freq: target.freq.clone(),
-                            spl: Array1::from_vec(db),
-                            ..Curve::default()
-                        };
-                        autoeq_fir::generate_fir_from_response(
-                            &correction,
-                            fs,
-                            taps,
-                            autoeq_fir::FirPhase::Minimum,
+                        // Evaluate the analytic basis on the designer's own FFT
+                        // bins, rather than optimizing an interpolated dense grid.
+                        let n = (taps * 8).next_power_of_two().max(4096);
+                        let frequencies: Vec<_> = (1..=n / 2)
+                            .map(|index| index as f64 * fs / n as f64)
+                            .collect();
+                        let db: Vec<_> = frequencies
+                            .iter()
+                            .map(|&frequency| {
+                                magnitude.map_or(0.0, |basis| strength * basis.at(frequency))
+                            })
+                            .collect();
+                        math_audio_iir_fir::generate_fir_from_response(
+                            &frequencies,
+                            &db,
+                            &math_audio_iir_fir::FirDesignConfig {
+                                n_taps: taps,
+                                sample_rate: fs,
+                                phase: autoeq_fir::FirPhase::Minimum,
+                                // A symmetric window erases the leading energy
+                                // of a causal minimum-phase impulse.
+                                window: math_audio_iir_fir::WindowType::Rectangular,
+                                ..Default::default()
+                            },
                         )
                     } else {
-                        realize(&target.freq, &db, &phase, taps, fs)
+                        realize(&target.freq, &phase, magnitude, strength, taps, fs)
                     }
                 })
                 .collect();
@@ -579,6 +732,161 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn per_driver_basis_retains_original_resolution_on_dense_display_grid() {
+        let mut branch = flat(80.0);
+        branch.freq = Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 2048);
+        branch.spl = Array1::from_elem(2048, 80.0);
+        branch.phase = Some(Array1::zeros(2048));
+        let raw = [
+            20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1280.0, 2560.0, 5120.0, 10240.0, 20480.0,
+        ];
+        branch.resolution = Some(std::sync::Arc::new(
+            autoeq_core::resolution::MeasurementResolution::from_grid(&raw).unwrap(),
+        ));
+        let mut target = branch.clone();
+        let spike = target
+            .freq
+            .iter()
+            .position(|frequency| *frequency >= 90.0)
+            .unwrap();
+        target.spl[spike] += 10.0;
+        let mut config = config();
+        config.max_freq = 2_000.0;
+        let basis = magnitude_basis(
+            &branch,
+            &branch,
+            &branch,
+            &target,
+            &vec![false; 2048],
+            &config,
+            4.0,
+        )
+        .unwrap();
+        assert!(basis.width_octaves >= 2.0);
+        let peak = target
+            .freq
+            .iter()
+            .map(|frequency| basis.at(*frequency))
+            .fold(0.0, f64::max);
+        assert!(
+            peak < 0.1,
+            "a densified one-bin spike must not acquire correction authority: {peak}"
+        );
+        assert!(basis.coefficients.iter().all(|(center, _)| {
+            2.0_f64.powf(center - basis.width_octaves) >= config.min_freq
+                && 2.0_f64.powf(center + basis.width_octaves) <= config.max_freq
+        }));
+        config.max_freq = 100.0;
+        let narrow = magnitude_basis(
+            &branch,
+            &branch,
+            &branch,
+            &target,
+            &vec![false; 2048],
+            &config,
+            4.0,
+        )
+        .unwrap();
+        assert!(
+            narrow.coefficients.is_empty(),
+            "never shrink a kernel to fit an unsupported band"
+        );
+        let combined = sum(&[branch.clone(), branch], &[vec![1.0], vec![1.0]], 48_000.0);
+        assert!(combined.retained_resolution().width_octaves(90.0).unwrap() >= 2.0);
+    }
+
+    #[test]
+    fn per_driver_basis_caps_whole_support_without_binwise_null_clipping() {
+        let branch = flat(80.0);
+        let mut measurement = branch.clone();
+        measurement.spl -= 2.0;
+        let mut target = branch.clone();
+        target.spl += 6.0;
+        let mut config = config();
+        config.max_freq = 2_000.0;
+        let protected_index = branch
+            .freq
+            .iter()
+            .position(|frequency| *frequency >= 100.0)
+            .unwrap();
+        let mut protected = vec![false; branch.freq.len()];
+        protected[protected_index] = true;
+        let basis = magnitude_basis(
+            &branch,
+            &measurement,
+            &branch,
+            &target,
+            &protected,
+            &config,
+            4.0,
+        )
+        .unwrap();
+        assert_eq!(basis.at(branch.freq[protected_index]), 0.0);
+        assert!(
+            basis.at(500.0) > 1.0,
+            "a protected null must not disable all warranted boosts"
+        );
+        for frequency in Array1::logspace(10.0, 20.0_f64.log10(), 2_000.0_f64.log10(), 4096) {
+            assert!(
+                basis.at(frequency) <= 2.0 + 1e-12,
+                "retained boost consumes the same whole-support cap"
+            );
+        }
+        for (center, gain) in &basis.coefficients {
+            if (branch.freq[protected_index].log2() - center).abs() < basis.width_octaves {
+                assert!(
+                    *gain <= 0.0,
+                    "null protection bounds the full kernel coefficient"
+                );
+            }
+        }
+        let mut stopband_branch = branch.clone();
+        stopband_branch.spl[protected_index] -= 31.0;
+        let stopband = magnitude_basis(
+            &stopband_branch,
+            &measurement,
+            &branch,
+            &target,
+            &vec![false; branch.freq.len()],
+            &config,
+            4.0,
+        )
+        .unwrap();
+        assert_eq!(stopband.at(branch.freq[protected_index]), 0.0);
+        assert!(
+            stopband.coefficients.iter().all(|(center, _)| {
+                (branch.freq[protected_index].log2() - center).abs() >= stopband.width_octaves
+            }),
+            "omit whole kernels overlapping physical crossover stopbands"
+        );
+    }
+
+    #[test]
+    fn per_driver_minimum_phase_basis_reduces_peak_with_causal_taps() {
+        let target = flat(80.0);
+        let mut branch = target.clone();
+        for (i, &frequency) in branch.freq.iter().enumerate() {
+            branch.spl[i] += 6.0 * (-((frequency / 90.0).log2() / 0.6).powi(2)).exp();
+        }
+        let mut config = config();
+        config.fir.as_mut().unwrap().phase = "minimum".into();
+        let result = generate_per_driver_firs(
+            std::slice::from_ref(&branch),
+            std::slice::from_ref(&branch),
+            &target,
+            &config,
+            48_000.0,
+        )
+        .unwrap();
+        assert_eq!(result.latency_samples, 0);
+        assert!(result.after_rms_db < result.before_rms_db - 0.5);
+        assert!(
+            result.coefficients[0][0].abs() > 0.1,
+            "do not erase the causal impulse's leading energy"
+        );
+    }
+
     #[test]
     fn per_driver_fir_rejects_mismatched_grid_and_invalid_taps() {
         let c = flat(80.0);

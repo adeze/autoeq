@@ -110,6 +110,7 @@ pub fn average_power_curve(curves: &[Curve]) -> Result<Curve> {
         freq: first.freq.clone(),
         spl: average_power.mapv(|power| 10.0 * power.max(1e-12).log10()),
         phase: None,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Curve::default()
     })
 }

@@ -6,6 +6,7 @@
 // Rust guideline compliant 2026-02-21
 
 use std::collections::BTreeSet;
+mod playback_scores;
 
 use serde_json::{Value, json};
 
@@ -205,6 +206,34 @@ fn append_mode_evidence(modes: &[ModeInput], sections: &mut Vec<Value>) -> Resul
 }
 
 fn append_summary(modes: &[ModeInput], sections: &mut Vec<Value>) -> Result<(), String> {
+    let has_playback = modes.iter().any(|mode| {
+        !mode.prepared.graph["metadata"]["correction_acceptance"]["acoustic_quality"]
+            ["training"]["configured_baseline"].is_null()
+    });
+    if has_playback {
+        let mut html = String::from(
+            "<h2>Delivered playback</h2><table class=\"summary-table\"><thead><tr><th>Mode</th><th>Outcome</th><th>Pre RMS (dB)</th><th>Post RMS (dB)</th><th>Improvement (dB)</th><th>Responses</th></tr></thead><tbody>",
+        );
+        for mode in modes {
+            let metadata = &mode.prepared.graph["metadata"];
+            let label = crate::report_helpers::escape_html(mode_label(&mode.name));
+            let outcome = crate::report_helpers::escape_html(
+                metadata["correction_acceptance"]["outcome"]
+                    .as_str()
+                    .unwrap_or("Unavailable"),
+            );
+            match playback_scores::configured_mean(metadata) {
+                Some((pre, post, count)) => html.push_str(&format!(
+                    "<tr><td>{label}</td><td>{outcome}</td><td>{pre:.4}</td><td>{post:.4}</td><td>{:+.4}</td><td>{count}</td></tr>", pre-post,
+                )),
+                None => html.push_str(&format!(
+                    "<tr><td>{label}</td><td>{outcome}</td><td colspan=\"4\">Unavailable: complete playback comparison evidence is missing</td></tr>",
+                )),
+            }
+        }
+        html.push_str("</tbody></table><p>Scores average the configured playback responses on their fixed baseline grid and level reference. Compare modes only when their baseline, target and level match. Response counts do not establish coverage of multiple listening positions.</p>");
+        push_html_section(sections, &html, false, None);
+    }
     let has_gd = modes
         .iter()
         .any(|mode| !mode.prepared.graph["metadata"]["group_delay"].is_null());
@@ -221,6 +250,9 @@ fn append_summary(modes: &[ModeInput], sections: &mut Vec<Value>) -> Result<(), 
     let mut html = String::from(
         "<h2>Summary</h2>\n<table class=\"summary-table\">\n<thead><tr><th>Mode</th><th>Loss</th><th title=\"Flat loss before EQ (always computed via compute_flat_loss, regardless of which objective was minimized)\">Pre flat-loss</th><th title=\"Flat loss after EQ (always computed via compute_flat_loss, regardless of which objective was minimized)\">Post flat-loss</th><th>Improvement</th><th>EPA Pref (pre)</th><th>EPA Pref (post)</th><th>EPA Δ</th>",
     );
+    if has_playback {
+        html = html.replacen("<h2>Summary</h2>", "<h2>Optimizer training</h2>", 1);
+    }
     if has_auto {
         html.push_str("<th title=\"Emitted EQ sections per channel, including driver-local sections; Kautz banks count all basis sections and shared entries count once; ranges show min-max across channels\">EQ sections</th>");
     }
@@ -787,7 +819,9 @@ fn append_ir_figures(
             ),
         ] {
             if let Some(ir) = ir {
-                traces.push(json!({"name":label,"x":ir["time_ms"],"y":ir["amplitude"],"color":color,"width":1.0,"dash":"solid"}));
+                let (times, amplitudes) =
+                    crate::plot_sampling::display_samples(&ir["time_ms"], &ir["amplitude"]);
+                traces.push(json!({"name":label,"x":times,"y":amplitudes,"color":color,"width":1.0,"dash":"solid"}));
             }
         }
         figures.push(json!({"title":format!("{channel}: Impulse Response Before / After EQ — {}",mode_label(&mode.name)),"x":axis("Time (ms)","linear",Some(0.0),Some(100.0)),"y":axis("Amplitude","linear",Some(-1.1),Some(1.1)),"tab":tab,"series":traces}));
@@ -1122,6 +1156,43 @@ fn is_lr_channel(channel: &str) -> bool {
 mod tests {
     use super::build_comparison_report;
     use serde_json::{Value, json};
+
+    #[test]
+    fn comparison_leads_with_delivered_scores_and_keeps_optimizer_training_separate() {
+        let rows: Vec<_> = [1.0, 2.0, 9.0].into_iter().enumerate().map(|(index, pre)| json!({
+            "seat_index":index,"physical_outputs":["L"],"score":{
+                "curve_index":index,"logical_input":"L","sample_count":128,
+                "frequency_grid_sha256":"a".repeat(64),"baseline_samples_sha256":"b".repeat(64),
+                "target_samples_sha256":"c".repeat(64),"evaluated_band_hz":[20.0,20000.0],
+                "normalized_to_pre":true,"level_offset_db":80.0,"post_reference_gain_db":0.0,
+                "post_covers_baseline_grid":true,"pre_weighted_rms_db":pre,
+                "post_weighted_rms_db":1.0,"improvement_db":pre-1.0
+            }
+        })).collect();
+        let graph = json!({"channels":{},"metadata":{
+            "pre_score":5.8,"post_score":3.2,"correction_acceptance":{
+                "outcome":"safe_fallback","acoustic_quality":{"training":{
+                    "curve_count":3,"configured_baseline":{
+                        "method":"configured_routing_unprocessed_captures_v1",
+                        "playback_graph_sha256":"d".repeat(64),"unavailable":[],"residuals":rows
+                    }
+                }}
+            }
+        }});
+        let report = build_comparison_report(&json!({"modes":[{
+            "name":"iir","prepared":{"schema_version":1,"graph":graph,
+                "target_snapshot":{"schema_version":1,"state":"not_configured","target":null}},
+            "options":{},"figure_context":{}
+        }]}))
+        .unwrap();
+        let payload = report["payload"].to_string();
+        let delivered = payload.find("Delivered playback").unwrap();
+        let training = payload.find("Optimizer training").unwrap();
+        assert!(delivered < training);
+        assert!(payload.contains("4.0000</td><td>1.0000</td><td>+3.0000"));
+        assert!(payload.contains("5.8000</td><td>3.2000"));
+        assert!(payload.contains("safe_fallback"));
+    }
 
     #[test]
     fn comparison_does_not_show_unshaped_target_for_unavailable_lfe_route() {

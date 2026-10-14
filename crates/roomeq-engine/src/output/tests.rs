@@ -986,10 +986,25 @@ fn multichannel_epa_aligns_initial_and_final_channel_grids() {
     }
     let reference =
         super::compute::compute_epa_multichannel(&channels, &Default::default()).unwrap();
+    // Legacy scores use the union grid. Level-matched scores deliberately retain
+    // the original baseline grid, so changing that baseline changes its receipt.
     assert_eq!(
-        serde_json::to_value(aligned).unwrap(),
-        serde_json::to_value(reference).unwrap()
+        serde_json::to_value(&aligned.pre).unwrap(),
+        serde_json::to_value(&reference.pre).unwrap()
     );
+    assert_eq!(
+        serde_json::to_value(&aligned.post).unwrap(),
+        serde_json::to_value(&reference.post).unwrap()
+    );
+    assert_eq!(aligned.standard, reference.standard);
+    let aligned_match = aligned.level_matched.unwrap();
+    let reference_match = reference.level_matched.unwrap();
+    assert_ne!(
+        aligned_match.frequency_grid_sha256,
+        reference_match.frequency_grid_sha256
+    );
+    assert_eq!(aligned_match.preference_delta, 0.0);
+    assert_eq!(reference_match.preference_delta, 0.0);
 }
 
 #[test]

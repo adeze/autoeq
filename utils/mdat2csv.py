@@ -17,6 +17,9 @@ import os
 import re
 import math
 import argparse
+import hashlib
+import json
+import tempfile
 from pathlib import Path
 
 
@@ -509,13 +512,16 @@ def read_serialized_measurements(data):
             == 'roomeqwizard.MeasData']
 
 
-def parse_mdat(filepath):
+def parse_mdat(filepath, *, source_bytes=None):
     """
     Parse an REW .mdat file and extract measurements.
     Returns list of measurement dicts with 'freq', 'spl', 'phase', 'name', 'params'.
     """
-    with open(filepath, 'rb') as f:
-        data = f.read()
+    if source_bytes is None:
+        with open(filepath, 'rb') as f:
+            data = f.read()
+    else:
+        data = source_bytes
 
     # Verify header
     header_str = data.find(b'REW Measurement Data File')
@@ -772,6 +778,74 @@ def export_recordings_json(measurements, csv_paths, output_dir, *, overwrite=Tru
     return json_path
 
 
+EXPORT_CACHE_NAME = ".mdat2csv-export-cache.json"
+# Any converter revision invalidates older catalogues, including revisions
+# that recover additional measurements or previously unavailable IR samples.
+CONVERTER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def capture_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def complete_export_cache(output_dir, source_digest, timing_reference_id):
+    """Reuse only an unchanged capture's complete no-clobber export catalogue.
+
+    Existing output contents may contain user edits. This checks completeness,
+    not provenance or content validity; normal RoomEQ intake still validates them.
+    """
+    root = Path(output_dir)
+    try:
+        cache = json.loads((root / EXPORT_CACHE_NAME).read_text(encoding='utf-8'))
+        if (not isinstance(cache, dict) or cache.get('schema_version') != 1
+                or cache.get('source_sha256') != source_digest
+                or cache.get('converter_sha256') != CONVERTER_SHA256
+                or cache.get('timing_reference_id') != timing_reference_id):
+            return False
+        outputs = cache.get('outputs')
+        if not isinstance(outputs, list) or not outputs or 'recordings.json' not in outputs:
+            return False
+        for entry in outputs:
+            if not isinstance(entry, str):
+                return False
+            relative = Path(entry)
+            if relative.is_absolute() or '..' in relative.parts:
+                return False
+            path = root / relative
+            if not path.is_file() or path.stat().st_size == 0:
+                return False
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def write_export_cache(output_dir, source_digest, timing_reference_id, outputs):
+    root = Path(output_dir)
+    relative = sorted({os.path.relpath(path, output_dir) for path in outputs if path})
+    cache = {'schema_version': 1, 'source_sha256': source_digest,
+             'converter_sha256': CONVERTER_SHA256,
+             'timing_reference_id': timing_reference_id, 'outputs': relative}
+    # Readers never see a partial catalogue when measured suites overlap.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=root,
+                                         prefix=EXPORT_CACHE_NAME, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(cache, stream, indent=2)
+            stream.write('\n')
+        os.replace(temporary, root / EXPORT_CACHE_NAME)
+    except OSError as error:
+        # A cache is optional; failure cannot invalidate successful exports.
+        print(f"Export cache unavailable: {error}", file=sys.stderr)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mdat_path')
@@ -785,8 +859,16 @@ def main():
     mdat_path = args.mdat_path
     output_dir = args.output_dir or os.path.splitext(mdat_path)[0] + "_csv"
 
+    # Hash the exact snapshot passed to the parser on a cache miss, avoiding
+    # an input-change race between fingerprinting and parsing.
+    source_bytes = Path(mdat_path).read_bytes()
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
+    if args.no_clobber and complete_export_cache(output_dir, source_digest, args.timing_reference_id):
+        print(f"Reusing complete no-clobber exports: {output_dir}")
+        return
+
     print(f"Parsing: {mdat_path}")
-    measurements = parse_mdat(mdat_path)
+    measurements = parse_mdat(mdat_path, source_bytes=source_bytes)
 
     print(f"Found {len(measurements)} measurements")
     csv_paths = []
@@ -833,6 +915,8 @@ def main():
         print('IR CSVs exported. Supply --timing-reference-id to declare their shared '
               'reference and include them in recordings.json.')
     print(f"\n  recordings.json -> {json_path}")
+    write_export_cache(output_dir, source_digest, args.timing_reference_id,
+                       [*csv_paths, *ir_paths, json_path])
 
 
 if __name__ == '__main__':
