@@ -1565,6 +1565,61 @@ fn calibrate_post_dsp_input_levels(
         .map(|(role, mean)| (role, (target - mean).min(0.0)))
         .collect();
     trims.insert(lfe_role.to_string(), 0.0);
+    // Re-anchor the aligned mains to the calibrated target level. Down-only
+    // alignment preserves inter-channel relationships but can leave every
+    // main below the absolute target level the native seat gate scores
+    // against; restoring a common gain (never above any main's pre-alignment
+    // level, so no channel is boosted past its measured state) keeps the
+    // relative alignment while removing that broadband penalty. The
+    // programme-headroom simulation below and the final electrical and
+    // replay gates still bound the result.
+    let deepest_trim = main_roles
+        .iter()
+        .filter_map(|role| trims.get(role))
+        .copied()
+        .fold(0.0_f64, f64::min);
+    let anchor_db = main_roles
+        .iter()
+        .filter_map(|role| {
+            let deployed = before.get(role)?;
+            let target_curve = channels
+                .get(role)
+                .and_then(|chain| chain.target_curve.clone())
+                .map(Curve::from)?;
+            let (mut sum, mut count) = (0.0_f64, 0usize);
+            for (freq, level) in deployed.freq.iter().zip(deployed.spl.iter()) {
+                if *freq < main_band.0 || *freq > main_band.1 {
+                    continue;
+                }
+                let target_level = target_curve
+                    .freq
+                    .iter()
+                    .zip(target_curve.spl.iter())
+                    .min_by(|a, b| {
+                        (a.0 - freq)
+                            .abs()
+                            .partial_cmp(&(b.0 - freq).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(_, value)| *value)?;
+                sum += target_level - level;
+                count += 1;
+            }
+            (count > 0).then(|| sum / count as f64)
+        })
+        .reduce(f64::min)
+        .map(|gain| gain.min(-deepest_trim).max(0.0))
+        .unwrap_or(0.0);
+    if anchor_db > 0.01 {
+        for role in main_roles {
+            if let Some(trim) = trims.get_mut(role) {
+                *trim += anchor_db;
+            }
+        }
+        graph
+            .advisories
+            .push(format!("post_dsp_level_reanchor_db:{anchor_db:.3}"));
+    }
     let logical_input_trims = trims.clone();
     // The correlated-bus simulator reads these source trims from the graph.
     // Publish the freshly computed pre-route values before invoking it so a

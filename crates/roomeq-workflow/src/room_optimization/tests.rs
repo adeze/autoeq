@@ -442,6 +442,55 @@ fn final_role_level_alignment_corrects_broadband_lr_offset_down_only() {
 }
 
 #[test]
+fn final_channel_level_caps_trim_and_accepts_residual_spread() {
+    // Agreed policy: alignment trims cap at 2 dB and residual spread above
+    // the 0.5 dB tolerance is accepted as Degraded instead of discarding
+    // the candidate. A 3.5 dB spread must therefore apply a -2 dB trim,
+    // keep the candidate, and report the residual spread on the check.
+    let mut config = minimal_room_config(ProcessingMode::LowLatency);
+    config.optimizer.min_freq = 20.0;
+    config.optimizer.max_freq = 200.0;
+    let curve = |level| Curve {
+        freq: ndarray::Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 96),
+        spl: ndarray::Array1::from_elem(96, level),
+        phase: Some(ndarray::Array1::zeros(96)),
+        ..Curve::default()
+    };
+    let curves = HashMap::from([
+        ("L".to_string(), curve(80.0)),
+        ("R".to_string(), curve(76.5)),
+    ]);
+    let mut result = crate::test_fixtures::single_channel_room_result("L");
+    let mut right_chain = result.channels["L"].clone();
+    right_chain.channel = "R".to_string();
+    result.channels.insert("R".to_string(), right_chain);
+    let mut right_result = result.channel_results["L"].clone();
+    right_result.name = "R".to_string();
+    result.channel_results.insert("R".to_string(), right_result);
+    for (name, realized) in &curves {
+        result.channel_results.get_mut(name).unwrap().final_curve = realized.clone();
+    }
+    result.deployed_source_curves = curves;
+
+    let outcome =
+        apply_final_channel_level_alignment(&mut result, &config, 48_000.0, Path::new("."))
+            .unwrap();
+    assert_eq!(outcome.status, StageStatus::Degraded);
+    assert!(!outcome.checks[0].passed);
+    assert!((outcome.checks[0].observed.unwrap() - 1.5).abs() < 1.0e-9);
+    assert!(
+        outcome
+            .advisories
+            .iter()
+            .any(|advisory| advisory.contains("residual_spread_accepted_after_trim_cap"))
+    );
+    assert!(result.channels["L"].plugins.iter().any(|plugin| {
+        plugin.parameters["label"] == "final_channel_level_alignment"
+            && (plugin.parameters["gain_db"].as_f64().unwrap() + 2.0).abs() < 1.0e-9
+    }));
+}
+
+#[test]
 fn final_channel_level_uses_upper_band_after_unequal_headroom_gains() {
     let mut config = minimal_room_config(ProcessingMode::LowLatency);
     config.optimizer.min_freq = 20.0;
@@ -495,10 +544,12 @@ fn final_channel_level_uses_upper_band_after_unequal_headroom_gains() {
             .unwrap();
     assert_eq!(outcome.status, StageStatus::Applied);
     assert!(outcome.advisories[0].contains("spread_before_db=2.350"));
-    assert!(outcome.advisories[0].contains("spread_after_db=0.000"));
+    // The 2.35 dB trim is capped at the 2 dB alignment limit; the residual
+    // 0.35 dB spread stays within tolerance, so the outcome remains Applied.
+    assert!(outcome.advisories[0].contains("spread_after_db=0.350"));
     assert!(result.channels["L"].plugins.iter().any(|plugin| {
         plugin.parameters["label"] == "final_channel_level_alignment"
-            && (plugin.parameters["gain_db"].as_f64().unwrap() + 2.35).abs() < 1.0e-9
+            && (plugin.parameters["gain_db"].as_f64().unwrap() + 2.0).abs() < 1.0e-9
     }));
     assert!(
         !result.channels["R"]

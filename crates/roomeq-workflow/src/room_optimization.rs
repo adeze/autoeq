@@ -1547,6 +1547,11 @@ fn stage_logical_input_plugins(
 }
 
 const FINAL_CHANNEL_LEVEL_TOLERANCE_DB: f64 = 0.5;
+/// Deepest permitted final level-alignment trim. Alignment beyond this is
+/// level correction, not channel matching: deeper trims are capped and the
+/// residual spread is accepted (reported Degraded) instead of discarding
+/// an otherwise valid correction to chase exact broadband equality.
+const FINAL_CHANNEL_LEVEL_MAX_TRIM_DB: f64 = 2.0;
 const FINAL_CHANNEL_LEVEL_MIN_HZ: f64 = 100.0;
 const FINAL_CHANNEL_LEVEL_MAX_HZ: f64 = 1_000.0;
 
@@ -1843,8 +1848,62 @@ fn apply_final_channel_level_alignment(
         .iter()
         .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
         .collect::<HashMap<_, _>>();
-    let (gains, spread_before_db, alignment_band) =
+    let (mut gains, spread_before_db, alignment_band) =
         final_role_level_alignment_gains(config, &curves, &reference_curves);
+    // Re-anchor the aligned channels to their calibrated target level.
+    // Down-only alignment preserves relative levels but can leave every
+    // channel below the absolute target the native seat gate scores
+    // against; a common restore (never above any channel's pre-alignment
+    // level) keeps the spread the verification below checks while removing
+    // that broadband penalty. Electrical and replay gates still bound it.
+    let deepest_gain = gains.values().copied().fold(0.0_f64, f64::min);
+    let level_reanchor_db = if deepest_gain < -0.01 {
+        curves
+            .iter()
+            .filter_map(|(name, curve)| {
+                let target: Curve = result
+                    .channels
+                    .get(name)
+                    .and_then(|chain| chain.target_curve.clone())?
+                    .into();
+                let (mut sum, mut count) = (0.0_f64, 0usize);
+                for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
+                    if *freq < alignment_band.0 || *freq > alignment_band.1 {
+                        continue;
+                    }
+                    let target_level = target
+                        .freq
+                        .iter()
+                        .zip(target.spl.iter())
+                        .min_by(|a, b| {
+                            (a.0 - freq)
+                                .abs()
+                                .partial_cmp(&(b.0 - freq).abs())
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(_, value)| *value)?;
+                    sum += target_level - level;
+                    count += 1;
+                }
+                (count > 0).then(|| sum / count as f64)
+            })
+            .reduce(f64::min)
+            .map(|gain| gain.min(-deepest_gain).max(0.0))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    if level_reanchor_db > 0.01 {
+        for gain in gains.values_mut() {
+            *gain += level_reanchor_db;
+        }
+    }
+    // Cap alignment trims (see FINAL_CHANNEL_LEVEL_MAX_TRIM_DB). Relative
+    // alignment is preserved; any spread the cap leaves behind is accepted
+    // at the verification below instead of rejecting the candidate.
+    for gain in gains.values_mut() {
+        *gain = (*gain).max(-FINAL_CHANNEL_LEVEL_MAX_TRIM_DB);
+    }
 
     if !spread_before_db.is_finite() {
         return Err(AutoeqError::OptimizationFailed {
@@ -1962,7 +2021,7 @@ fn apply_final_channel_level_alignment(
         .collect::<HashMap<_, _>>();
     let (_, spread_after_db, _) =
         final_role_level_alignment_gains(config, &verification_curves, &reference_curves);
-    if !spread_after_db.is_finite() || spread_after_db > FINAL_CHANNEL_LEVEL_TOLERANCE_DB {
+    if !spread_after_db.is_finite() {
         *result = snapshot;
         return Err(AutoeqError::OptimizationFailed {
             message: format!(
@@ -1973,13 +2032,30 @@ fn apply_final_channel_level_alignment(
     }
 
     refresh_deployed_inter_channel_deviation(result, config);
-    let mut check = StageCheck::pass("final_channel_level_spread_db", StageCheckKind::Safety);
+    // Residual spread beyond tolerance is accepted as a Degraded outcome:
+    // trims are capped (above), so exact broadband equality is no longer
+    // chased at the cost of discarding the whole correction. The measured
+    // spread stays on the check against its original limit.
+    let spread_accepted = spread_after_db > FINAL_CHANNEL_LEVEL_TOLERANCE_DB;
+    let mut check = if spread_accepted {
+        StageCheck::fail(
+            "final_channel_level_spread_db",
+            StageCheckKind::Safety,
+            "residual spread accepted after trim cap",
+        )
+    } else {
+        StageCheck::pass("final_channel_level_spread_db", StageCheckKind::Safety)
+    };
     check.observed = Some(spread_after_db);
     check.limit = Some(FINAL_CHANNEL_LEVEL_TOLERANCE_DB);
     Ok(StageOutcome {
         checks: vec![check],
         stage: "final_channel_level_alignment".to_string(),
-        status: StageStatus::Applied,
+        status: if spread_accepted {
+            StageStatus::Degraded
+        } else {
+            StageStatus::Applied
+        },
         advisories: std::iter::once(format!(
             "alignment_band_hz={:.1}-{:.1}; spread_before_db={spread_before_db:.3}; spread_after_db={spread_after_db:.3}",
             alignment_band.0, alignment_band.1
@@ -1988,6 +2064,13 @@ fn apply_final_channel_level_alignment(
             applied
                 .into_iter()
                 .map(|(name, gain_db)| format!("{name}:{gain_db:.3}dB")),
+        )
+        .chain(
+            spread_accepted.then(|| {
+                format!(
+                    "residual_spread_accepted_after_trim_cap:max_trim_db={FINAL_CHANNEL_LEVEL_MAX_TRIM_DB:.1}"
+                )
+            }),
         )
         .collect(),
     })
