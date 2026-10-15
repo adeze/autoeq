@@ -76,7 +76,12 @@ fn apply_reconstruction_chain<P: roomeq_engine::dsp_realization::ConvolutionIrPr
 
 pub(super) struct HomeCinemaExecutor;
 
-const DESIRED_CROSSOVER_TARGET_UNDERFILL_DB: f64 = 1.0;
+/// Residual crossover underfill the explicit dip filler aims for. This is
+/// the accepted quality bar (`MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB`): closing
+/// a dip further spends electrical boost the final graph cannot carry,
+/// while the Post-EQ acceptance gate already admits this residual.
+const DESIRED_CROSSOVER_TARGET_UNDERFILL_DB: f64 =
+    roomeq_engine::topology::MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB;
 const BASS_MANAGEMENT_LOG_TARGET: &str = "roomeq_workflow::bass_management";
 
 /// Common acoustic calibration band for home-cinema main channels.
@@ -3256,10 +3261,16 @@ fn optimize_home_cinema_with_sub(
                     .ok_or_else(|| AutoeqError::InvalidMeasurement {
                         message: format!("missing raw main target reference for '{role}'"),
                     })?;
-            let target = roomeq_engine::fir::prepared_fir_target_curve(
+            let mut target = roomeq_engine::fir::prepared_fir_target_curve(
                 measurement,
                 &config.optimizer,
                 &post_eq_resources,
+            );
+            roomeq_engine::fir::apply_neutral_target_tilt(
+                &mut target,
+                measurement,
+                &config.optimizer,
+                role,
             );
             Ok((role.clone(), (&target).into()))
         })
@@ -4568,6 +4579,30 @@ fn optimize_home_cinema_with_sub(
             response::apply_complex_response(&routed_common_sub_post, &response);
     }
 
+    // Deployed-sum predictions must see the physical sub low-pass. When a
+    // route omits its own low-pass, the delivered graph applies the
+    // destination chain's crossover instead, so filter the common sub
+    // curve the same way before predicting; routes that carry a low-pass
+    // already apply it inside the prediction and must not see it twice.
+    let deployed_common_sub_post = match bass_routing_graph.as_ref() {
+        Some(graph)
+            if graph
+                .routes
+                .iter()
+                .filter(|route| route.route_kind == "redirected_bass_lowpass_to_sub")
+                .all(|route| route.low_pass_hz.is_none()) =>
+        {
+            apply_crossover_response_to_curve(
+                &routed_common_sub_post,
+                &representative_bass_route_type,
+                representative_bass_route_hz,
+                sample_rate,
+                true,
+            )
+        }
+        _ => routed_common_sub_post.clone(),
+    };
+
     for (role_index, role) in main_roles.iter().enumerate() {
         let post_eq_ordinal = role_index + main_post_eq_offset;
         let role_progress_base =
@@ -4628,7 +4663,7 @@ fn optimize_home_cinema_with_sub(
             .and_then(|graph| {
                 engine_bass_management::predict_deployed_source_curve_from_routes(
                     Some(&main_post_curves[role]),
-                    &routed_common_sub_post,
+                    &deployed_common_sub_post,
                     optimizer_source_pre_route_transfers.get(role),
                     graph,
                     role,
@@ -4755,6 +4790,26 @@ fn optimize_home_cinema_with_sub(
                         output_dir,
                         pre_eq_fir_coeffs.get(&sub_role).map(Vec::as_slice),
                     )?;
+                    // Match the deployed graph's physical low-pass, as for
+                    // `deployed_common_sub_post` above.
+                    let sub_common = if graph
+                        .routes
+                        .iter()
+                        .filter(|route| {
+                            route.route_kind == "redirected_bass_lowpass_to_sub"
+                        })
+                        .all(|route| route.low_pass_hz.is_none())
+                    {
+                        apply_crossover_response_to_curve(
+                            &sub_common,
+                            role_xover_type,
+                            role_xover_freq,
+                            sample_rate,
+                            true,
+                        )
+                    } else {
+                        sub_common
+                    };
                     let Some(routed_seat) =
                         engine_bass_management::predict_deployed_source_curve_from_routes(
                             Some(&main_post),
@@ -4861,6 +4916,16 @@ fn optimize_home_cinema_with_sub(
         // The broad optimizer minimizes aggregate target error. Close any
         // remaining narrow crossover dip explicitly because this EQ is
         // serialized pre-route and therefore corrects both branches equally.
+        // The filler places a single narrow peak at the worst remaining
+        // dip; if that same dip persists it tops the filter up instead of
+        // stacking an identical one, and the combined gain stays within
+        // the per-filter boost authority (`max_db`) that every
+        // optimizer-produced filter obeys. A different remaining dip is
+        // left to the optimizer passes rather than stacking explicit
+        // peaks whose summed gain the delivered graph cannot carry. The
+        // narrow Q keeps the fill local to the dip instead of spilling
+        // boost over the surrounding octave.
+        let mut filler_index: Option<usize> = None;
         for _ in 0..2 {
             let eq_response =
                 response::compute_peq_complex_response(&filters, &post_curve.freq, sample_rate);
@@ -4878,17 +4943,49 @@ fn optimize_home_cinema_with_sub(
             if excess_db <= 1.0e-9 {
                 break;
             }
+
             let gain_db = (excess_db + 0.25).min(opt_config.max_db.max(0.0));
             if gain_db <= 0.01 {
                 break;
             }
-            filters.push(Biquad::new(
-                BiquadFilterType::Peak,
-                frequency,
-                sample_rate,
-                1.0,
-                gain_db,
-            ));
+            // A positive optimizer peak already addressing this dip
+            // (within a third of an octave) is topped up instead of
+            // stacking a second peak on the same feature: stacking
+            // overshoots the dip's shoulders, and the combined gain
+            // stays within the per-filter boost authority either way.
+            let top_up = filters.iter().position(|filter| {
+                filter.filter_type == BiquadFilterType::Peak
+                    && filter.db_gain > 0.0
+                    && (filter.freq / frequency).log2().abs() <= 1.0 / 3.0
+            });
+            match top_up {
+                Some(index) => {
+                    let combined = (filters[index].db_gain + gain_db)
+                        .min(opt_config.max_db.max(0.0));
+                    if combined - filters[index].db_gain <= 0.01 {
+                        break;
+                    }
+                    let (filter_type, freq, srate, q) = {
+                        let existing = &filters[index];
+                        (existing.filter_type, existing.freq, existing.srate, existing.q)
+                    };
+                    filters[index].update_params(filter_type, freq, srate, q, combined);
+                    if filler_index.is_none() {
+                        filler_index = Some(index);
+                    }
+                }
+                None if filler_index.is_some() => break,
+                None => {
+                    filters.push(Biquad::new(
+                        BiquadFilterType::Peak,
+                        frequency,
+                        sample_rate,
+                        1.0,
+                        gain_db,
+                    ));
+                    filler_index = Some(filters.len() - 1);
+                }
+            }
         }
 
         // Evaluate acceptance over the same band reported in the final channel
@@ -4904,7 +5001,7 @@ fn optimize_home_cinema_with_sub(
         let main_curve = &main_post_curves[role];
         let bass_before_post_eq = bass_routing_graph.as_ref().and_then(|graph| {
             engine_bass_management::predict_bass_source_curve_from_routes(
-                &routed_common_sub_post,
+                &deployed_common_sub_post,
                 optimizer_source_pre_route_transfers.get(role),
                 graph,
                 role,
@@ -5462,6 +5559,23 @@ fn optimize_home_cinema_with_sub(
                 let delay_ms = output_settings
                     .map(|output| output.delay_ms)
                     .unwrap_or(d.delay);
+                // Every route feeding this output already carries its
+                // delay (`bass_route_delay_ms + output.delay_ms`), and
+                // each realization of a routed branch (seat replay,
+                // export, delay compilation) applies the route delay on
+                // top of the driver chain. Emitting the same delay again
+                // as a driver plugin would realize the optimizer's
+                // per-output delay twice, so only keep a driver delay
+                // plugin when no route carries it.
+                let route_carries_delay = bass_routing_graph.as_ref().is_some_and(|graph| {
+                    graph.routes.iter().any(|route| {
+                        route.destination == d.name
+                            && matches!(
+                                route.route_kind.as_str(),
+                                "redirected_bass_lowpass_to_sub" | "lfe_lowpass_to_sub"
+                            )
+                    })
+                });
                 let inverted = output_settings
                     .map(|output| output.polarity_inverted)
                     .unwrap_or(d.inverted);
@@ -5478,7 +5592,7 @@ fn optimize_home_cinema_with_sub(
                         ));
                     }
                 }
-                if delay_ms.abs() > 0.001 {
+                if delay_ms.abs() > 0.001 && !route_carries_delay {
                     driver_plugins.push(mark_plugin_stage(
                         output::create_delay_plugin(delay_ms),
                         "post_route",

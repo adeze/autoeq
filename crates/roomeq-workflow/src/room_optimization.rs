@@ -1212,8 +1212,7 @@ fn broadband_matching_within_correction_band(config: &RoomConfig) -> bool {
 }
 
 fn broadband_shelves_supported_by_band((low, high): (f64, f64)) -> bool {
-    low <= roomeq_engine::spectral_align::LOWSHELF_FREQ
-        && high >= roomeq_engine::spectral_align::HIGHSHELF_FREQ
+    roomeq_engine::spectral_align::broadband_shelves_supported_by_band((low, high))
 }
 
 fn shared_alignment_fit_band(
@@ -1853,49 +1852,78 @@ fn apply_final_channel_level_alignment(
     // Re-anchor the aligned channels to their calibrated target level.
     // Down-only alignment preserves relative levels but can leave every
     // channel below the absolute target the native seat gate scores
-    // against; a common restore (never above any channel's pre-alignment
-    // level) keeps the spread the verification below checks while removing
-    // that broadband penalty. Electrical and replay gates still bound it.
-    let deepest_gain = gains.values().copied().fold(0.0_f64, f64::min);
-    let level_reanchor_db = if deepest_gain < -0.01 {
-        curves
-            .iter()
-            .filter_map(|(name, curve)| {
-                let target: Curve = result
-                    .channels
-                    .get(name)
-                    .and_then(|chain| chain.target_curve.clone())?
-                    .into();
-                let (mut sum, mut count) = (0.0_f64, 0usize);
-                for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
-                    if *freq < alignment_band.0 || *freq > alignment_band.1 {
-                        continue;
-                    }
-                    let target_level = target
-                        .freq
-                        .iter()
-                        .zip(target.spl.iter())
-                        .min_by(|a, b| {
-                            (a.0 - freq)
-                                .abs()
-                                .partial_cmp(&(b.0 - freq).abs())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(_, value)| *value)?;
-                    sum += target_level - level;
-                    count += 1;
+    // against; a common restore keeps the spread the verification below
+    // checks while removing that broadband penalty. The restore only
+    // compensates attenuation the alignment itself applied: a candidate
+    // may deliberately trade common level for lower electrical or
+    // physical drive, and re-anchoring that trade away would silently
+    // defeat the drive ranking that selected it. It never raises a
+    // channel above its measured level in the alignment band, and the
+    // final level gains elsewhere in this module bound trims to 12 dB;
+    // electrical and replay gates still bound the delivered graph.
+    let band_mean = |curve: &Curve| -> Option<f64> {
+        let (mut sum, mut count) = (0.0_f64, 0usize);
+        for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
+            if *freq >= alignment_band.0 && *freq <= alignment_band.1 {
+                sum += level;
+                count += 1;
+            }
+        }
+        (count > 0).then(|| sum / count as f64)
+    };
+    let target_restore = curves
+        .iter()
+        .filter_map(|(name, curve)| {
+            let target: Curve = result
+                .channels
+                .get(name)
+                .and_then(|chain| chain.target_curve.clone())?
+                .into();
+            let (mut sum, mut count) = (0.0_f64, 0usize);
+            for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
+                if *freq < alignment_band.0 || *freq > alignment_band.1 {
+                    continue;
                 }
-                (count > 0).then(|| sum / count as f64)
+                let target_level = target
+                    .freq
+                    .iter()
+                    .zip(target.spl.iter())
+                    .min_by(|a, b| {
+                        (a.0 - freq)
+                            .abs()
+                            .partial_cmp(&(b.0 - freq).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(_, value)| *value)?;
+                sum += target_level - level;
+                count += 1;
+            }
+            (count > 0).then(|| sum / count as f64)
+        })
+        .reduce(f64::min);
+    let measured_restore = curves
+        .iter()
+        .filter_map(|(name, curve)| {
+            let initial = reference_curves.get(name)?;
+            Some(band_mean(initial)? - band_mean(curve)?)
+        })
+        .reduce(f64::min);
+    let deepest_alignment_gain = gains.values().copied().fold(0.0_f64, f64::min);
+    let level_reanchor_db = if deepest_alignment_gain < -0.01 {
+        target_restore
+            .map(|restore| {
+                restore
+                    .min(measured_restore.unwrap_or(restore))
+                    .min(-deepest_alignment_gain)
             })
-            .reduce(f64::min)
-            .map(|gain| gain.min(-deepest_gain).max(0.0))
             .unwrap_or(0.0)
+            .clamp(0.0, 12.0)
     } else {
         0.0
     };
     if level_reanchor_db > 0.01 {
-        for gain in gains.values_mut() {
-            *gain += level_reanchor_db;
+        for name in curves.keys() {
+            *gains.entry(name.clone()).or_insert(0.0) += level_reanchor_db;
         }
     }
     // Cap alignment trims (see FINAL_CHANNEL_LEVEL_MAX_TRIM_DB). Relative

@@ -328,11 +328,16 @@ fn apply_broadband_precorrection_with_f3_curve(
     max_freq: f64,
     sample_rate: f64,
 ) -> BroadbandPreCorrection {
+    let [correction_min_hz, correction_max_hz] = room_config.optimizer.active_correction_band();
     if !room_config
         .optimizer
         .target_response
         .as_ref()
         .is_some_and(|response| response.broadband_precorrection)
+        || !spectral_align::broadband_shelves_supported_by_band((
+            correction_min_hz,
+            correction_max_hz,
+        ))
         || !min_freq.is_finite()
         || !max_freq.is_finite()
         || max_freq <= min_freq
@@ -823,6 +828,30 @@ mod tests {
         assert_eq!(result.curve_for_optim.spl, curve.spl);
         assert!(!broadband_correction_rejected(1.0, 1.1));
         assert!(broadband_correction_rejected(1.0, 1.21));
+    }
+
+    #[test]
+    fn broadband_precorrection_respects_active_correction_band() {
+        let mut curve = flat_curve();
+        curve.spl = curve
+            .freq
+            .mapv(|frequency| 80.0 + 3.0 * (frequency / 1000.0).log2());
+        let config = RoomConfig {
+            optimizer: OptimizerConfig {
+                min_freq: 20.0,
+                max_freq: 1600.0,
+                target_response: Some(TargetResponseConfig {
+                    broadband_precorrection: true,
+                    ..TargetResponseConfig::default()
+                }),
+                ..OptimizerConfig::default()
+            },
+            ..RoomConfig::default()
+        };
+        let result = apply_broadband_precorrection(&config, &curve, 80.0, 20.0, 1600.0, 48000.0);
+        assert_eq!(result.curve_for_optim.spl, curve.spl);
+        assert!(result.biquads.is_empty());
+        assert!(result.plugins.is_empty());
     }
 
     #[test]

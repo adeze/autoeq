@@ -532,8 +532,10 @@ fn unmatched_injected(
     unmatched
 }
 
-/// Recovered per-channel PEQs as (freq_hz, gain_db). Empty when the path
-/// publishes no per-channel biquads (routed mains report post-EQ only).
+/// Recovered per-channel PEQs as (freq_hz, gain_db). Routed mains report
+/// Post-EQ filters in `channel_results` and the DE-optimized Pre-EQ pass as
+/// EQ plugins on the delivered chain; both are delivered per-channel PEQs,
+/// so attribution recovers from both places.
 fn channel_biquads_for(result: &RoomOptimizationResult, key: &str, role: &str) -> Vec<(f64, f64)> {
     let biquads = |name: &str| {
         result
@@ -550,13 +552,43 @@ fn channel_biquads_for(result: &RoomOptimizationResult, key: &str, role: &str) -
             .find(|(name, _)| matches(name))
             .map(|(_, channel)| &channel.biquads)
     });
-    found
+    let mut recovered: Vec<(f64, f64)> = found
         .map(|list| {
             list.iter()
                 .map(|biquad| (biquad.freq, biquad.db_gain))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let chain = result
+        .channels
+        .get(key)
+        .or_else(|| result.channels.get(role))
+        .or_else(|| {
+            result
+                .channels
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(key) || name.eq_ignore_ascii_case(role))
+                .map(|(_, chain)| chain)
+        });
+    if let Some(chain) = chain {
+        for plugin in &chain.plugins {
+            if plugin.plugin_type != "eq" {
+                continue;
+            }
+            let Some(filters) = plugin.parameters.get("filters").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for filter in filters {
+                if let (Some(freq), Some(gain)) = (
+                    filter.get("freq").and_then(|v| v.as_f64()),
+                    filter.get("db_gain").and_then(|v| v.as_f64()),
+                ) {
+                    recovered.push((freq, gain));
+                }
+            }
+        }
+    }
+    recovered
 }
 
 /// Full report for one round-trip case run.

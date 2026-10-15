@@ -71,7 +71,12 @@ pub fn compute_epa_spectral_flatness(
         receipt.evaluated_band_hz[1],
         config.flatness_band_weights.clone(),
     );
-    let evaluate = |error| kernel.evaluate(&Array1::from(error), mixes[0], mixes[1]);
+    // Spectral flatness is a shape metric: remove each error's own
+    // broadband offset before scoring. Broadband level loss remains
+    // gated by useful-output and seat-benefit evidence, which use the
+    // uncentered residuals.
+    let evaluate =
+        |error: Vec<f64>| kernel.evaluate_centered(&Array1::from(error), mixes[0], mixes[1]);
     let before = evaluate(samples.pre_error_db);
     let after = evaluate(samples.post_error_db);
     if !before.is_finite() || !after.is_finite() {

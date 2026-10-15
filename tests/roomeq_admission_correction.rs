@@ -193,6 +193,10 @@ fn roadmap_correction_admission_physical_drive_changes_candidate_ranking() {
     let mut config = declared_voltage_config(1.0);
     // A broad dip admits partial positive correction: reducing its strength
     // trades target fit for lower drive without destroying all improvement.
+    // The asymmetric loss deliberately under-corrects dips, so use the plain
+    // gain mismatch here: this scenario asserts drive ranking of a positive
+    // correction, not asymmetric-loss voicing.
+    config.optimizer.asymmetric_loss = false;
     config.optimizer.min_db = 0.0;
     for source in config.speakers.values_mut() {
         let SpeakerConfig::Single(MeasurementSource::InMemory(curve)) = source else {

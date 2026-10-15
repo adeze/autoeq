@@ -343,7 +343,16 @@ pub fn canonical_electrical_routing(
             )
         })
     });
-    match (expected, graph.global_plugins.as_slice()) {
+    // Crosstalk cancellation is a global stage applied after the RoomEQ
+    // graph; its electrical bound is certified in the CTC report itself
+    // (`max_electrical_sum_gain_db`), not by per-channel sampled peaks.
+    // Ignore `xtc` globals when resolving the RoomEQ routing contract.
+    let non_ctc_globals: Vec<_> = graph
+        .global_plugins
+        .iter()
+        .filter(|plugin| plugin.plugin_type != "xtc")
+        .collect();
+    match (expected, non_ctc_globals.as_slice()) {
         (None, []) => {}
         (Some(expected), [actual])
             if actual.plugin_type == expected.plugin_type

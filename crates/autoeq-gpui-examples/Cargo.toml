@@ -11,13 +11,13 @@ resolver = "3"
 
 [dependencies]
 autoeq = { path = "../.." }
-d3rs = { package = "gpui-d3rs", path = "../../../gpui-toolkit/crates/gpui-d3rs", features = ["gpui", "gpu-2d", "gpu-3d"] }
+d3rs = { package = "gpui-d3rs", version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit", features = ["gpui", "gpu-2d", "gpu-3d"] }
 gpui = { version = "0.2.3",  package = "sotf-gpui-toolkit-gpui", git = "https://github.com/pierreaubert/sotf-3rdparties" }
-gpui-builder = { path = "../../../gpui-toolkit/crates/gpui-builder" }
-gpui-design = { path = "../../../gpui-toolkit/crates/gpui-design" }
-gpui-miniapp = { path = "../../../gpui-toolkit/crates/gpui-miniapp" }
-gpui-px = { path = "../../../gpui-toolkit/crates/gpui-px", features = ["gpui", "gpu-3d"] }
-gpui-ui-kit = { path = "../../../gpui-toolkit/crates/gpui-ui-kit", default-features = false }
+gpui-builder = { version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit" }
+gpui-design = { version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit" }
+gpui-miniapp = { version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit" }
+gpui-px = { version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit", features = ["gpui", "gpu-3d"] }
+gpui-ui-kit = { version = "0.10", git = "https://github.com/pierreaubert/gpui-toolkit", default-features = false }
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "macros", "io-util", "process", "signal"] }
 urlencoding = "2.1"

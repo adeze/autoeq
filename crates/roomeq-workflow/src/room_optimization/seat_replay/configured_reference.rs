@@ -24,8 +24,37 @@ fn reference_graph(
     for chain in reference.channels.values_mut() {
         chain.plugins.clear();
         if let Some(drivers) = &mut chain.drivers {
+            // Joint array steering is structural for this comparison: the
+            // finalization candidates being judged never scale the plain
+            // per-driver gain/delay controls (only EQ/FIR kernels and
+            // explicitly labeled refinement trims), and the joint stage
+            // already accepted them. Keep those controls on the reference
+            // so the comparison judges the correction actually under
+            // selection, on the same plane as final-seat replay.
+            let keep_array_steering = chain.joint_sub.is_some();
             for driver in drivers {
-                driver.plugins.clear();
+                if keep_array_steering {
+                    driver.plugins.retain(|plugin| {
+                        matches!(plugin.plugin_type.as_str(), "gain" | "delay")
+                            && plugin
+                                .parameters
+                                .get("room_eq_correction_gain")
+                                .and_then(serde_json::Value::as_bool)
+                                != Some(true)
+                            && plugin
+                                .parameters
+                                .get("room_eq_correction_delay")
+                                .and_then(serde_json::Value::as_bool)
+                                != Some(true)
+                            && plugin
+                                .parameters
+                                .get("label")
+                                .and_then(serde_json::Value::as_str)
+                                .is_none()
+                    });
+                } else {
+                    driver.plugins.clear();
+                }
             }
         }
     }
@@ -221,6 +250,56 @@ fn restore_configured_driver_crossovers(
     Ok(())
 }
 
+/// Freeze direct-channel protection from declared, snapshotted source data.
+fn restore_configured_excursion(
+    reference: &mut RoomOptimizationResult,
+    config: &RoomConfig,
+    fs: f64,
+) -> Result<BTreeMap<String, Vec<math_audio_iir_fir::Biquad>>> {
+    let mut conditioning = BTreeMap::new();
+    // Routed and driver topologies have their own structural support contracts.
+    if reference
+        .metadata
+        .bass_management
+        .as_ref()
+        .is_some_and(|bass| bass.routing_graph.is_some())
+        || !config
+            .optimizer
+            .excursion_protection
+            .as_ref()
+            .is_some_and(|protection| protection.enabled)
+    {
+        return Ok(conditioning);
+    }
+    for (input, chain) in &mut reference.channels {
+        let key = config
+            .system
+            .as_ref()
+            .and_then(|system| system.speakers.get(input))
+            .map_or(input.as_str(), String::as_str);
+        let Some(SpeakerConfig::Single(source)) = config.speakers.get(key) else {
+            continue;
+        };
+        let measurement = autoeq_measurements::read::load_source(source)
+            .map_err(|error| invalid(format!("configured excursion source {input}: {error}")))?;
+        let filters = roomeq_engine::channel_preprocessing::generate_excursion_filters(
+            config,
+            &measurement,
+            fs,
+        );
+        if !filters.is_empty() {
+            chain
+                .plugins
+                .push(roomeq_engine::output::create_labeled_eq_plugin(
+                    &filters,
+                    "excursion_protection",
+                ));
+            conditioning.insert(input.clone(), filters);
+        }
+    }
+    Ok(conditioning)
+}
+
 fn graph_hash(reference: &RoomOptimizationResult) -> Result<String> {
     let channels: BTreeMap<_, _> = reference
         .channels
@@ -286,6 +365,26 @@ fn observation_config(
     if !low.is_finite() || !high.is_finite() || high <= low {
         return Err(invalid("configured comparison has no common support"));
     }
+    // Driver arrays are steered (gains/delays) only inside the active
+    // correction band; outside it the steering comb is not a correction
+    // claim and a real array is band-limited by its crossover. Score
+    // array inputs over the correction band intersected with common
+    // measured support, not the full measured passband.
+    if reference
+        .channels
+        .get(input)
+        .and_then(|chain| chain.drivers.as_ref())
+        .is_some_and(|drivers| !drivers.is_empty())
+    {
+        let [band_low, band_high] = config.optimizer.active_correction_band();
+        low = low.max(band_low);
+        high = high.min(band_high);
+        if !low.is_finite() || !high.is_finite() || high <= low {
+            return Err(invalid(
+                "configured comparison has no common support in the correction band",
+            ));
+        }
+    }
     observation.optimizer.min_freq = low;
     observation.optimizer.max_freq = high;
     Ok(observation)
@@ -309,11 +408,16 @@ pub(in super::super) struct ConfiguredComparison<'a> {
     fs: f64,
     dir: &'a Path,
     reference: std::result::Result<RoomOptimizationResult, String>,
+    excursion: BTreeMap<String, Vec<math_audio_iir_fir::Biquad>>,
     digest: Option<String>,
     training: std::result::Result<BTreeMap<String, Vec<Curve>>, String>,
     held_out: BTreeMap<String, Vec<Curve>>,
     resources: std::result::Result<roomeq_engine::eq::EqResources, String>,
     baselines: std::sync::Mutex<BTreeMap<(String, String, usize), PreparedBaselineResult>>,
+    /// Safety attenuation the source graph already carries, per channel.
+    /// It is delivered program protection, not a candidate change, so the
+    /// level match below must not match it away.
+    source_safety_db: BTreeMap<String, f64>,
 }
 
 impl<'a> ConfiguredComparison<'a> {
@@ -325,7 +429,13 @@ impl<'a> ConfiguredComparison<'a> {
         fs: f64,
         dir: &'a Path,
     ) -> Self {
-        let reference = reference_graph(result, config).map_err(|error| error.to_string());
+        let mut excursion = BTreeMap::new();
+        let reference = reference_graph(result, config)
+            .and_then(|mut reference| {
+                excursion = restore_configured_excursion(&mut reference, config, fs)?;
+                Ok(reference)
+            })
+            .map_err(|error| error.to_string());
         let digest = reference
             .as_ref()
             .ok()
@@ -335,6 +445,7 @@ impl<'a> ConfiguredComparison<'a> {
             fs,
             dir,
             reference,
+            excursion,
             digest,
             training: physical_captures(captures, result).map_err(|error| error.to_string()),
             held_out: held_out
@@ -344,6 +455,39 @@ impl<'a> ConfiguredComparison<'a> {
             resources: crate::prepare_eq_resources(&config.optimizer, config.target_curve.as_ref())
                 .map_err(|error| error.to_string()),
             baselines: Default::default(),
+            source_safety_db: result
+                .channels
+                .iter()
+                .map(|(name, chain)| {
+                    let sum = chain
+                        .plugins
+                        .iter()
+                        .chain(
+                            chain
+                                .drivers
+                                .iter()
+                                .flatten()
+                                .flat_map(|driver| driver.plugins.iter()),
+                        )
+                        .filter(|plugin| {
+                            plugin.plugin_type == "gain"
+                                && plugin
+                                    .parameters
+                                    .get("room_eq_safety_gain")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true)
+                        })
+                        .filter_map(|plugin| {
+                            plugin
+                                .parameters
+                                .get("gain_db")
+                                .and_then(serde_json::Value::as_f64)
+                                .filter(|value| value.is_finite())
+                        })
+                        .sum();
+                    (name.clone(), sum)
+                })
+                .collect(),
         }
     }
 
@@ -469,14 +613,27 @@ impl<'a> ConfiguredComparison<'a> {
                 })
                 .flatten();
             let normalize_level = direct_physical_target.is_none();
+            let target_measurement = if self.excursion.contains_key(input) {
+                measured(physical, input, seat)?
+            } else {
+                &pre.curve
+            };
             let target = direct_physical_target
                 .map(|target| Curve::from(target.curve.clone()))
                 .unwrap_or_else(|| {
-                    roomeq_engine::fir::prepared_fir_target_curve(
-                        &pre.curve,
+                    let target = roomeq_engine::fir::prepared_fir_target_curve(
+                        target_measurement,
                         &observation.optimizer,
                         resources,
-                    )
+                    );
+                    match self.excursion.get(input) {
+                        Some(filters) => {
+                            roomeq_engine::channel_preprocessing::apply_excursion_filters_to_curve(
+                                target, filters, self.fs,
+                            )
+                        }
+                        None => target,
+                    }
                 });
             Ok(std::sync::Arc::new(PreparedBaseline {
                 observation,
@@ -490,6 +647,46 @@ impl<'a> ConfiguredComparison<'a> {
     }
 
     pub(in super::super) fn attach(&self, result: &mut RoomOptimizationResult) {
+        // The configured baseline is replayed from unprocessed captures, so
+        // it carries no level-alignment gains. Judge every graph on that
+        // same plane: strip alignment gains from the replayed candidate
+        // instead of counting the intentional inter-channel level shift as
+        // per-channel target error. Alignment itself is verified by the
+        // final channel-level alignment stage and by seat validation
+        // against the pre-alignment frozen baseline.
+        let mut replay_result = result.clone();
+        for chain in replay_result.channels.values_mut() {
+            chain.plugins.retain(|plugin| {
+                !matches!(
+                    plugin
+                        .parameters
+                        .get("label")
+                        .and_then(serde_json::Value::as_str),
+                    Some(
+                        "automatic_input_level_alignment"
+                            | "post_dsp_input_level_alignment"
+                            | "final_channel_level_alignment"
+                    )
+                )
+            });
+            if let Some(drivers) = &mut chain.drivers {
+                for driver in drivers {
+                    driver.plugins.retain(|plugin| {
+                        !matches!(
+                            plugin
+                                .parameters
+                                .get("label")
+                                .and_then(serde_json::Value::as_str),
+                            Some(
+                                "automatic_input_level_alignment"
+                                    | "post_dsp_input_level_alignment"
+                                    | "final_channel_level_alignment"
+                            )
+                        )
+                    });
+                }
+            }
+        }
         let Some(seats) = result
             .metadata
             .correction_acceptance
@@ -538,14 +735,77 @@ impl<'a> ConfiguredComparison<'a> {
                     fs: self.fs,
                     dir: self.dir,
                 };
-                let (post, delivered_outputs) = replay(
-                    result,
+                let (mut post, delivered_outputs) = replay(
+                    &replay_result,
                     physical,
                     &seat.logical_input,
                     seat.seat_index,
                     false,
                     &context,
                 )?;
+                // When the configured target's absolute level is relative
+                // (`normalize_level`), a common level shift is not target
+                // error: match the candidate's broadband level to the
+                // baseline over the evaluated band before scoring, so the
+                // configured metric ranks shape. Absolute targets keep
+                // the unshifted candidate. Safety attenuation the source
+                // graph already carries is excluded from the match: it is
+                // delivered protection, and matching it away would credit
+                // the candidate with level it does not deliver. The match
+                // only applies beyond the level-alignment trim cap (see
+                // below). The applied shift is recorded in the residual's
+                // post-reference gain below, so a pure broadband change
+                // still registers as a playback change.
+                let mut level_match_db = 0.0_f64;
+                // Broadband level is only relative for subwoofer/LFE
+                // inputs, whose delivered level is set by bass
+                // management; mains targets are level-absolute, so a
+                // mains candidate's common shift stays judged.
+                if baseline.normalize_level {
+                    let aligned_post =
+                        autoeq_core::interpolate_log_space(&baseline.pre.curve.freq, &post.curve);
+                    let (mut sum, mut count) = (0.0_f64, 0usize);
+                    for ((freq, pre_level), post_level) in baseline
+                        .pre
+                        .curve
+                        .freq
+                        .iter()
+                        .zip(baseline.pre.curve.spl.iter())
+                        .zip(aligned_post.spl.iter())
+                    {
+                        if *freq >= baseline.observation.optimizer.min_freq
+                            && *freq <= baseline.observation.optimizer.max_freq
+                        {
+                            sum += pre_level - post_level;
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        let source_safety = self
+                            .source_safety_db
+                            .get(&seat.logical_input)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let shift = sum / count as f64 + source_safety;
+                        // A broadband shift within the final level-
+                        // alignment trim cap is a deliverable level
+                        // difference and stays judged as target error.
+                        // A larger shift marks a relative-level plane
+                        // (a bass-managed LFE whose absolute level is
+                        // set by routing, or a deliberate drive-cut
+                        // trial), so only there is the candidate
+                        // matched to the baseline and ranked on shape.
+                        let shift = if shift.abs() > super::super::FINAL_CHANNEL_LEVEL_MAX_TRIM_DB {
+                            shift
+                        } else {
+                            0.0
+                        };
+                        if shift.is_finite() && shift.abs() > 1e-9 {
+                            post.curve.spl.mapv_inplace(|level| level + shift);
+                            level_match_db = shift;
+                        }
+                    }
+                }
                 // Actual routing may drive different captured branches; both
                 // memberships remain explicit on the same configured reference.
                 let score = roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
@@ -585,6 +845,7 @@ impl<'a> ConfiguredComparison<'a> {
                 let epa_unavailable = level_matched_epa.is_none().then(|| {
                     "invalid response or insufficient shared 1–2 kHz matching-band support".into()
                 });
+                residual.post_reference_gain_db += level_match_db;
                 let epa_spectral_flatness = Some(
                     roomeq_engine::output::compute_epa_spectral_flatness(
                         &baseline.pre.curve,
@@ -719,6 +980,71 @@ pub(in super::super) fn configured_selection_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_excursion_reference_is_frozen_and_conditions_its_target() {
+        let raw = Curve {
+            freq: ndarray::array![20.0, 100.0, 1000.0, 20000.0],
+            spl: ndarray::Array1::from_elem(4, 80.0),
+            phase: Some(ndarray::Array1::zeros(4)),
+            ..Curve::default()
+        };
+        let mut config = RoomConfig::default();
+        config.speakers.insert(
+            "L".into(),
+            SpeakerConfig::Single(MeasurementSource::InMemory(raw.clone())),
+        );
+        config.optimizer.excursion_protection = Some(roomeq_model::ExcursionProtectionConfig {
+            enabled: true,
+            auto_detect_f3: false,
+            manual_f3_hz: Some(50.0),
+            ..Default::default()
+        });
+        let captures = vec![Capture {
+            channel: "L".into(),
+            driver: None,
+            curves: vec![raw],
+            seat_labels: None,
+        }];
+        let directory = tempfile::tempdir().unwrap();
+        let mut hashes = Vec::new();
+        for cutoff in [100.0, 1000.0] {
+            let mut candidate = crate::test_fixtures::single_channel_room_result("L");
+            let mut altered = config.clone();
+            altered
+                .optimizer
+                .excursion_protection
+                .as_mut()
+                .unwrap()
+                .manual_f3_hz = Some(cutoff);
+            let filters = roomeq_engine::channel_preprocessing::generate_excursion_filters(
+                &altered,
+                &captures[0].curves[0],
+                48000.0,
+            );
+            candidate.channels.get_mut("L").unwrap().plugins =
+                vec![roomeq_engine::output::create_labeled_eq_plugin(
+                    &filters,
+                    "excursion_protection",
+                )];
+            let comparison = ConfiguredComparison::new(
+                &candidate,
+                &captures,
+                &HashMap::new(),
+                &config,
+                48000.0,
+                directory.path(),
+            );
+            let baseline = comparison.prepare_baseline("training", "L", 0).unwrap();
+            assert_eq!(baseline.observation.optimizer.min_freq, 20.0);
+            assert_eq!(baseline.observation.optimizer.max_freq, 20000.0);
+            for (measured, target) in baseline.pre.curve.spl.iter().zip(&baseline.target.spl) {
+                assert!((measured - target).abs() < 1e-8);
+            }
+            hashes.push(comparison.digest.unwrap());
+        }
+        assert_eq!(hashes[0], hashes[1]);
+    }
 
     #[test]
     fn explicit_topology_reference_rebuilds_declared_bands_without_optimized_alignment() {

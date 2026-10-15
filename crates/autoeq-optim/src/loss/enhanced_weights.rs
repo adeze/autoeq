@@ -177,6 +177,30 @@ impl PreparedWeightedLoss {
         self.evaluate_weighted(error, erb_mix, band_mix, |_, _| 1.0)
     }
 
+    /// Evaluate after removing the ERB-weighted broadband offset.
+    ///
+    /// Spectral-shape scoring uses this so a common level shift is not
+    /// counted as shape error; callers gate broadband level separately.
+    pub fn evaluate_centered(&self, error: &Array1<f64>, erb_mix: f64, band_mix: f64) -> f64 {
+        if self.indices.is_empty() || self.erb_total <= 0.0 {
+            return self.evaluate(error, erb_mix, band_mix);
+        }
+        let mean = self
+            .indices
+            .iter()
+            .enumerate()
+            .map(|(active_index, &source_index)| {
+                error[source_index] * self.erb_weights[active_index]
+            })
+            .sum::<f64>()
+            / self.erb_total;
+        if !mean.is_finite() {
+            return f64::INFINITY;
+        }
+        let centered: Vec<f64> = error.iter().map(|value| value - mean).collect();
+        self.evaluate(&Array1::from(centered), erb_mix, band_mix)
+    }
+
     /// Evaluate the combined loss while de-weighting only negative residuals
     /// at detected narrow nulls. In the RoomEQ convention a negative residual
     /// is a measured dip that would require an input boost; positive residuals

@@ -318,6 +318,44 @@ fn correction(plugin: &PluginConfigWrapper) -> bool {
     super::room_optimization_result::is_baseline_correction(plugin)
 }
 
+fn is_level_alignment(plugin: &PluginConfigWrapper) -> bool {
+    matches!(
+        plugin
+            .parameters
+            .get("label")
+            .and_then(serde_json::Value::as_str),
+        Some(
+            "automatic_input_level_alignment"
+                | "post_dsp_input_level_alignment"
+                | "final_channel_level_alignment"
+        )
+    )
+}
+
+fn correction_differs(
+    candidate: &RoomOptimizationResult,
+    baseline: &RoomOptimizationResult,
+    input: &str,
+) -> bool {
+    let stages = |result: &RoomOptimizationResult| -> Vec<String> {
+        let mut plugins = Vec::new();
+        if let Some(chain) = result.channels.get(input) {
+            plugins.extend(chain.plugins.iter());
+            if let Some(drivers) = &chain.drivers {
+                plugins.extend(drivers.iter().flat_map(|driver| driver.plugins.iter()));
+            }
+        }
+        let mut stages: Vec<String> = plugins
+            .into_iter()
+            .filter(|plugin| correction(plugin) && !is_level_alignment(plugin))
+            .map(|plugin| format!("{}:{}", plugin.plugin_type, plugin.parameters))
+            .collect();
+        stages.sort();
+        stages
+    };
+    stages(candidate) != stages(baseline)
+}
+
 /// Per-input temporal evidence for one replayed scorecard, mirroring runtime
 /// acceptance. The induced-GD metric must unwrap post phase with the bulk
 /// FIR design delay actually present on this branch; a zero prior breaks
@@ -455,7 +493,12 @@ fn apply(
     if baseline
         && !super::room_optimization_result::supporting_source_output_names(result).contains(owner)
     {
-        plugins.retain(|p| !correction(p));
+        // Scoring only: level-alignment gains are structural calibration,
+        // not the correction being judged. Retaining them on the baseline
+        // keeps pre/post in the same level plane so the marginal EQ effect
+        // is scored. Actual rollback (restore_structural_baseline) still
+        // removes them via `correction`.
+        plugins.retain(|p| !correction(p) || is_level_alignment(p));
     }
     let mut chain = result
         .channels
@@ -1166,6 +1209,20 @@ fn replay_output(
                         "low"
                     },
                 ));
+            } else {
+                // The routing graph omits the crossover when the physical
+                // destination chain carries it as a route-owned plugin (the
+                // serialized driver's own low-pass). Apply that serialized
+                // filter so replay matches the delivered graph instead of
+                // summing the destination's full-range capture.
+                route_plugins.extend(post.plugins.iter().filter(|plugin| {
+                    plugin.plugin_type == "crossover"
+                        && plugin
+                            .parameters
+                            .get("room_eq_stage")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("route_owned")
+                }).cloned());
             }
             if route.delay_ms.abs() > 0.001 {
                 route_plugins.push(roomeq_engine::output::create_delay_plugin(route.delay_ms));
@@ -2119,7 +2176,7 @@ fn validate_final_seats_body(
                 let pre_support = pre.support;
                 let post_support = post.support;
                 let pre = pre.curve;
-                let post = post.curve;
+                let mut post = post.curve;
                 phase_evidence_available &= [&pre, &post].iter().all(|curve| {
                     curve.phase.as_ref().is_some_and(|phase| {
                         phase.len() == curve.freq.len()
@@ -2151,6 +2208,38 @@ fn validate_final_seats_body(
                     .max_freq
                     .min(*pre.freq.last().unwrap())
                     .min(*post.freq.last().unwrap());
+                // With a relative target level, a common level shift is
+                // not seat regression: match the candidate's broadband
+                // level to the baseline over the scored band before
+                // evaluating, but only when a correction is actually
+                // being judged (fallback verification against a frozen
+                // pre-alignment baseline must keep the alignment shift
+                // visible). Absolute (physical) targets keep the
+                // unshifted candidate; broadband loss remains gated by
+                // useful-output evidence from the unshifted report.
+                let mut post_unshifted: Option<Curve> = None;
+                if normalize_level && correction_differs(result, baseline_source, input) {
+                    let aligned_post = autoeq_core::interpolate_log_space(&pre.freq, &post);
+                    let (mut sum, mut count) = (0.0_f64, 0usize);
+                    for ((freq, pre_level), post_level) in pre
+                        .freq
+                        .iter()
+                        .zip(pre.spl.iter())
+                        .zip(aligned_post.spl.iter())
+                    {
+                        if *freq >= lo && *freq <= hi {
+                            sum += pre_level - post_level;
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        let shift = sum / count as f64;
+                        if shift.is_finite() && shift.abs() > 1e-9 {
+                            post_unshifted = Some(post.clone());
+                            post.spl.mapv_inplace(|level| level + shift);
+                        }
+                    }
+                }
                 let mut score =
                     roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
                         std::slice::from_ref(&pre),
@@ -2180,6 +2269,43 @@ fn validate_final_seats_body(
                             .unwrap_or(0.0),
                     )
                     .map_err(invalid)?;
+                if let Some(unshifted) = &post_unshifted {
+                    // The level match above is a shape-scoring device only:
+                    // useful-output evidence must describe the delivered
+                    // (unshifted) playback, or a correction could hide an
+                    // arbitrary broadband loss behind the match. Recompute
+                    // just that evidence from the unshifted candidate.
+                    let unshifted_score =
+                        roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
+                            std::slice::from_ref(&pre),
+                            std::slice::from_ref(unshifted),
+                            &[],
+                            &[],
+                            target.as_ref(),
+                            roomeq_engine::quality::QualityEvaluationConfig {
+                                min_freq_hz: lo,
+                                max_freq_hz: hi,
+                                schroeder_hz,
+                                normalize_level,
+                            },
+                            replay_scorecard_temporal(
+                                result,
+                                input,
+                                &pre,
+                                unshifted,
+                                fs,
+                                config.optimizer.processing_mode.clone(),
+                            ),
+                            config
+                                .optimizer
+                                .permitted_output_gain_db
+                                .get(input)
+                                .copied()
+                                .unwrap_or(0.0),
+                        )
+                        .map_err(invalid)?;
+                    score.useful_output = unshifted_score.useful_output;
+                }
                 // Captured scorer output is reproducible from its numeric
                 // inputs alone. Attach the workflow owner only to the report.
                 let scorecard_for_replay = score.clone();

@@ -159,10 +159,16 @@ pub(super) fn attach_validation_scorecard(
         let mut target = channel.initial_curve.clone();
         target.spl.fill(mean);
         target.phase = None;
+        // The delivered final curve may have been resampled onto the
+        // canonical display grid while the initial curve keeps the
+        // measurement grid. Acceptance requires explicitly aligned grids,
+        // so resample the final curve onto the initial grid first.
+        let aligned_final =
+            autoeq_core::interpolate_log_space(&channel.initial_curve.freq, &channel.final_curve);
         result.metadata.correction_acceptance = Some(
             evaluate_correction_acceptance(
                 &channel.initial_curve,
-                &channel.final_curve,
+                &aligned_final,
                 &target,
                 None,
                 CorrectionAcceptancePolicy::RuntimeSafety,

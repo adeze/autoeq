@@ -1755,7 +1755,7 @@ pub(super) fn runtime_temporal_quality_evidence(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum CorrectionStage {
+pub(super) enum CorrectionStage {
     Peq,
     Mso,
     GroupDelay,
@@ -1764,7 +1764,7 @@ enum CorrectionStage {
 }
 
 impl CorrectionStage {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Peq => "peq",
             Self::Mso => "mso",
@@ -2243,7 +2243,7 @@ fn sync_chain_reported_curve(chain: &mut ChannelDspChain, final_curve: &roomeq_m
     chain.final_curve = Some(final_data);
 }
 
-fn correction_stages(chain: &ChannelDspChain) -> BTreeSet<CorrectionStage> {
+pub(super) fn correction_stages(chain: &ChannelDspChain) -> BTreeSet<CorrectionStage> {
     let mut stages: BTreeSet<_> = chain.plugins.iter().filter_map(correction_stage).collect();
     // Routed driver controls are already accepted by the array engine and
     // crossover optimizer. A common-curve EQ check cannot judge or remove them

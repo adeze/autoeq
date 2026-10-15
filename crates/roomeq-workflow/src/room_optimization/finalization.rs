@@ -24,10 +24,15 @@ pub(super) fn assess_delivered_epa(
 fn configured_reference_changed(comparison: &roomeq_model::ConfiguredBaselineComparison) -> bool {
     comparison.residuals.iter().any(|residual| {
         residual.score.post_covers_baseline_grid
-            && residual
+            && (residual
                 .score
                 .improvement_db
                 .is_some_and(|difference| difference.is_finite() && difference.abs() > 1e-6)
+                // Relative-target scoring level-matches the candidate, so a
+                // pure broadband shift leaves no shape improvement; the
+                // recorded post-reference gain still proves playback changed.
+                || (residual.score.post_reference_gain_db.is_finite()
+                    && residual.score.post_reference_gain_db.abs() > 1e-6))
     })
 }
 
@@ -1211,11 +1216,11 @@ fn select_inner(
             ]
         })
         .collect();
-    if let Some(strength) = electrical_boundary_strength {
+    if let Some(boundary) = electrical_boundary_strength {
         parameters.extend([
-            (strength, strength, "output", 0.0),
-            (strength, strength, "common", 0.0),
-            (strength, strength, "spectral", 0.0),
+            (boundary, boundary, "output", 0.0),
+            (boundary, boundary, "common", 0.0),
+            (boundary, boundary, "spectral", 0.0),
         ]);
     }
     // A main's correction and a shared sub array's correction affect different
@@ -1386,7 +1391,9 @@ fn select_inner(
     // EPA gates judge every offset. No gate is relaxed; offsets that fail
     // remain visible as rejected trials.
     if best.is_none() {
-        for (strength, sub_strength) in [(1.0, 1.0), (1.0, 0.5), (0.5, 1.0)] {
+        for (strength, sub_strength) in
+            [(1.0, 1.0), (1.0, 0.5), (1.0, 0.45), (1.0, 0.4), (0.5, 1.0)]
+        {
             for offset_ms in [-2.0, -1.0, -0.5, -0.25, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0] {
                 if let Ok(mut shifted) = prepare_candidate(
                     &original,
@@ -1458,13 +1465,34 @@ fn select_inner(
             trials,
         );
     };
-    if selected
+    // A joint-sub chain already carries an independently accepted array
+    // optimization. Metric identity in finalization only means no further
+    // correction was selected; it must not erase that array as if the
+    // delivered graph were the correction-free structural baseline.
+    let keeps_accepted_joint_array = selected
+        .channels
+        .values()
+        .any(|chain| chain.joint_sub.is_some());
+    if !keeps_accepted_joint_array
+        && selected
         .metadata
         .correction_acceptance
         .as_ref()
         .is_some_and(|report| {
             report.decision == roomeq_model::CorrectionDecision::IdentityFallback
                 && is_identity_correction(&report.metrics)
+                && report.acoustic_quality.as_ref().is_some_and(|quality| {
+                    !quality
+                        .training
+                        .configured_baseline
+                        .as_ref()
+                        .is_some_and(configured_reference_changed)
+                        && !quality
+                            .held_out
+                            .as_ref()
+                            .and_then(|partition| partition.configured_baseline.as_ref())
+                            .is_some_and(configured_reference_changed)
+                })
         })
     {
         // A zero-strength trial can retain unity EQ/FIR kernels. Publish the
@@ -1510,8 +1538,81 @@ fn select_inner(
         advisories: selection_advisories,
         checks: trials,
     });
+    canonicalize_common_driver_delays(&mut selected);
     *result = selected;
     Ok(())
+}
+
+/// Move delay common to every driver of a channel onto the channel chain.
+///
+/// An advance trial realizes relative timing by delaying the other
+/// drivers, which leaves a delay component shared by the whole channel.
+/// That common part is channel latency, not per-driver steering: moving
+/// it to a plain chain delay keeps every driver's absolute timing (and
+/// therefore every rendered response) unchanged while keeping per-driver
+/// plugins in relative form.
+fn canonicalize_common_driver_delays(result: &mut RoomOptimizationResult) {
+    for chain in result.channels.values_mut() {
+        let Some(drivers) = &mut chain.drivers else {
+            continue;
+        };
+        if drivers.len() < 2 {
+            continue;
+        }
+        let totals: Vec<f64> = drivers
+            .iter()
+            .map(|driver| {
+                driver
+                    .plugins
+                    .iter()
+                    .filter(|plugin| plugin.plugin_type == "delay")
+                    .filter_map(|plugin| {
+                        plugin
+                            .parameters
+                            .get("delay_ms")
+                            .and_then(serde_json::Value::as_f64)
+                            .filter(|value| value.is_finite() && *value >= 0.0)
+                    })
+                    .sum()
+            })
+            .collect();
+        let common = totals
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        if !common.is_finite() || common <= 1e-9 {
+            continue;
+        }
+        for driver in drivers.iter_mut() {
+            let mut remaining = common;
+            driver.plugins.retain_mut(|plugin| {
+                if plugin.plugin_type != "delay" || remaining <= 1e-9 {
+                    return true;
+                }
+                let Some(delay) = plugin
+                    .parameters
+                    .get("delay_ms")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                else {
+                    return true;
+                };
+                let reduced = delay - remaining.min(delay);
+                remaining -= remaining.min(delay);
+                if reduced <= 1e-9 {
+                    return false;
+                }
+                plugin.parameters["delay_ms"] = serde_json::json!(reduced);
+                true
+            });
+        }
+        chain
+            .plugins
+            .insert(0, roomeq_engine::output::create_delay_plugin(common));
+        if chain.joint_sub.is_some() {
+            roomeq_model::joint_sub_report::refresh_joint_sub_binding(chain);
+        }
+    }
 }
 
 struct TrialEvaluationContext<'a> {
@@ -2173,14 +2274,43 @@ fn evaluate_prepared_trial(
         // A realized identity is unchanged; a nonidentity candidate must
         // improve the declared primary metric beyond the engineering
         // selection floor. This does not claim a listening threshold.
+        // Joint array refinements are the exception: their purpose is the
+        // physical-drive trade the candidate score already prices, and
+        // their marginal acoustic effect can legitimately be small. They
+        // are judged by the per-seat benefit floor below (every training
+        // seat must still improve beyond uncertainty), never by the
+        // identity loophole, and all regression budgets still apply.
+        // A pure broadband level change (a drive-cut trial, safety
+        // attenuation) reads as zero centered correction, but it is a
+        // real playback change, not an identity: the configured
+        // comparison's recorded post-reference gain proves it.
+        let configured_unchanged = report.acoustic_quality.as_ref().is_some_and(|quality| {
+            !quality
+                .training
+                .configured_baseline
+                .as_ref()
+                .is_some_and(configured_reference_changed)
+                && !quality
+                    .held_out
+                    .as_ref()
+                    .and_then(|partition| partition.configured_baseline.as_ref())
+                    .is_some_and(configured_reference_changed)
+        });
+        let identity_candidate = joint_trial.is_none()
+            && is_identity_correction(&report.metrics)
+            && configured_unchanged;
         if !configured_metrics.training_improvement_db.is_finite()
             || configured_metrics.training_improvement_db
                 <= policy.min_primary_improvement_db.max(1e-6)
         {
-            if is_identity_correction(&report.metrics) {
+            if identity_candidate {
                 report.accepted = false;
                 report.decision = roomeq_model::CorrectionDecision::IdentityFallback;
                 report.refresh_outcome();
+            } else if joint_trial.is_some()
+                && configured_metrics.training_improvement_db.is_finite()
+            {
+                // Defer to the per-seat benefit floor below.
             } else {
                 failure_checks.push(failed_numeric_margin(
                     "primary_improvement_below_floor",
@@ -2219,7 +2349,10 @@ fn evaluate_prepared_trial(
         // a simpler protected result. Identity candidates skip the
         // floor: with no correction applied there is nothing to
         // reject, and they flow through as the protected baseline.
-        if !is_identity_correction(&report.metrics) {
+        // Joint refinements never skip it: a centered metric can read a
+        // level-changing array trim as zero correction, but the trim is
+        // a real graph change that must demonstrate seat benefit.
+        if joint_trial.is_some() || !is_identity_correction(&report.metrics) {
             let benefit = training_seats_show_benefit(
                 &quality.final_seats,
                 policy.min_improvement_lower_bound_db,
@@ -2842,6 +2975,26 @@ fn publish_baseline_with_alignment(
     mut trials: Vec<StageCheck>,
     allow_alignment: bool,
 ) -> Result<bool> {
+    // Record exactly which correction stages the structural restore is
+    // about to discard so the published fallback carries an explicit
+    // reversion record instead of silently dropping them.
+    let discarded_stages: Vec<String> = result
+        .channels
+        .iter()
+        .flat_map(|(name, chain)| {
+            let mut discarded = super::room_optimization_result::correction_stages(chain);
+            let mut after = chain.clone();
+            after
+                .plugins
+                .retain(|plugin| !super::room_optimization_result::is_baseline_correction(plugin));
+            for stage in super::room_optimization_result::correction_stages(&after) {
+                discarded.remove(&stage);
+            }
+            discarded
+                .into_iter()
+                .map(move |stage| format!("{name}:{}", stage.as_str()))
+        })
+        .collect();
     let mut baseline = result.clone();
     seat_replay::restore_structural_baseline(&mut baseline);
     // The discarded correction and its derived trims no longer describe this
@@ -2888,6 +3041,9 @@ fn publish_baseline_with_alignment(
     // the structural fallback disappear merely because its own optional level
     // alignment cannot pass the acoustic checks. Try it on a copy so a failed
     // attempt cannot leave a partially modified fallback graph behind.
+    // The seat verification below compares the delivered graph against the
+    // pre-alignment structural graph, so freeze that reference first.
+    let frozen_baseline = baseline.clone();
     let mut aligned = baseline.clone();
     let mut alignment_applied = false;
     let alignment = if !allow_alignment {
@@ -2928,7 +3084,6 @@ fn publish_baseline_with_alignment(
             && stage.stage != "final_candidate_objective"
     });
     baseline.metadata.stage_outcomes.push(alignment);
-    let frozen_baseline = baseline.clone();
     let policy = &config.optimizer.finalization;
     sub_output_limiter::install(&mut baseline, config, fs)?;
     let outputs = crate::electrical_headroom::assess_final_graph(
@@ -2968,6 +3123,11 @@ fn publish_baseline_with_alignment(
         .and_then(|report| report.runtime_policy.clone())
         .map(|policy| room_optimization_result::policy_for_delivered_graph(&baseline, policy));
     if let Some(report) = baseline.metadata.correction_acceptance.as_mut() {
+        report
+            .reverted_stages
+            .extend(discarded_stages.iter().cloned());
+        report.reverted_stages.sort();
+        report.reverted_stages.dedup();
         // Candidate evidence must never be attached to the delivered fallback.
         report.acoustic_quality = None;
         report.realization_quality = None;
@@ -3424,7 +3584,10 @@ fn refresh_responses(result: &mut RoomOptimizationResult, fs: f64, dir: &Path) -
         // metadata that no longer describes the rebuilt, unnormalized output.
         chain.initial_curve = Some((&input).into());
         chain.final_curve = Some((&realized).into());
-        chain.eq_response = None;
+        chain.eq_response = Some(roomeq_engine::output::compute_eq_response(
+            &(&input).into(),
+            &(&realized).into(),
+        ));
         // Keep the optimizer's filter metadata synchronized with the
         // serialized chain; safety reversion already clears it explicitly.
     }

@@ -132,6 +132,49 @@ pub fn prepared_fir_target_curve(
     target
 }
 
+/// Add the neutral `target_response` tilt shape to an absolute target.
+///
+/// The optimizer flattens the tilt-subtracted measurement, so the delivered
+/// response should retain the tilt shape around its band level. A flat
+/// prepared target would judge that intentional tilt as an error. The tilt
+/// is centered on the active band so the prepared level reference is kept.
+pub fn apply_neutral_target_tilt(
+    target: &mut Curve,
+    measurement: &Curve,
+    config: &OptimizerConfig,
+    channel_name: &str,
+) {
+    let Some(target_response) = config.target_response.as_ref() else {
+        return;
+    };
+    let room_config = roomeq_model::RoomConfig {
+        optimizer: config.clone(),
+        ..roomeq_model::RoomConfig::default()
+    };
+    let Some(tilt) = crate::channel_target::build_target_tilt_curve(
+        channel_name,
+        &room_config,
+        measurement,
+        false,
+    ) else {
+        return;
+    };
+    let [active_min_freq, active_max_freq] = config.active_correction_band();
+    let tilt = autoeq_core::interpolate_log_space(&target.freq, &tilt);
+    let tilt_mean = roomeq_analysis::response_metrics::mean_response_in_range(
+        &tilt,
+        active_min_freq,
+        active_max_freq,
+    );
+    if !tilt_mean.is_finite() {
+        return;
+    }
+    for (level, tilt_db) in target.spl.iter_mut().zip(tilt.spl.iter()) {
+        *level += tilt_db - tilt_mean;
+    }
+    let _ = target_response;
+}
+
 /// Generate FIR coefficients using only workflow-prepared in-memory resources.
 pub fn generate_fir_correction_with_resources(
     measurement: &Curve,

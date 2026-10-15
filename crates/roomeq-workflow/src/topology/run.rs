@@ -289,7 +289,6 @@ pub(crate) fn run_channel_via_generic_path_with_frequency_samples(
     if alignment_gain_db.abs() > 0.01 {
         let mut gain = output::create_gain_plugin(alignment_gain_db);
         gain.parameters["label"] = serde_json::json!("automatic_input_level_alignment");
-        gain.parameters["room_eq_correction_gain"] = serde_json::json!(true);
         plugins.push(gain);
         final_curve.spl.mapv_inplace(|spl| spl + alignment_gain_db);
     }
@@ -508,7 +507,7 @@ mod tests {
         assert!(has_gain, "alignment gain plugin should be present");
         assert!(chain.plugins.iter().any(|plugin| {
             plugin.parameters["label"] == "automatic_input_level_alignment"
-                && plugin.parameters["room_eq_correction_gain"] == true
+                && plugin.parameters.get("room_eq_correction_gain").is_none()
         }));
         let realized = crate::ctc::apply_channel_dsp_chain_to_curve(
             &chain,
