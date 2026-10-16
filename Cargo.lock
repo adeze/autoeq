@@ -1039,9 +1039,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "combine"
-version = "4.6.8"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
@@ -1335,9 +1335,9 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "defmt"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+checksum = "e4a0795ac740cb54d7b3775c9c17345f6aaecf884c01733b39d6017738e0e3e1"
 dependencies = [
  "bitflags 1.3.2",
  "defmt-macros",
@@ -1345,21 +1345,21 @@ dependencies = [
 
 [[package]]
 name = "defmt-macros"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+checksum = "840bb056bd99c495c9188198a258ab787c79f306d864db3e6e8451442d6d8366"
 dependencies = [
  "defmt-parser",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "defmt-parser"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+checksum = "71958f69fb2de856c5dd51ac9377e986ca1aa5919f931bf5395a807277f889a0"
 dependencies = [
  "thiserror",
 ]
@@ -1668,9 +1668,9 @@ dependencies = [
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
@@ -2024,8 +2024,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-d3rs"
-version = "0.10.19"
-source = "git+https://github.com/pierreaubert/gpui-toolkit#adcd9a7baae53870092d3ed5a1a65ad8537b78b8"
+version = "0.10.44"
+source = "git+https://github.com/pierreaubert/gpui-toolkit#c268250753afa5cc2c509e588c56d93b753d15b1"
 dependencies = [
  "delaunator",
  "fontdue",
@@ -2046,8 +2046,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-design"
-version = "0.10.7"
-source = "git+https://github.com/pierreaubert/gpui-toolkit#adcd9a7baae53870092d3ed5a1a65ad8537b78b8"
+version = "0.10.44"
+source = "git+https://github.com/pierreaubert/gpui-toolkit#c268250753afa5cc2c509e588c56d93b753d15b1"
 dependencies = [
  "serde",
  "sotf-gpui-toolkit-gpui 0.2.3 (git+https://github.com/pierreaubert/sotf-3rdparties?branch=foreign-parent-win-linux)",
@@ -2055,8 +2055,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-profiler"
-version = "0.10.3"
-source = "git+https://github.com/pierreaubert/gpui-toolkit#adcd9a7baae53870092d3ed5a1a65ad8537b78b8"
+version = "0.10.44"
+source = "git+https://github.com/pierreaubert/gpui-toolkit#c268250753afa5cc2c509e588c56d93b753d15b1"
 
 [[package]]
 name = "h2"
@@ -3943,7 +3943,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "once_cell",
 ]
 
@@ -4918,7 +4918,7 @@ dependencies = [
 [[package]]
 name = "sotf-collections"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.3",
@@ -4928,7 +4928,7 @@ dependencies = [
 [[package]]
 name = "sotf-cosmic-text"
 version = "0.19.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb",
@@ -4959,7 +4959,7 @@ dependencies = [
 [[package]]
 name = "sotf-derive_more"
 version = "2.1.2"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-derive_more-impl 2.1.2 (git+https://github.com/pierreaubert/sotf-3rdparties)",
 ]
@@ -4980,7 +4980,7 @@ dependencies = [
 [[package]]
 name = "sotf-derive_more-impl"
 version = "2.1.2"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -5003,7 +5003,7 @@ dependencies = [
 [[package]]
 name = "sotf-derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5088,7 +5088,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-gpui"
 version = "0.2.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -5174,7 +5174,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-gpui-macros"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -5185,7 +5185,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-gpui-web"
 version = "0.1.1"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -5209,7 +5209,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-gpui-wgpu"
 version = "0.1.2"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5256,7 +5256,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-http-client"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -5286,7 +5286,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-perf"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "serde",
  "serde_json",
@@ -5310,7 +5310,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-scheduler"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "async-task",
  "backtrace",
@@ -5335,7 +5335,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-sum-tree"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "heapless",
  "log",
@@ -5356,7 +5356,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui-toolkit-util-macros"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "quote",
  "sotf-gpui-toolkit-perf 0.1.0 (git+https://github.com/pierreaubert/sotf-3rdparties)",
@@ -5376,7 +5376,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "schemars",
  "serde",
@@ -5396,7 +5396,7 @@ dependencies = [
 [[package]]
 name = "sotf-gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "anyhow",
  "log",
@@ -5421,7 +5421,7 @@ dependencies = [
 [[package]]
 name = "sotf-media"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -5436,7 +5436,7 @@ dependencies = [
 [[package]]
 name = "sotf-metaheuristics-nature"
 version = "10.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "getrandom 0.4.3",
  "num-traits",
@@ -5449,7 +5449,7 @@ dependencies = [
 [[package]]
 name = "sotf-naga"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -5474,7 +5474,7 @@ dependencies = [
 [[package]]
 name = "sotf-nalgebra"
 version = "0.35.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "approx",
  "glam",
@@ -5497,7 +5497,7 @@ dependencies = [
 [[package]]
 name = "sotf-refineable"
 version = "0.1.0"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-derive_refineable 0.1.0 (git+https://github.com/pierreaubert/sotf-3rdparties)",
 ]
@@ -5505,7 +5505,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -5534,7 +5534,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-core"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -5566,7 +5566,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-core-deps-apple"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-wgpu-hal",
 ]
@@ -5574,7 +5574,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-core-deps-emscripten"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-wgpu-hal",
 ]
@@ -5582,7 +5582,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-core-deps-windows-linux-android"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-wgpu-hal",
 ]
@@ -5590,7 +5590,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-hal"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -5643,7 +5643,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-naga-bridge"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "sotf-naga",
  "sotf-wgpu-types",
@@ -5652,7 +5652,7 @@ dependencies = [
 [[package]]
 name = "sotf-wgpu-types"
 version = "29.0.3"
-source = "git+https://github.com/pierreaubert/sotf-3rdparties#d7b22228899e7f6504e6c28f4e7c316b8bfdc420"
+source = "git+https://github.com/pierreaubert/sotf-3rdparties#9b0647146c852e07160ee6874f648e5f8ff62695"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",

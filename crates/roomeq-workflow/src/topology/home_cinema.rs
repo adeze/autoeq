@@ -4795,9 +4795,7 @@ fn optimize_home_cinema_with_sub(
                     let sub_common = if graph
                         .routes
                         .iter()
-                        .filter(|route| {
-                            route.route_kind == "redirected_bass_lowpass_to_sub"
-                        })
+                        .filter(|route| route.route_kind == "redirected_bass_lowpass_to_sub")
                         .all(|route| route.low_pass_hz.is_none())
                     {
                         apply_crossover_response_to_curve(
@@ -4960,14 +4958,19 @@ fn optimize_home_cinema_with_sub(
             });
             match top_up {
                 Some(index) => {
-                    let combined = (filters[index].db_gain + gain_db)
-                        .min(opt_config.max_db.max(0.0));
+                    let combined =
+                        (filters[index].db_gain + gain_db).min(opt_config.max_db.max(0.0));
                     if combined - filters[index].db_gain <= 0.01 {
                         break;
                     }
                     let (filter_type, freq, srate, q) = {
                         let existing = &filters[index];
-                        (existing.filter_type, existing.freq, existing.srate, existing.q)
+                        (
+                            existing.filter_type,
+                            existing.freq,
+                            existing.srate,
+                            existing.q,
+                        )
                     };
                     filters[index].update_params(filter_type, freq, srate, q, combined);
                     if filler_index.is_none() {

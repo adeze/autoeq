@@ -21,6 +21,47 @@ pub(super) fn apply_resolution_guard(
     });
 }
 
+/// Whether any evaluated frequency can host a peak whose broadest
+/// permitted shape the retained support warrants. Mirrors the combined
+/// cap and minimum the resolution projection applies across the primary
+/// objective and its sub-objectives.
+fn resolution_supports_any_placement(objective: &autoeq_optim::ObjectiveData) -> bool {
+    fn collect<'a>(
+        objective: &'a autoeq_optim::ObjectiveData,
+        guards: &mut Vec<(&'a autoeq_optim::optim::PeakResolutionGuard, f64)>,
+    ) {
+        if let Some(guard) = &objective.peak_resolution_guard {
+            guards.push((guard, objective.srate));
+        }
+        if let Some(multi) = &objective.multi_objective {
+            for sub_objective in &multi.objectives {
+                collect(sub_objective, guards);
+            }
+        }
+    }
+    let mut guards = Vec::new();
+    collect(objective, &mut guards);
+    if guards.is_empty() {
+        return true;
+    }
+    objective.freqs.iter().any(|&frequency| {
+        let mut cap = f64::INFINITY;
+        let mut minimum = 0.0_f64;
+        for (guard, srate) in &guards {
+            let Some(local_cap) =
+                guard
+                    .support
+                    .max_peak_q(frequency, *srate, guard.smoothing_octaves)
+            else {
+                return false;
+            };
+            cap = cap.min(local_cap.min(guard.maximum_q));
+            minimum = minimum.max(guard.minimum_q.max(0.1));
+        }
+        cap >= minimum
+    })
+}
+
 pub(super) fn resolution_refusal_identity_loss(
     objective: &autoeq_optim::ObjectiveData,
     evidence: &autoeq_optim::optim::OptimizerRunEvidence,
@@ -30,8 +71,17 @@ pub(super) fn resolution_refusal_identity_loss(
     // continue through their existing typed error handling.
     if evidence.converged
         || evidence.best_effort
-        || !evidence.status.contains("measurement resolution")
         || (objective.peak_resolution_guard.is_none() && objective.multi_objective.is_none())
+    {
+        return None;
+    }
+    // Error-aborting backends surface the refusal in their status, while
+    // population backends absorb refused candidates as infinite fitness
+    // and finish with a generic non-convergence status. Detect the total
+    // refusal structurally there: no evaluated frequency can host the
+    // broadest permitted peak within the retained support.
+    if !evidence.status.contains("measurement resolution")
+        && resolution_supports_any_placement(objective)
     {
         return None;
     }

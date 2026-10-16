@@ -399,9 +399,11 @@ fn stereo_2_1_honours_target_response() {
         // The global decision can be Accepted on another channel's behalf
         // (here the sub) while this channel's EQ was reverted. Accept the
         // recorded per-channel safety reversion as well as a global one.
-        let channel_reverted = result.metadata.stage_outcomes.iter().any(|stage| {
-            stage.stage == format!("final_correction_safety_{role}")
-        });
+        let channel_reverted = result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .any(|stage| stage.stage == format!("final_correction_safety_{role}"));
         assert!(
             !biquads.is_empty()
                 || channel_reverted

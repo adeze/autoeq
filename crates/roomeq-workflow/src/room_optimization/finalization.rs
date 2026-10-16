@@ -36,6 +36,50 @@ fn configured_reference_changed(comparison: &roomeq_model::ConfiguredBaselineCom
     })
 }
 
+/// Whether the delivered baseline already sits below every improvement
+/// floor, so no candidate could demonstrate meaningful improvement and
+/// unchanged playback is an approval rather than a failed correction.
+/// Mirrors the selection gates on both judging planes: the mean training
+/// improvement cannot exceed the mean configured baseline error, each
+/// seat's improvement cannot exceed that seat's baseline error, and the
+/// candidate-plane target error bounds any whole-playback improvement.
+fn configured_baseline_below_improvement_floors(
+    report: &roomeq_model::CorrectionAcceptanceReport,
+    policy: &roomeq_model::FinalizationConfig,
+) -> bool {
+    let primary_floor = policy.min_primary_improvement_db.max(1e-6);
+    if !report.metrics.pre_target_weighted_rms_db.is_finite()
+        || report.metrics.pre_target_weighted_rms_db > primary_floor
+    {
+        return false;
+    }
+    let Some(comparison) = report
+        .acoustic_quality
+        .as_ref()
+        .and_then(|quality| quality.training.configured_baseline.as_ref())
+    else {
+        return false;
+    };
+    if comparison.residuals.is_empty()
+        || comparison
+            .residuals
+            .iter()
+            .any(|residual| !residual.score.pre_weighted_rms_db.is_finite())
+    {
+        return false;
+    }
+    let mean_pre = comparison
+        .residuals
+        .iter()
+        .map(|residual| residual.score.pre_weighted_rms_db)
+        .sum::<f64>()
+        / comparison.residuals.len() as f64;
+    mean_pre <= primary_floor
+        || comparison.residuals.iter().all(|residual| {
+            residual.score.pre_weighted_rms_db <= policy.min_improvement_lower_bound_db
+        })
+}
+
 struct PreparedCandidate {
     result: RoomOptimizationResult,
     electrical: Vec<roomeq_engine::quality::electrical_headroom::SampledElectricalOutputPeak>,
@@ -1475,30 +1519,48 @@ fn select_inner(
         .any(|chain| chain.joint_sub.is_some());
     if !keeps_accepted_joint_array
         && selected
-        .metadata
-        .correction_acceptance
-        .as_ref()
-        .is_some_and(|report| {
-            report.decision == roomeq_model::CorrectionDecision::IdentityFallback
-                && is_identity_correction(&report.metrics)
-                && report.acoustic_quality.as_ref().is_some_and(|quality| {
-                    !quality
-                        .training
-                        .configured_baseline
-                        .as_ref()
-                        .is_some_and(configured_reference_changed)
-                        && !quality
-                            .held_out
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .is_some_and(|report| {
+                report.decision == roomeq_model::CorrectionDecision::IdentityFallback
+                    && is_identity_correction(&report.metrics)
+                    && report.acoustic_quality.as_ref().is_some_and(|quality| {
+                        !quality
+                            .training
+                            .configured_baseline
                             .as_ref()
-                            .and_then(|partition| partition.configured_baseline.as_ref())
                             .is_some_and(configured_reference_changed)
-                })
-        })
+                            && !quality
+                                .held_out
+                                .as_ref()
+                                .and_then(|partition| partition.configured_baseline.as_ref())
+                                .is_some_and(configured_reference_changed)
+                    })
+            })
     {
         // A zero-strength trial can retain unity EQ/FIR kernels. Publish the
         // actual correction-free baseline, with freshly replayed safety,
         // instead of shipping those needless kernels as an identity result.
-        return publish_baseline(
+        // When the configured baseline already sits below every improvement
+        // floor, no candidate could demonstrate meaningful improvement:
+        // unchanged playback is then an approval, not a failed correction,
+        // so the reason is kept as an advisory without the violation.
+        // Approval also requires that the incoming graph proposed no
+        // correction: discarding a proposed correction (for example one
+        // reverted over electrical limits) must stay visible as a
+        // violation instead of reading as an approved unchanged result.
+        let discards_proposed_correction = result
+            .channels
+            .values()
+            .any(|chain| !super::room_optimization_result::correction_stages(chain).is_empty());
+        let approved_unchanged = !discards_proposed_correction
+            && selected
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .is_some_and(|report| configured_baseline_below_improvement_floors(report, policy));
+        let published = publish_baseline(
             result,
             captures,
             held_out,
@@ -1509,6 +1571,16 @@ fn select_inner(
             "no_candidate_with_meaningful_improvement",
             trials,
         );
+        if approved_unchanged
+            && published.is_ok()
+            && let Some(report) = result.metadata.correction_acceptance.as_mut()
+        {
+            report
+                .violations
+                .retain(|violation| violation != "no_candidate_with_meaningful_improvement");
+            report.refresh_outcome();
+        }
+        return published;
     }
     let mut selection_advisories = vec![
         "all_candidates_compared_against_fixed_structural_baseline".to_string(),
@@ -1576,10 +1648,7 @@ fn canonicalize_common_driver_delays(result: &mut RoomOptimizationResult) {
                     .sum()
             })
             .collect();
-        let common = totals
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        let common = totals.iter().copied().fold(f64::INFINITY, f64::min);
         if !common.is_finite() || common <= 1e-9 {
             continue;
         }

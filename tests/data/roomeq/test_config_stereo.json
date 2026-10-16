@@ -1,7 +1,7 @@
 {
   "speakers": {
-    "left": "test_speaker_left.csv",
-    "right": "test_speaker_right.csv"
+    "left": "test_speaker_left_dense.csv",
+    "right": "test_speaker_right_dense.csv"
   },
   "optimizer": {
     "num_filters": 3,

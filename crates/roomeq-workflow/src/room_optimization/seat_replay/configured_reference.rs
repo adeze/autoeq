@@ -12,12 +12,15 @@ fn reference_graph(
         || config.speakers.values().any(|speaker| {
             !matches!(
                 speaker,
-                SpeakerConfig::Single(_) | SpeakerConfig::MultiSub(_) | SpeakerConfig::Topology(_)
+                SpeakerConfig::Single(_)
+                    | SpeakerConfig::Group(_)
+                    | SpeakerConfig::MultiSub(_)
+                    | SpeakerConfig::Topology(_)
             )
         })
     {
         return Err(invalid(
-            "configured comparison requires explicit Single/MultiSub/Topology physical topology",
+            "configured comparison requires explicit Single/Group/MultiSub/Topology physical topology",
         ));
     }
     let mut reference = result.clone();
@@ -160,8 +163,13 @@ fn restore_configured_driver_crossovers(
             .as_ref()
             .and_then(|system| system.speakers.get(input))
             .map_or(input.as_str(), String::as_str);
-        let Some(SpeakerConfig::Topology(topology)) = config.speakers.get(key) else {
-            continue;
+        // Legacy groups declare no explicit bands; the processing adapter
+        // already drives them through the synthesized legacy topology, so
+        // restore their configured crossovers on that same identity plane.
+        let topology = match config.speakers.get(key) {
+            Some(SpeakerConfig::Topology(topology)) => topology.clone(),
+            Some(SpeakerConfig::Group(group)) => group.to_legacy_topology(),
+            _ => continue,
         };
         let bands = topology.acoustic_bands().map_err(invalid)?;
         let drivers = chain

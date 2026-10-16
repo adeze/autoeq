@@ -1215,14 +1215,19 @@ fn replay_output(
                 // serialized driver's own low-pass). Apply that serialized
                 // filter so replay matches the delivered graph instead of
                 // summing the destination's full-range capture.
-                route_plugins.extend(post.plugins.iter().filter(|plugin| {
-                    plugin.plugin_type == "crossover"
-                        && plugin
-                            .parameters
-                            .get("room_eq_stage")
-                            .and_then(serde_json::Value::as_str)
-                            == Some("route_owned")
-                }).cloned());
+                route_plugins.extend(
+                    post.plugins
+                        .iter()
+                        .filter(|plugin| {
+                            plugin.plugin_type == "crossover"
+                                && plugin
+                                    .parameters
+                                    .get("room_eq_stage")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("route_owned")
+                        })
+                        .cloned(),
+                );
             }
             if route.delay_ms.abs() > 0.001 {
                 route_plugins.push(roomeq_engine::output::create_delay_plugin(route.delay_ms));
