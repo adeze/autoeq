@@ -87,6 +87,7 @@ fn escape_html(s: &str) -> String {
 }
 
 /// Load the checked-in shell template plus `dist/` bundle bytes.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn checked_in_assets() -> Result<ShellAssets, String> {
     let template = include_str!("../shell/template.html").to_string();
     let wasm_2d_b64 = b64(include_bytes!("../dist/report2d.wasm"));
@@ -100,6 +101,12 @@ pub fn checked_in_assets() -> Result<ShellAssets, String> {
         wasm_gpui_b64,
         glue_gpui_b64,
     })
+}
+
+/// A web renderer cannot recursively embed its own binary as report assets.
+#[cfg(target_arch = "wasm32")]
+pub fn checked_in_assets() -> Result<ShellAssets, String> {
+    Err("WebAssembly assembly requires explicit `shell_assets`".into())
 }
 
 #[cfg(test)]

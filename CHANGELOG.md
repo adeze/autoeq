@@ -1,5 +1,7 @@
 # 0.5.77
 
+- Allow browser report bundles to bootstrap without recursively embedding their own WASM assets. Native report assembly still requires the generated bundles; wasm32 callers must provide explicit shell assets.
+
 - Preserve native DE convergence, generations, and fitness counts through the
   EPA progress callback path. Callback stops retain user-stop classification;
   ordinary native generation limits remain distinct from strict run budgets.
