@@ -308,7 +308,9 @@ fn optimize_room_pipeline_impl_with_optional_recovery(
         finalization_diagnostic,
         replay,
     )?;
+    // Alternate IIR graphs cannot retain a provenance-bound temporal FIR.
     if request.config.optimizer.processing_mode == ProcessingMode::Hybrid
+        && request.config.provenance.temporal_fir.is_none()
         && recovery.is_none()
         && finalization_diagnostic.is_none()
     {

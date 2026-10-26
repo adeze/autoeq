@@ -891,12 +891,17 @@ mod tests {
                 .any(|item| item == "no_training_candidate")
         );
         let inventory = result.metadata.final_convolution_sha256.as_ref().unwrap();
-        assert_eq!(inventory.len(), 1);
-        let (filename, digest) = inventory.iter().next().unwrap();
-        assert_eq!(
-            digest.as_deref(),
-            Some(sha256(&fs::read(dir.path().join(filename)).unwrap()).as_str())
-        );
+        let references =
+            roomeq_export::checked_convolution_resource_references(&result.to_dsp_chain_output())
+                .unwrap();
+        assert_eq!(inventory.len(), references.len());
+        for filename in references {
+            let digest = inventory.get(&filename).unwrap();
+            assert_eq!(
+                digest.as_deref(),
+                Some(sha256(&fs::read(dir.path().join(filename)).unwrap()).as_str())
+            );
+        }
         verify_final(&result, &config).unwrap();
         let baseline_dir = tempfile::tempdir().unwrap();
         let mut baseline_config = config.clone();
@@ -912,6 +917,24 @@ mod tests {
             result.channel_results["L"].fir_coeffs,
             baseline.channel_results["L"].fir_coeffs
         );
+    }
+
+    #[test]
+    fn hybrid_temporal_fir_retains_qualified_family() {
+        let (dir, mut config, _, _) = fixture(0.45);
+        config.optimizer.processing_mode = ProcessingMode::Hybrid;
+        // Temporal qualification requires one FIR and optional constant gain only.
+        config.optimizer.num_filters = 0;
+        let result =
+            super::super::optimize_room(&config, 48_000.0, None, Some(dir.path())).unwrap();
+        assert!(
+            result
+                .metadata
+                .stage_outcomes
+                .iter()
+                .all(|outcome| { outcome.stage != "hybrid_best_part_selection" })
+        );
+        verify_final(&result, &config).unwrap();
     }
 
     #[test]

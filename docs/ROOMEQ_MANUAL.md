@@ -3351,7 +3351,10 @@ the nonnegative RMS lower-bound proof and skips the additional searches; that
 receipt does not claim standalone candidates were evaluated.
 Observer cancellation persists across trials, and only
 the final selection publishes a validation bundle. Diagnostic-trace runs retain
-their explicitly selected trial rather than invoking this comparison.
+their explicitly selected trial rather than invoking this comparison. Saved-IR
+temporal FIR refinement also retains its qualified graph: standalone IIR
+candidates cannot preserve its provenance-bound FIR. Finalization safety checks
+and final FIR/chain identity verification still apply.
 The bundle includes its known file reference before final ledger reconciliation,
 so its playback snapshot and the returned graph retain the same payload binding.
 Hybrid selection diagnostics are reconciled even when no bundle is requested.
