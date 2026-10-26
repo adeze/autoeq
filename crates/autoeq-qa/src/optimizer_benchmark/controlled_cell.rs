@@ -1016,7 +1016,7 @@ fn execute_cell(
         CellPurpose::ObserverStop | CellPurpose::ObserverUnsupported
     ) {
         let calls = Arc::clone(&callback_invocations);
-        Some(Box::new(move |_, _, _| {
+        Some(Box::new(move |_, _, _, _| {
             calls.fetch_add(1, Ordering::Relaxed);
             autoeq_optim::de::CallbackAction::Stop
         }) as autoeq_optim::optim::OptimProgressCallback)

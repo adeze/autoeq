@@ -15,6 +15,7 @@ pub mod constraint_envelope;
 pub mod curve;
 pub mod curve_transforms;
 pub mod direct_sound;
+pub mod display_smoothing;
 pub mod dsp_conventions;
 pub mod error;
 pub mod evidence;

@@ -406,7 +406,7 @@ mod tests {
         let curve = flat_curve();
         let stopped = Arc::new(AtomicBool::new(false));
         let progress = WorkflowProgressCallback {
-            callback: Box::new(|_, _, _| roomeq_engine::CallbackAction::Continue),
+            callback: Box::new(|_, _, _, _| roomeq_engine::CallbackAction::Continue),
             stopped: Arc::clone(&stopped),
         };
         let result = run_post_eq(&curve, &opt, None, 48_000.0, Some(progress)).unwrap();

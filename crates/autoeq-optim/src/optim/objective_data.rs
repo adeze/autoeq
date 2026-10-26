@@ -302,6 +302,40 @@ impl ObjectiveData {
 /// selecting the invalid candidate.
 struct MissingDataStrategy;
 
+impl ObjectiveData {
+    /// Read-only response for a single prepared PEQ objective, without scoring.
+    pub fn response_snapshot(
+        &self,
+        parameters: &[f64],
+    ) -> Option<Arc<super::OptimizerResponseSnapshot>> {
+        if self.multi_objective.is_some() || self.drivers_data.is_some() || parameters.is_empty() {
+            return None;
+        }
+        let filter = x2spl(&self.freqs, parameters, self.srate, self.peq_model);
+        let measured = &*self.target - &*self.deviation;
+        let predicted = &measured + &filter;
+        if self.freqs.iter().any(|v| !v.is_finite() || *v <= 0.)
+            || self.freqs.windows(2).into_iter().any(|p| p[0] >= p[1])
+            || self
+                .target
+                .iter()
+                .chain(measured.iter())
+                .chain(filter.iter())
+                .chain(predicted.iter())
+                .any(|v| !v.is_finite())
+        {
+            return None;
+        }
+        Some(Arc::new(super::OptimizerResponseSnapshot {
+            frequency_hz: self.freqs.to_vec(),
+            prepared_measurement_db: measured.to_vec(),
+            target_db: self.target.to_vec(),
+            filter_db: filter.to_vec(),
+            predicted_db: predicted.to_vec(),
+        }))
+    }
+}
+
 impl Objective for MissingDataStrategy {
     fn compute(&self, _x: &[f64], _ctx: &ObjectiveContext) -> f64 {
         f64::INFINITY
@@ -402,6 +436,7 @@ pub(super) fn run_autoeq_de_with_epa_callback(
     let epa_srate = objective_data.srate;
     let epa_model = objective_data.peq_model;
     let mut epa_gen_counter: usize = 0;
+    let response_objective = objective_data.clone();
 
     let de_cb: Box<dyn FnMut(&crate::de::DEIntermediate) -> crate::de::CallbackAction + Send> =
         Box::new(move |intermediate| {
@@ -430,7 +465,11 @@ pub(super) fn run_autoeq_de_with_epa_callback(
             } else {
                 None
             };
-            callback(intermediate.iter, intermediate.fun, epa)
+            let response = intermediate
+                .x
+                .as_slice()
+                .and_then(|x| response_objective.response_snapshot(x));
+            callback(intermediate.iter, intermediate.fun, epa, response)
         });
     optimize_filters_autoeq_with_callback_and_completion(
         x,

@@ -141,7 +141,7 @@ impl FilterOptimizer for MhBackend {
                 // intermediate type. EPA progress is `None` here (only the
                 // AutoEQ DE path computes EPA mid-run).
                 let mh_cb: Box<dyn FnMut(&MHIntermediate) -> CallbackAction + Send> =
-                    Box::new(move |im| user_cb(im.iter, im.fun, None));
+                    Box::new(move |im| user_cb(im.iter, im.fun, None, None));
                 optimize_filters_mh_with_callback_seeded_report(
                     x,
                     lower,

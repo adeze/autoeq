@@ -76,6 +76,7 @@ pub(super) fn process_generic_channels(
         PipelineStepId::GenericChannelOptimization,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: 0,
             total_speakers,
@@ -108,6 +109,7 @@ pub(super) fn process_generic_channels(
             PipelineStepId::GenericChannelOptimization,
             PipelineStepStatus::InProgress,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: channel_name.clone(),
                 speaker_index: speaker_idx,
                 total_speakers,
@@ -128,33 +130,36 @@ pub(super) fn process_generic_channels(
             let si = speaker_idx;
             let ts = total_speakers;
             let mi = max_iterations;
-            Some(Box::new(move |iter: usize, loss: f64, epa: Option<f64>| {
-                let base_progress = si as f64 / ts as f64;
-                let speaker_progress = if mi > 0 { iter as f64 / mi as f64 } else { 0.0 };
-                let overall = (base_progress + speaker_progress / ts as f64).min(1.0);
+            Some(Box::new(
+                move |iter: usize, loss: f64, epa: Option<f64>, response| {
+                    let base_progress = si as f64 / ts as f64;
+                    let speaker_progress = if mi > 0 { iter as f64 / mi as f64 } else { 0.0 };
+                    let overall = (base_progress + speaker_progress / ts as f64).min(1.0);
 
-                match send_progress(
-                    &observer,
-                    PipelineStepId::GenericChannelOptimization,
-                    PipelineStepStatus::InProgress,
-                    &RoomOptimizationProgress {
-                        current_speaker: name.clone(),
-                        speaker_index: si,
-                        total_speakers: ts,
-                        iteration: iter,
-                        max_iterations: mi,
-                        loss,
-                        overall_progress: overall,
-                        message: None,
-                        epa_preference: epa,
-                        step_id: None,
-                        step_status: None,
-                    },
-                ) {
-                    Ok(()) => roomeq_engine::CallbackAction::Continue,
-                    Err(_) => roomeq_engine::CallbackAction::Stop,
-                }
-            }))
+                    match send_progress(
+                        &observer,
+                        PipelineStepId::GenericChannelOptimization,
+                        PipelineStepStatus::InProgress,
+                        &RoomOptimizationProgress {
+                            response: response.clone(),
+                            current_speaker: name.clone(),
+                            speaker_index: si,
+                            total_speakers: ts,
+                            iteration: iter,
+                            max_iterations: mi,
+                            loss,
+                            overall_progress: overall,
+                            message: None,
+                            epa_preference: epa,
+                            step_id: None,
+                            step_status: None,
+                        },
+                    ) {
+                        Ok(()) => roomeq_engine::CallbackAction::Continue,
+                        Err(_) => roomeq_engine::CallbackAction::Stop,
+                    }
+                },
+            ))
         };
 
         let result = process_speaker_internal(
@@ -195,6 +200,7 @@ pub(super) fn process_generic_channels(
                     PipelineStepId::GenericChannelOptimization,
                     PipelineStepStatus::InProgress,
                     &RoomOptimizationProgress {
+                        response: None,
                         current_speaker: channel_name.clone(),
                         speaker_index: speaker_idx,
                         total_speakers,
@@ -240,6 +246,7 @@ pub(super) fn process_generic_channels(
         PipelineStepId::GenericChannelOptimization,
         PipelineStepStatus::Completed,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: total_speakers,
             total_speakers,

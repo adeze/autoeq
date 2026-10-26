@@ -228,7 +228,7 @@ fn spatial_fir_native_stop_does_not_return_coefficients() {
             let vertices = if phase == "linear" { 4 } else { 3 };
             let calls = Arc::new(AtomicUsize::new(0));
             let observed = calls.clone();
-            let progress = progress::FirProgress::new(Some(Box::new(move |_, _, _| {
+            let progress = progress::FirProgress::new(Some(Box::new(move |_, _, _, _| {
                 if observed.fetch_add(1, Ordering::Relaxed) >= vertices {
                     autoeq_optim::de::CallbackAction::Stop
                 } else {
@@ -291,7 +291,7 @@ fn hybrid_callback_survives_iir_into_spatial_fir() {
             optimizer: &room_config.optimizer,
             eq_resources: &resources,
             sidecar_reference: reference("stop_after_iir.wav"),
-            callback: Some(Box::new(move |iteration, _, _| {
+            callback: Some(Box::new(move |iteration, _, _, _| {
                 let action = if iteration < previous {
                     autoeq_optim::de::CallbackAction::Stop
                 } else {
@@ -356,7 +356,7 @@ fn hybrid_narrow_band_preserves_fixed_target_in_direct_dtft() {
         &execution,
         &resources,
         Some(reference("lfe_observed.wav")),
-        Some(Box::new(move |_, _, _| {
+        Some(Box::new(move |_, _, _, _| {
             observed_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             autoeq_optim::de::CallbackAction::Continue
         })),
@@ -386,7 +386,9 @@ fn hybrid_narrow_band_preserves_fixed_target_in_direct_dtft() {
         &execution,
         &resources,
         Some(reference("lfe_stopped.wav")),
-        Some(Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop)),
+        Some(Box::new(|_, _, _, _| {
+            autoeq_optim::de::CallbackAction::Stop
+        })),
     );
     assert!(
         stopped
@@ -726,7 +728,7 @@ fn hybrid_honours_multi_measurement_weights() {
     let target = build_target_context("left", &room_config, &representative, None);
     let features = preprocessed(&representative);
     let callback: autoeq_optim::optim::OptimProgressCallback =
-        Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Continue);
+        Box::new(|_, _, _, _| autoeq_optim::de::CallbackAction::Continue);
     let with_callback = process_fir_channel(FirChannelRequest {
         mode: FirChannelMode::Hybrid,
         channel_name: "left",
@@ -1351,7 +1353,7 @@ fn fixed_budget_hybrid_stop_does_not_continue_into_fir() {
         optimizer: &room_config.optimizer,
         eq_resources: &resources,
         sidecar_reference: reference("stopped.wav"),
-        callback: Some(Box::new(move |_, _, _| {
+        callback: Some(Box::new(move |_, _, _, _| {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             autoeq_optim::de::CallbackAction::Stop
         })),

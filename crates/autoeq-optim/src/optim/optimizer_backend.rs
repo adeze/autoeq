@@ -597,7 +597,7 @@ mod tests {
         for stopped in [false, true] {
             let mut x = [100.0_f64.log10(), 1.0, 0.0];
             let callback = stopped.then(|| {
-                Box::new(|_, _, _| crate::de::CallbackAction::Stop)
+                Box::new(|_, _, _, _| crate::de::CallbackAction::Stop)
                     as crate::optim::OptimProgressCallback
             });
             let evidence = backend.optimize_filters_evidence(

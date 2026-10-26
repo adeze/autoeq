@@ -19,8 +19,8 @@ impl FirProgress {
     pub fn callback(&self) -> Option<OptimProgressCallback> {
         self.0.as_ref().map(|callback| {
             let callback = callback.clone();
-            Box::new(move |iteration, loss, preference| {
-                callback.lock().unwrap()(iteration, loss, preference)
+            Box::new(move |iteration, loss, preference, response| {
+                callback.lock().unwrap()(iteration, loss, preference, response)
             }) as OptimProgressCallback
         })
     }
@@ -28,7 +28,7 @@ impl FirProgress {
     pub fn check(&self, iteration: usize, loss: f64) -> Result<()> {
         if let Some(mut callback) = self.callback()
             && matches!(
-                callback(iteration, loss, None),
+                callback(iteration, loss, None, None),
                 autoeq_optim::de::CallbackAction::Stop
             )
         {
@@ -104,7 +104,7 @@ mod tests {
             ("autoeq:cobyla", "stage_boundaries_only"),
             ("autoeq:isres", "stage_boundaries_only"),
         ] {
-            let progress = FirProgress::new(Some(Box::new(|_, _, _| {
+            let progress = FirProgress::new(Some(Box::new(|_, _, _, _| {
                 autoeq_optim::de::CallbackAction::Continue
             })));
             let result = progress
@@ -134,7 +134,7 @@ mod tests {
         for algorithm in ["autoeq:cobyla", "autoeq:isres"] {
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed = calls.clone();
-            let progress = FirProgress::new(Some(Box::new(move |iteration, loss, _| {
+            let progress = FirProgress::new(Some(Box::new(move |iteration, loss, _, _| {
                 assert_eq!(iteration, 0);
                 assert!(loss.is_finite());
                 observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

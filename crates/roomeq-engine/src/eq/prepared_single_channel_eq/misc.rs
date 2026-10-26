@@ -1510,13 +1510,18 @@ fn run_exact_de_optimizer(
         run_identity: prepared_run_identity,
         save_callback,
     };
+    let response_objective = objective.clone();
     let progress_callback: Box<
         dyn FnMut(&autoeq_optim::de::DEIntermediate) -> autoeq_optim::de::CallbackAction + Send,
     > = Box::new(move |intermediate| {
         progress
             .as_mut()
             .map_or(autoeq_optim::de::CallbackAction::Continue, |progress| {
-                progress(intermediate.iter, intermediate.fun, None)
+                let response = intermediate
+                    .x
+                    .as_slice()
+                    .and_then(|x| response_objective.response_snapshot(x));
+                progress(intermediate.iter, intermediate.fun, None, response)
             })
     });
     let result =
@@ -2208,7 +2213,7 @@ mod retained_support_tests {
         ) -> Result<(String, f64), (String, f64)> {
             let result = self.optimize_filters(x, lower, upper, objective, params);
             if let Ok((_, loss)) = &result {
-                let _ = callback(1, *loss, None);
+                let _ = callback(1, *loss, None, None);
             }
             result
         }

@@ -790,8 +790,8 @@ pub(super) fn ordinary_dispatch_evidence(
     let callback_stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback = callback.map(|mut callback| {
         let stopped = callback_stopped.clone();
-        Box::new(move |iteration, loss, epa| {
-            let action = callback(iteration, loss, epa);
+        Box::new(move |iteration, loss, epa, response| {
+            let action = callback(iteration, loss, epa, response);
             if matches!(action, crate::de::CallbackAction::Stop) {
                 stopped.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -1200,12 +1200,12 @@ fn optimize_filters_with_run_control_dispatch(
     let controlled_objective = objective_data.with_run_control(run_control.clone());
     let control_for_callback = run_control.clone();
     let backend_callback: Option<OptimProgressCallback> = if supports_callback {
-        Some(Box::new(move |iteration, loss, preference| {
+        Some(Box::new(move |iteration, loss, preference, response| {
             if control_for_callback.stop_requested() {
                 return crate::de::CallbackAction::Stop;
             }
             if let Some(observer) = callback.as_mut() {
-                let action = observer(iteration, loss, preference);
+                let action = observer(iteration, loss, preference, response);
                 match action {
                     crate::de::CallbackAction::Continue => {}
                     crate::de::CallbackAction::Stop => {
@@ -1972,6 +1972,49 @@ mod staged_run_control_tests {
     }
 
     #[test]
+    fn response_observation_preserves_seeded_de_result_and_real_grid() {
+        let (objective, mut params, lower, upper, initial) = scalar_fixture();
+        params.algo = "autoeq:de".into();
+        let mut baseline = initial.clone();
+        let mut observed = initial;
+        let expected =
+            optimize_filters(&mut baseline, &lower, &upper, objective.clone(), &params).unwrap();
+        let snapshots = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = snapshots.clone();
+        let actual = optimize_filters_with_callback(
+            &mut observed,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+            Box::new(move |_, _, _, response| {
+                sink.lock()
+                    .unwrap()
+                    .push(response.expect("single PEQ callback supplies real candidate"));
+                crate::de::CallbackAction::Continue
+            }),
+        )
+        .unwrap();
+        assert_eq!(baseline, observed);
+        assert_eq!(expected.1.to_bits(), actual.1.to_bits());
+        let snapshots = snapshots.lock().unwrap();
+        assert!(!snapshots.is_empty());
+        for response in snapshots.iter() {
+            assert_eq!(response.frequency_hz, objective.freqs.to_vec());
+            for i in 0..response.frequency_hz.len() {
+                assert_eq!(
+                    response.predicted_db[i],
+                    response.prepared_measurement_db[i] + response.filter_db[i]
+                );
+                assert_eq!(
+                    response.prepared_measurement_db[i],
+                    objective.target[i] - objective.deviation[i]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scalar_ceiling_projection_repairs_captured_penalty_winner_without_relaxation() {
         let (mut objective, _, _, _, _) = scalar_fixture();
         objective.freqs = std::sync::Arc::new(Array1::from_iter(
@@ -2292,7 +2335,7 @@ mod staged_run_control_tests {
         params.algo = "autoeq:cobyla".to_owned();
         let control = OptimizerRunControl::new(NonZeroUsize::new(20).unwrap());
         let callback: OptimProgressCallback =
-            Box::new(|_, _, _| crate::de::CallbackAction::Continue);
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Continue);
 
         let run = optimize_filters_with_run_control_and_algo_override_detailed(
             &mut initial,
@@ -2347,7 +2390,7 @@ mod staged_run_control_tests {
         let control = OptimizerRunControl::new(NonZeroUsize::new(60).unwrap());
         let before = initial.clone();
         let observer = || -> OptimProgressCallback {
-            Box::new(|_, _, _| panic!("unsupported EHVI observer must not run"))
+            Box::new(|_, _, _, _| panic!("unsupported EHVI observer must not run"))
         };
         let run = optimize_filters_with_run_control_and_algo_override_detailed(
             &mut initial,
@@ -2405,7 +2448,8 @@ mod staged_run_control_tests {
         params.algo = "autoeq:cobra".to_owned();
         params.maxeval = 30;
         let control = OptimizerRunControl::new(NonZeroUsize::new(30).unwrap());
-        let callback: OptimProgressCallback = Box::new(|_, _, _| crate::de::CallbackAction::Stop);
+        let callback: OptimProgressCallback =
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Stop);
 
         let run = optimize_filters_with_run_control_and_algo_override_detailed(
             &mut initial,

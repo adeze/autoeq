@@ -37,6 +37,9 @@ mod prescore;
 mod progress;
 #[path = "autoeq/qa.rs"]
 pub(crate) mod qa;
+#[cfg(feature = "rerun-telemetry")]
+#[path = "autoeq/rerun_telemetry.rs"]
+mod rerun_telemetry;
 #[path = "autoeq/runopt.rs"]
 mod runopt;
 #[path = "autoeq/save.rs"]
@@ -305,7 +308,22 @@ impl CliCheckpointIdentity {
 }
 
 fn validate_checkpoint_mode(args: &autoeq::cli::Args) -> Result<()> {
-    let uses_exact_state = args.resume_exact.is_some() || args.checkpoint_exact.is_some();
+    if args.rerun_port.is_some() && args.rerun_recording.is_none() {
+        return Err(anyhow!("--rerun-port requires --rerun-recording"));
+    }
+    if args.rerun_recording.is_some() && !cfg!(feature = "rerun-telemetry") {
+        return Err(anyhow!(
+            "--rerun-recording requires the rerun-telemetry build feature"
+        ));
+    }
+    if args.rerun_recording.is_some() && args.peq_model != autoeq::PeqModel::Pk {
+        return Err(anyhow!(
+            "Rerun telemetry currently supports only the pk PEQ layout"
+        ));
+    }
+    let uses_exact_state = args.resume_exact.is_some()
+        || args.checkpoint_exact.is_some()
+        || args.rerun_recording.is_some();
     if !uses_exact_state {
         return Ok(());
     }
@@ -642,16 +660,69 @@ async fn run(args: autoeq::cli::Args) -> Result<()> {
         .checkpoint_exact
         .clone()
         .or_else(|| args.resume_exact.clone());
-    let opt_result = if let Some(path) = exact_checkpoint_path {
+    #[cfg(feature = "rerun-telemetry")]
+    let telemetry = args
+        .rerun_recording
+        .as_ref()
+        .map(|path| {
+            let free = lower_bounds
+                .iter()
+                .zip(&upper_bounds)
+                .filter(|(lo, hi)| lo != hi)
+                .count()
+                .max(1);
+            let population = exact_state
+                .as_ref()
+                .map(|state| state.checkpoint.population.len())
+                .unwrap_or_else(|| {
+                    if matches!(
+                        optim_params.strategy.parse::<autoeq::de::Strategy>(),
+                        Ok(autoeq::de::Strategy::LShadeBin | autoeq::de::Strategy::LShadeExp)
+                    ) {
+                        return autoeq::de::LShadeConfig::default().initial_population_size(free);
+                    }
+                    optim_params
+                        .population
+                        .max(1)
+                        .min(optim_params.maxeval.max(1))
+                        .div_ceil(free)
+                        .max(4)
+                        * free
+                });
+            rerun_telemetry::validate_population(population)?;
+            rerun_telemetry::Telemetry::new(
+                path,
+                args.rerun_port,
+                objective_data.clone(),
+                &exact_run_identity,
+                &measurement_identity,
+            )
+            .map(|t| Arc::new(Mutex::new(t)))
+        })
+        .transpose()?;
+    let opt_result = if exact_checkpoint_path.is_some() || args.rerun_recording.is_some() {
         let identity_for_save = exact_run_identity.clone();
         let checkpoint_for_resume = exact_state.as_ref().map(|state| state.checkpoint.clone());
+        #[cfg(feature = "rerun-telemetry")]
+        let callback_telemetry = telemetry.clone();
         let save_callback = Box::new(move |checkpoint: &autoeq::de::DECheckpoint| {
-            let state = autoeq::workflow::exact_resume::ExactOptimizerState::from_checkpoint(
-                checkpoint.clone(),
-                &identity_for_save,
-            )?;
-            autoeq::workflow::exact_resume::save_exact_optimizer_state(&state, &path)
-                .map_err(|error| error.to_string())
+            if let Some(path) = exact_checkpoint_path.as_ref() {
+                let state = autoeq::workflow::exact_resume::ExactOptimizerState::from_checkpoint(
+                    checkpoint.clone(),
+                    &identity_for_save,
+                )?;
+                autoeq::workflow::exact_resume::save_exact_optimizer_state(&state, path)
+                    .map_err(|error| error.to_string())?;
+            }
+            #[cfg(feature = "rerun-telemetry")]
+            if let Some(telemetry) = callback_telemetry.as_ref() {
+                telemetry
+                    .lock()
+                    .map_err(|_| "Rerun telemetry lock poisoned".to_owned())?
+                    .record(checkpoint)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
         });
         let continuation = autoeq::optim::setup::ExactDECheckpointOptions {
             checkpoint: checkpoint_for_resume,
@@ -692,9 +763,17 @@ async fn run(args: autoeq::cli::Args) -> Result<()> {
             ),
             None => runopt::perform_optimization(&optim_params, &objective_data),
         }
+    };
+    #[cfg(feature = "rerun-telemetry")]
+    if let Some(telemetry) = telemetry.as_ref() {
+        telemetry
+            .lock()
+            .map_err(|_| anyhow!("Rerun telemetry lock poisoned"))?
+            .finish(opt_result.is_ok())?;
     }
-    .map_err(|e| anyhow!("{}", e))
-    .context("Optimization failed")?;
+    let opt_result = opt_result
+        .map_err(|e| anyhow!("{}", e))
+        .context("Optimization failed")?;
     if let Some(path) = args.checkpoint_state.as_ref() {
         let finalized = autoeq::optim::finalize_candidate(
             "cli-checkpoint-final",
@@ -1367,6 +1446,18 @@ mod tests {
 
     #[test]
     fn exact_cli_gate_refuses_incompatible_resume_modes() {
+        #[cfg(not(feature = "rerun-telemetry"))]
+        {
+            let mut telemetry_args = exact_cli_args();
+            telemetry_args.resume_exact = None;
+            telemetry_args.rerun_recording = Some(PathBuf::from("test.rrd"));
+            assert!(
+                validate_checkpoint_mode(&telemetry_args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("rerun-telemetry build feature")
+            );
+        }
         validate_checkpoint_mode(&exact_cli_args())
             .expect("seeded AutoEQ DE exact resume is a supported mode");
 

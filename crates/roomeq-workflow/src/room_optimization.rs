@@ -833,6 +833,7 @@ fn execute_topology_workflow_on_pool(
             PipelineStepId::TopologyWorkflowExecution,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: String::new(),
                 speaker_index: 0,
                 total_speakers: sys.speakers.len(),
@@ -855,6 +856,7 @@ fn execute_topology_workflow_on_pool(
             PipelineStepId::GenericChannelOptimization,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: String::new(),
                 speaker_index: 0,
                 total_speakers: sys.speakers.len(),
@@ -891,7 +893,7 @@ fn execute_topology_workflow_on_pool(
             let stopped_for_callback = Arc::clone(&stopped);
             let workflow_cancelled = Arc::clone(&workflow_cancelled);
             let callback: roomeq_engine::OptimProgressCallback =
-                Box::new(move |iter: usize, loss: f64, epa: Option<f64>| {
+                Box::new(move |iter: usize, loss: f64, epa: Option<f64>, response| {
                     if workflow_cancelled.load(Ordering::Relaxed) {
                         stopped_for_callback.store(true, Ordering::Relaxed);
                         return roomeq_engine::CallbackAction::Stop;
@@ -910,6 +912,7 @@ fn execute_topology_workflow_on_pool(
                         PipelineStepId::GenericChannelOptimization,
                         PipelineStepStatus::InProgress,
                         &RoomOptimizationProgress {
+                            response: response.clone(),
                             current_speaker: name.clone(),
                             speaker_index: speaker_idx,
                             total_speakers,
@@ -2209,6 +2212,7 @@ fn assemble_workflow_result_with_frequency_samples(
         PipelineStepId::TopologyWorkflowExecution,
         PipelineStepStatus::Completed,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: result.channel_results.len(),
             total_speakers: result.channel_results.len(),
@@ -2237,6 +2241,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::FirGeneration,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "FIR generation".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -2333,6 +2338,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::MixedPhaseFirGeneration,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Mixed-phase FIR".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -2437,6 +2443,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::PhaseCorrection,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Phase correction".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -2702,6 +2709,7 @@ fn assemble_workflow_result_with_frequency_samples(
         PipelineStepId::ImpulseResponseComputation,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: "IR computation".to_string(),
             speaker_index: 0,
             total_speakers: result.channel_results.len(),
@@ -2775,6 +2783,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::ChannelMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Channel matching".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -3350,6 +3359,7 @@ fn apply_topology_phase_alignment(
         PipelineStepId::PhaseAlignment,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: 0,
             total_speakers: pairings.len(),
@@ -3839,6 +3849,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::SpectralAlignment,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Spectral alignment".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -3995,6 +4006,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::InterChannelTimbreMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Inter-channel timbre matching".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -4158,6 +4170,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::HeightChannelAlignment,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Height-channel alignment".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -4371,6 +4384,7 @@ fn assemble_generic_result_with_frequency_samples(
                 PipelineStepId::PhaseAlignment,
                 PipelineStepStatus::Started,
                 &RoomOptimizationProgress {
+                    response: None,
                     current_speaker: String::new(),
                     speaker_index: 0,
                     total_speakers: pairings.len(),
@@ -4508,6 +4522,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::PhaseCorrection,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Phase correction".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -4662,6 +4677,7 @@ fn assemble_generic_result_with_frequency_samples(
         PipelineStepId::ImpulseResponseComputation,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: "IR computation".to_string(),
             speaker_index: 0,
             total_speakers,
@@ -4807,6 +4823,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::ChannelMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Channel matching".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -4909,8 +4926,9 @@ pub fn optimize_speaker(
     let max_iterations = generic_channel_progress_iterations(&room_config);
     let channel_for_progress = channel_name.to_string();
     let eq_callback: Option<roomeq_engine::OptimProgressCallback> = callback.map(|mut callback| {
-        Box::new(move |iteration, loss, epa_preference| {
+        Box::new(move |iteration, loss, epa_preference, response| {
             let action = callback(&RoomOptimizationProgress {
+                response,
                 current_speaker: channel_for_progress.clone(),
                 speaker_index: 0,
                 total_speakers: 1,

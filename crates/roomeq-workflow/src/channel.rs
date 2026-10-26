@@ -177,7 +177,7 @@ fn process_single_channel_with_optional_recovery(
     let phase_linear = room_config.optimizer.processing_mode == ProcessingMode::PhaseLinear;
     let mut callback = callback;
     if phase_linear && let Some(callback) = callback.as_mut() {
-        callback(1, execution.target().pre_score, None);
+        callback(1, execution.target().pre_score, None, None);
     }
 
     let reservation = if room_config.optimizer.processing_mode == ProcessingMode::Hybrid
@@ -283,7 +283,7 @@ fn process_single_channel_with_optional_recovery(
         }
     }
     if phase_linear && let Some(callback) = callback.as_mut() {
-        callback(2, result.post_score, None);
+        callback(2, result.post_score, None, None);
     }
     Ok(result_tuple(
         result,
@@ -377,7 +377,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let callback_events = Arc::clone(&events);
         let expected_sidecar = directory.path().join("left_fir_48000hz.wav");
-        let callback: OptimProgressCallback = Box::new(move |iteration, _, _| {
+        let callback: OptimProgressCallback = Box::new(move |iteration, _, _, _| {
             if iteration == 2 {
                 assert!(expected_sidecar.exists());
             }

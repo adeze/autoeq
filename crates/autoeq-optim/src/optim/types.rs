@@ -18,9 +18,26 @@ pub struct MultiObjectiveData {
     pub uncertainty_cvar_alpha: Option<f64>,
 }
 
-/// Progress callback: (iteration, best_loss, epa_preference) -> continue/stop
+/// Read-only prediction on the prepared objective grid; not measured validation.
+#[derive(Debug, Clone)]
+pub struct OptimizerResponseSnapshot {
+    pub frequency_hz: Vec<f64>,
+    pub prepared_measurement_db: Vec<f64>,
+    pub target_db: Vec<f64>,
+    pub filter_db: Vec<f64>,
+    pub predicted_db: Vec<f64>,
+}
+
+/// Progress callback: (iteration, best_loss, epa_preference, response) -> continue/stop
 ///
 /// Used to thread per-iteration optimizer progress through the room EQ call chain.
 /// `epa_preference` is `Some` when EPA is computed (every N iterations), `None` otherwise.
-pub type OptimProgressCallback =
-    Box<dyn FnMut(usize, f64, Option<f64>) -> crate::de::CallbackAction + Send>;
+pub type OptimProgressCallback = Box<
+    dyn FnMut(
+            usize,
+            f64,
+            Option<f64>,
+            Option<std::sync::Arc<OptimizerResponseSnapshot>>,
+        ) -> crate::de::CallbackAction
+        + Send,
+>;

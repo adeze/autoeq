@@ -97,7 +97,7 @@ impl AutoeqCmaEsBackend {
 
         if let Some(mut user_cb) = callback {
             cfg.callback = Some(Box::new(move |im: &CmaEsIntermediate| {
-                user_cb(im.iter, im.fun, None)
+                user_cb(im.iter, im.fun, None, None)
             }));
         }
 

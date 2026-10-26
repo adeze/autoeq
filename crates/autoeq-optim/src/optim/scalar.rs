@@ -110,8 +110,8 @@ where
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback = callback.map(|mut callback| {
         let stopped = stopped.clone();
-        Box::new(move |iteration, loss, preference| {
-            let action = callback(iteration, loss, preference);
+        Box::new(move |iteration, loss, preference, response| {
+            let action = callback(iteration, loss, preference, response);
             if matches!(action, crate::de::CallbackAction::Stop) {
                 stopped.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -198,7 +198,7 @@ where
             callback: callback.map(|mut callback| {
                 Box::new(
                     move |progress: &math_audio_optimisation::cmaes::CmaEsIntermediate| {
-                        callback(progress.iter, progress.fun, None)
+                        callback(progress.iter, progress.fun, None, None)
                     },
                 ) as math_audio_optimisation::cmaes::CmaEsCallback
             }),
@@ -241,7 +241,7 @@ where
     builder = builder.seed(config.seed.unwrap_or(crate::DEFAULT_SEED));
     if let Some(mut callback) = callback {
         builder = builder.callback(Box::new(move |progress| {
-            callback(progress.iter, progress.fun, None)
+            callback(progress.iter, progress.fun, None, None)
         }));
     }
 
@@ -288,7 +288,7 @@ where
             polish_fraction: 0.0,
             callback: callback.map(|mut callback| {
                 Box::new(move |progress: &CobraIntermediate| {
-                    callback(progress.iter, progress.fun, None)
+                    callback(progress.iter, progress.fun, None, None)
                 }) as math_audio_optimisation::cobra::CobraCallback
             }),
             ..Default::default()
@@ -408,7 +408,7 @@ mod tests {
                     evaluations.fetch_add(1, Ordering::Relaxed);
                     quadratic(x)
                 },
-                Some(Box::new(move |_, loss, preference| {
+                Some(Box::new(move |_, loss, preference, _| {
                     assert!(loss.is_finite());
                     assert_eq!(preference, None);
                     callback_calls.fetch_add(1, Ordering::Relaxed);
@@ -435,7 +435,7 @@ mod tests {
                     ..Default::default()
                 },
                 |_| panic!("unsupported cancellation must not launch search"),
-                Some(Box::new(|_, _, _| crate::de::CallbackAction::Stop)),
+                Some(Box::new(|_, _, _, _| crate::de::CallbackAction::Stop)),
             );
             assert!(result.unwrap_err().contains("not supported"));
         }
@@ -462,7 +462,7 @@ mod tests {
                 initial,
                 &config,
                 quadratic,
-                Some(Box::new(|_, _, _| crate::de::CallbackAction::Continue)),
+                Some(Box::new(|_, _, _, _| crate::de::CallbackAction::Continue)),
             )
             .unwrap();
             assert_eq!(plain.x, observed.x, "{algorithm}");

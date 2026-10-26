@@ -116,7 +116,7 @@ impl FilterOptimizer for AutoeqCobraBackend {
         };
         let callback = callback.map(|mut callback| {
             Box::new(move |progress: &CobraIntermediate| {
-                match callback(progress.iter, progress.fun, None) {
+                match callback(progress.iter, progress.fun, None, None) {
                     crate::de::CallbackAction::Continue => {
                         math_audio_optimisation::CallbackAction::Continue
                     }

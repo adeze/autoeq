@@ -419,7 +419,7 @@ fn bo_config(
             },
         },
         callback: user_cb.take().map(|mut cb| {
-            Box::new(move |im: &BayesOptIntermediate| cb(im.iter, im.fun, None))
+            Box::new(move |im: &BayesOptIntermediate| cb(im.iter, im.fun, None, None))
                 as math_audio_optimisation::BayesOptCallback
         }),
         ..Default::default()

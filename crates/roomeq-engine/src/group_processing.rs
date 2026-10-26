@@ -1464,7 +1464,7 @@ fn process_multisub_group_multiseat(
         // lose an explicitly supplied progress callback silently.
         if let Some(mut callback) = callback {
             let realized_loss = flat_loss_score(&combined_curve, min_freq, max_freq);
-            let _ = callback(0, realized_loss, None);
+            let _ = callback(0, realized_loss, None, None);
         }
         Vec::new()
     };

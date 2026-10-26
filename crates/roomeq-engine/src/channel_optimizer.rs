@@ -59,8 +59,8 @@ pub(crate) fn optimize_maybe_multi_with_exact_checkpoint(
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback = callback.map(|mut callback| {
         let stopped = stopped.clone();
-        Box::new(move |iteration, loss, epa| {
-            let action = callback(iteration, loss, epa);
+        Box::new(move |iteration, loss, epa, response| {
+            let action = callback(iteration, loss, epa, response);
             if !matches!(&action, autoeq_optim::de::CallbackAction::Continue) {
                 stopped.store(true, std::sync::atomic::Ordering::Relaxed);
             }

@@ -1,5 +1,25 @@
 # 0.5.77
 
+- Upgrade optional Rerun telemetry to compatible 0.40.0 SDK requirements. The
+  direct-callback source trial retains identical solver coefficients and losses;
+  calibration generation and installed receiver state are unchanged.
+
+- Add display-only fractional-octave and psychoacoustic smoothing with Swift-compatible
+  mode names, versioned log-frequency cell-overlap semantics and shared public reference
+  vectors. Optimizer smoothing and scores remain unchanged; see `docs/DISPLAY_SMOOTHING.md`.
+
+- Extract native Designer correction-limit validation into lightweight
+  `roomeq_model::DesignerLimits` for native and independent offline command hosts.
+  Existing finite bounds, band ordering, Nyquist and no-op rejection are retained;
+  the shared floating-point sample-rate input additionally rejects invalid rates.
+
+- Add opt-in `rerun-telemetry` CLI feature: direct exact-DE generation callbacks
+  record objective/candidate history and existing PEQ response calculations to
+  non-overwriting RRD files, optionally streaming to a loopback viewer. Default
+  builds remain SDK-free. Initial support requires explicit seed, `pk` layout,
+  single-curve AutoEQ DE and no local refinement. Predictions remain distinct
+  from measurements; full-resolution float64 arrays retain the canonical grid.
+
 - Allow browser report bundles to bootstrap without recursively embedding their own WASM assets. Native report assembly still requires the generated bundles; wasm32 callers must provide explicit shell assets.
 
 - Preserve native DE convergence, generations, and fitness counts through the

@@ -57,8 +57,8 @@ pub(super) fn latch_observer_stop(
     let stopped = Arc::new(AtomicBool::new(false));
     let callback = callback.map(|mut observer| {
         let stopped = Arc::clone(&stopped);
-        Box::new(move |iteration, loss, epa| {
-            let action = observer(iteration, loss, epa);
+        Box::new(move |iteration, loss, epa, response| {
+            let action = observer(iteration, loss, epa, response);
             if !matches!(&action, autoeq_optim::de::CallbackAction::Continue) {
                 stopped.store(true, std::sync::atomic::Ordering::Release);
             }
@@ -1274,7 +1274,7 @@ mod spacing_feasibility_preflight_tests {
         ) -> Result<(String, f64), (String, f64)> {
             let result = self.run(x, objective, params);
             if let Ok((_, loss)) = &result {
-                callback(1, *loss, None);
+                callback(1, *loss, None, None);
             }
             result
         }
@@ -1358,7 +1358,7 @@ mod spacing_feasibility_preflight_tests {
         ) -> Result<(String, f64), (String, f64)> {
             let result = self.run(x, objective, params);
             if let Ok((_, loss)) = &result {
-                callback(1, *loss, None);
+                callback(1, *loss, None, None);
             }
             result
         }
@@ -1737,11 +1737,11 @@ fn adaptive_filter_search(
             let stopped = std::sync::Arc::clone(&stopped);
             let last_iteration = std::sync::Arc::clone(&last_iteration);
             let offset = last_iteration.load(std::sync::atomic::Ordering::Relaxed);
-            Box::new(move |iteration, loss, epa| {
+            Box::new(move |iteration, loss, epa, response| {
                 let iteration = offset.saturating_add(iteration);
                 last_iteration.fetch_max(iteration, std::sync::atomic::Ordering::Relaxed);
                 let action = callback.lock().expect("progress callback mutex poisoned")(
-                    iteration, loss, epa,
+                    iteration, loss, epa, response,
                 );
                 if !matches!(&action, autoeq_optim::de::CallbackAction::Continue) {
                     stopped.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3791,7 +3791,7 @@ mod adaptive_noise_tests {
         ) -> Result<(String, f64), (String, f64)> {
             let result = self.optimize_filters(x, lower, upper, objective, params);
             if let Ok((_, loss)) = &result {
-                callback(1, *loss, None);
+                callback(1, *loss, None, None);
             }
             result
         }
@@ -3992,7 +3992,7 @@ mod pruning_workflow_tests {
         ) -> Result<(String, f64), (String, f64)> {
             let result = self.optimize_filters(x, lower, upper, objective, params);
             if let Ok((_, loss)) = &result {
-                callback(1, *loss, None);
+                callback(1, *loss, None, None);
             }
             result
         }
@@ -4321,7 +4321,7 @@ mod processing_mode_tests {
             let result = self.optimize_filters(x, lower_bounds, upper_bounds, objective, params);
             if let Ok((_, loss)) = &result
                 && matches!(
-                    callback(1, *loss, None),
+                    callback(1, *loss, None, None),
                     autoeq_optim::de::CallbackAction::Stop
                 )
                 && let Some(first_parameter) = x.first_mut()
@@ -4658,7 +4658,7 @@ mod processing_mode_tests {
         let callback_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let callback_called_clone = std::sync::Arc::clone(&callback_called);
         let callback: autoeq_optim::optim::OptimProgressCallback =
-            Box::new(move |_iter: usize, _loss: f64, _epa: Option<f64>| {
+            Box::new(move |_iter: usize, _loss: f64, _epa: Option<f64>, _| {
                 callback_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
                 autoeq_optim::de::CallbackAction::Continue
             });
@@ -4682,7 +4682,7 @@ mod processing_mode_tests {
             let config = observer_test_config(num_filters, min_filter_improvement);
             let backend = RefinementAdmissionBackend::default();
             let callback: autoeq_optim::optim::OptimProgressCallback =
-                Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop);
+                Box::new(|_, _, _, _| autoeq_optim::de::CallbackAction::Stop);
 
             let error = optimize_channel_eq_inner(
                 &curve,
@@ -4710,7 +4710,7 @@ mod processing_mode_tests {
         let config = observer_test_config(2, 0.0);
         let backend = RefinementAdmissionBackend::default();
         let callback: autoeq_optim::optim::OptimProgressCallback =
-            Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop);
+            Box::new(|_, _, _, _| autoeq_optim::de::CallbackAction::Stop);
 
         let error = optimize_channel_eq_multi_inner(
             &[curve],
@@ -4736,7 +4736,7 @@ mod processing_mode_tests {
         let config = observer_test_config(1, 0.0);
         let backend = RefinementAdmissionBackend::default();
         let callback: autoeq_optim::optim::OptimProgressCallback =
-            Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Continue);
+            Box::new(|_, _, _, _| autoeq_optim::de::CallbackAction::Continue);
 
         let result = optimize_channel_eq_inner(
             &curve,
@@ -5601,7 +5601,7 @@ mod multi_eq_tests {
         let callback_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let callback_called_clone = std::sync::Arc::clone(&callback_called);
         let callback: autoeq_optim::optim::OptimProgressCallback =
-            Box::new(move |_iter: usize, _loss: f64, _epa: Option<f64>| {
+            Box::new(move |_iter: usize, _loss: f64, _epa: Option<f64>, _| {
                 callback_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
                 autoeq_optim::de::CallbackAction::Continue
             });
@@ -6377,7 +6377,7 @@ mod controlled_pipeline_tests {
             &config,
             None,
             48_000.0,
-            Some(Box::new(move |_, _, _| {
+            Some(Box::new(move |_, _, _, _| {
                 progress_counter.fetch_add(1, Ordering::Relaxed);
                 autoeq_optim::de::CallbackAction::Continue
             })),
@@ -6408,7 +6408,7 @@ mod controlled_pipeline_tests {
             &config,
             None,
             48_000.0,
-            Some(Box::new(move |_, _, _| {
+            Some(Box::new(move |_, _, _, _| {
                 progress_counter.fetch_add(1, Ordering::Relaxed);
                 autoeq_optim::de::CallbackAction::Continue
             })),
@@ -6494,7 +6494,9 @@ mod controlled_pipeline_tests {
             &config,
             None,
             48_000.0,
-            Some(Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop)),
+            Some(Box::new(|_, _, _, _| {
+                autoeq_optim::de::CallbackAction::Stop
+            })),
             exact_options(None, Arc::clone(&saved), Arc::clone(&first_save_calls)),
         );
         assert!(
@@ -6523,7 +6525,7 @@ mod controlled_pipeline_tests {
             &config,
             None,
             48_000.0,
-            Some(Box::new(move |_, _, _| {
+            Some(Box::new(move |_, _, _, _| {
                 progress_counter.fetch_add(1, Ordering::Relaxed);
                 autoeq_optim::de::CallbackAction::Continue
             })),
@@ -6991,7 +6993,9 @@ mod controlled_pipeline_tests {
             &config,
             None,
             48000.0,
-            Some(Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop)),
+            Some(Box::new(|_, _, _, _| {
+                autoeq_optim::de::CallbackAction::Stop
+            })),
             &control,
             positive(32),
         )

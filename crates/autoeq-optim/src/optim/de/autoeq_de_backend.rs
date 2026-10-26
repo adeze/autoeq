@@ -94,7 +94,13 @@ impl FilterOptimizer for AutoeqDeBackend {
                 // it in — the trait stays generic; EPA is autoeq-loss-specific.
                 let de_cb: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send> = {
                     let mut user_cb = user_cb;
-                    Box::new(move |im| user_cb(im.iter, im.fun, None))
+                    let response_objective = objective.clone();
+                    Box::new(move |im| {
+                        let response =
+                            im.x.as_slice()
+                                .and_then(|x| response_objective.response_snapshot(x));
+                        user_cb(im.iter, im.fun, None, response)
+                    })
                 };
                 optimize_filters_autoeq_with_callback(
                     x, lower, upper, objective, self.name, params, de_cb,

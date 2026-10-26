@@ -118,6 +118,15 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub checkpoint_exact: Option<PathBuf>,
 
+    /// Record every seeded single-curve DE checkpoint and response to a new RRD file.
+    /// Requires a build with rerun-telemetry; existing files are refused.
+    #[arg(long, value_name = "PATH")]
+    pub rerun_recording: Option<PathBuf>,
+
+    /// Additionally stream telemetry to a Rerun viewer on 127.0.0.1 at this port.
+    #[arg(long, value_name = "PORT", requires = "rerun_recording", value_parser = clap::value_parser!(u16).range(1..))]
+    pub rerun_port: Option<u16>,
+
     /// Whether to run a local refinement after global optimization
     #[arg(long, default_value_t = false)]
     pub refine: bool,
@@ -342,6 +351,8 @@ impl Args {
             checkpoint_state: None,
             resume_exact: None,
             checkpoint_exact: None,
+            rerun_recording: None,
+            rerun_port: None,
             speaker: None,
             version: None,
             measurement: None,

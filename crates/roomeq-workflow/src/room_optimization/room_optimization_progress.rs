@@ -13,6 +13,8 @@ use roomeq_model::Result;
 /// `From<&PipelineEvent>`.
 #[derive(Debug, Clone)]
 pub struct RoomOptimizationProgress {
+    /// Read-only prediction from a supplied native optimizer candidate.
+    pub response: Option<std::sync::Arc<roomeq_engine::pipeline::OptimizerResponseSnapshot>>,
     /// Current speaker being optimized
     pub current_speaker: String,
     /// Speaker index (0-based)
@@ -44,6 +46,7 @@ pub struct RoomOptimizationProgress {
 impl From<&PipelineEvent> for RoomOptimizationProgress {
     fn from(event: &PipelineEvent) -> Self {
         Self {
+            response: event.response.clone(),
             current_speaker: event.channel.clone().unwrap_or_default(),
             speaker_index: event.channel_index.unwrap_or(0),
             total_speakers: event.total_channels.unwrap_or(0),
@@ -67,6 +70,7 @@ pub(super) fn progress_event(
     let mut event = PipelineEvent::new(step_id, status)
         .with_overall_progress(progress.overall_progress)
         .with_epa_preference(progress.epa_preference);
+    event.response = progress.response.clone();
     if !progress.current_speaker.is_empty() {
         event = event.with_channel(progress.current_speaker.clone());
     }

@@ -28,6 +28,7 @@ _site
 !docs/CRATE_PARTITION_PLAN.md
 !docs/ROOMEQ_INCREMENTAL_PLAN.md
 !docs/ARCHITECTURE.md
+!docs/RERUN_TELEMETRY.md
 !crates/*/ARCHITECTURE.md
 !crates/*/README.md
 !crates/*/CHANGELOG.md

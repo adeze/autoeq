@@ -653,7 +653,7 @@ mod backend_tests {
                 &upper,
                 objective,
                 &params,
-                Some(Box::new(|iteration, loss, epa| {
+                Some(Box::new(|iteration, loss, epa, _response| {
                     assert_eq!(iteration, 1);
                     assert!(loss.is_finite());
                     assert!(epa.is_none());
@@ -1176,7 +1176,7 @@ mod backend_tests {
             objective,
             &params,
             None,
-            Some(Box::new(|_, _, _| CallbackAction::Stop)),
+            Some(Box::new(|_, _, _, _| CallbackAction::Stop)),
             &control,
         );
         assert_eq!(
@@ -1496,7 +1496,7 @@ mod backend_tests {
             &upper,
             objective,
             &params,
-            Box::new(|_, _, _| crate::de::CallbackAction::Continue),
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Continue),
         );
         assert!(plain.converged, "{plain:?}");
         assert!(progress.converged, "{progress:?}");
@@ -1532,7 +1532,7 @@ mod backend_tests {
             &upper,
             objective,
             &params,
-            Box::new(|_, _, _| crate::de::CallbackAction::Stop),
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Stop),
         );
         assert_eq!(progress.termination, OptimizerTermination::UserStopped);
         assert!(!progress.converged);

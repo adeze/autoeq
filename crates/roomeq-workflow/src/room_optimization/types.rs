@@ -186,6 +186,7 @@ pub(super) fn collect_generic_channel_results(
                 PipelineStepId::FirGeneration,
                 PipelineStepStatus::Started,
                 &RoomOptimizationProgress {
+                    response: None,
                     current_speaker: format!("FIR: {}", channel_name),
                     speaker_index: 0,
                     total_speakers,

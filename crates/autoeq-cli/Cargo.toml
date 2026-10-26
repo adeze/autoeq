@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 default = []
+rerun-telemetry = ["dep:rerun", "dep:sha2", "dep:tempfile"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -29,6 +30,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 urlencoding = { workspace = true }
+rerun = { version = "0.40.0", default-features = false, features = ["sdk"], optional = true }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
