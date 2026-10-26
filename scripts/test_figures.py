@@ -4,13 +4,89 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import plotly.graph_objects as go
-
 from scripts.src.figures import (
     add_channel_response_overlays,
     create_bass_management_routing_figure,
+    create_channel_figure,
     create_combined_figure,
+    create_early_late_figure,
+    create_t60_octaves_figure,
 )
+
+
+def section_series(section):
+    """Series list of a figure section dict."""
+    assert section["kind"] == "figure"
+    return section["figure"]["series"]
+
+
+def combined_panels(data, *args, **kwargs):
+    """Combined overview panels (Before / EQ / Corrected, in order)."""
+    panels = create_combined_figure(data, *args, **kwargs)
+    assert isinstance(panels, list) and len(panels) == 3
+    return panels
+
+
+def all_combined_series(panels):
+    """Every series across the three combined panels, in panel order."""
+    return [s for panel in panels for s in section_series(panel)]
+
+
+class EarlyLateFigureTests(unittest.TestCase):
+    def test_t60_figure_leaves_invalid_octave_unconnected(self):
+        rows = [{"centre_hz": 63, "t60_s": 0.5},
+                {"centre_hz": 125, "t60_s": None},
+                {"centre_hz": 250, "t60_s": 0.4}]
+        section = create_t60_octaves_figure("L", rows)
+        # Band-constant steps: the None pair passes through as a gap
+        # (renderer breaks the line there), leaving the invalid octave
+        # unconnected to either neighbor.
+        self.assertEqual(section_series(section)[0]["y"],
+                         [0.5, 0.5, None, None, 0.4, 0.4])
+        self.assertIsNone(create_t60_octaves_figure("L", rows[1:2]))
+
+    def test_shared_reference_is_required_for_energy_contribution_plot(self):
+        freq = [100.0, 125.0, 160.0]
+        report = {
+            "method": "incoherent_band_energy",
+            "reference": "full_peak_band",
+            "smoothing": "third_octave", "split_ms": 20.0,
+            "full": {"freq": freq, "spl": [0.0, -2.0, -4.0]},
+            "early": {"freq": freq, "spl": [-1.0, -3.0, -5.0]},
+            "late": {"freq": freq, "spl": [-7.0, -9.0, -11.0]},
+        }
+        section = create_early_late_figure("L", report)
+        names = [s["name"] for s in section_series(section)]
+        self.assertEqual(names, ["Full", "Early", "Late"])
+        self.assertEqual(list(section_series(section)[2]["y"]), report["late"]["spl"])
+        report["reference"] = "each_segment_peak"
+        self.assertIsNone(create_early_late_figure("L", report))
+        report["reference"] = "full_peak_band"
+        report["split_ms"] = 15.0
+        self.assertIsNone(create_early_late_figure("L", report))
+        report["split_ms"] = 20.0
+        report["late"]["freq"] = [101.0, 126.0, 161.0]
+        self.assertIsNone(create_early_late_figure("L", report))
+
+    def test_full_below_a_part_refuses_foreign_energy_data(self):
+        freq = [100.0, 125.0, 160.0]
+        report = {
+            "method": "incoherent_band_energy",
+            "reference": "full_peak_band",
+            "smoothing": "third_octave", "split_ms": 20.0,
+            "full": {"freq": freq, "spl": [0.0, -2.0, -4.0]},
+            "early": {"freq": freq, "spl": [-1.0, -3.0, -5.0]},
+            "late": {"freq": freq, "spl": [-7.0, -9.0, -11.0]},
+        }
+        section = create_early_late_figure("L", report)
+        widths = [s["width"] for s in section_series(section)]
+        self.assertEqual(widths, [2.5, 2.0, 2.0])
+        # Late poking above Full is impossible for an incoherent sum.
+        report["late"]["spl"] = [-7.0, -1.0, -11.0]
+        self.assertIsNone(create_early_late_figure("L", report))
+        report["late"]["spl"] = [-7.0, -9.0, -11.0]
+        report["early"]["spl"] = [-1.0, -3.0, -3.9]
+        self.assertIsNone(create_early_late_figure("L", report))
 
 
 def two_sub_overview_data():
@@ -146,29 +222,47 @@ class ChannelOverlayFigureTests(unittest.TestCase):
                 },
             }
 
-            fig = create_combined_figure(data)
+            panels = combined_panels(data)
 
-        self.assertIn("Target: L", [trace.name for trace in fig.data])
+        before_names = [s["name"] for s in section_series(panels[0])]
+        corrected_names = [s["name"] for s in section_series(panels[2])]
+        self.assertIn("L target", before_names)
+        self.assertIn("L target", corrected_names)
+        for name in ("L target",):
+            target = next(s for s in section_series(panels[0]) if s["name"] == name)
+            self.assertEqual(target["dash"], "dot")
 
     def test_adds_target_and_lfe_plus_channel_traces(self):
-        fig = go.Figure()
         target = {"freq": [20.0, 80.0, 20_000.0], "spl": [80.0, 78.0, 70.0]}
         combined = {
             "freq": [20.0, 80.0, 20_000.0],
             "spl": [79.0, 78.0, 70.5],
         }
+        section = create_channel_figure(
+            "L",
+            {"freq": [20.0, 20_000.0], "spl": [80.0, 70.0]},
+            None,
+        )
 
-        add_channel_response_overlays(fig, "L", target, combined)
+        add_channel_response_overlays(section, "L", target, combined)
 
-        self.assertEqual([trace.name for trace in fig.data], ["Target", "LFE + L"])
+        names = [s["name"] for s in section_series(section)]
+        self.assertEqual(names[-2:], ["Target", "LFE + L"])
 
     def test_lfe_view_can_add_target_without_combined_trace(self):
-        fig = go.Figure()
         target = {"freq": [20.0, 120.0], "spl": [80.0, 78.0]}
+        section = create_channel_figure(
+            "LFE",
+            {"freq": [20.0, 120.0], "spl": [80.0, 78.0]},
+            None,
+        )
+        before = len(section_series(section))
 
-        add_channel_response_overlays(fig, "LFE", target, None)
+        add_channel_response_overlays(section, "LFE", target, None)
 
-        self.assertEqual([trace.name for trace in fig.data], ["Target"])
+        names = [s["name"] for s in section_series(section)]
+        self.assertEqual(len(names), before + 1)
+        self.assertEqual(names[-1], "Target")
 
     def test_corrected_row_keeps_all_channels_on_mismatched_multisub_grids(self):
         # Mains on a full-range grid, multi-sub aggregate and drivers each on
@@ -229,16 +323,30 @@ class ChannelOverlayFigureTests(unittest.TestCase):
             },
         }
 
-        fig = create_combined_figure(data)
-        names = [trace.name for trace in fig.data]
-
-        self.assertIn("Corrected: L", names)
-        self.assertIn("Corrected: R", names)
-        self.assertIn("Corrected: LFE", names)
-        corrected_lfe = next(
-            trace for trace in fig.data if trace.name == "Corrected: LFE"
+        panels = combined_panels(data)
+        titles = [p["figure"]["title"] for p in panels]
+        self.assertEqual(
+            titles,
+            [
+                "Combined Overview — Before EQ",
+                "Combined Overview — EQ",
+                "Combined Overview — Corrected",
+            ],
         )
-        self.assertGreater(min(corrected_lfe.y), 50.0)
+        # Before/Corrected panels share one SPL y-range for comparability.
+        self.assertEqual(
+            panels[0]["figure"]["y"], panels[2]["figure"]["y"]
+        )
+        all_series = all_combined_series(panels)
+        names = [s["name"] for s in all_series]
+
+        self.assertIn("L (corrected)", names)
+        self.assertIn("R (corrected)", names)
+        self.assertIn("LFE (corrected)", names)
+        corrected_lfe = next(
+            s for s in all_series if s["name"] == "LFE (corrected)"
+        )
+        self.assertGreater(min(v for v in corrected_lfe["y"] if v is not None), 50.0)
 
     def test_routing_graph_fans_out_multi_driver_subs(self):
         data = {
@@ -284,26 +392,19 @@ class ChannelOverlayFigureTests(unittest.TestCase):
             },
         }
 
-        fig = create_bass_management_routing_figure(data)
+        section = create_bass_management_routing_figure(data)
 
-        self.assertIsNotNone(fig)
-        assert fig is not None
-        sankey = fig.data[0]
-        labels = list(sankey.node.label)
+        self.assertIsNotNone(section)
+        assert section is not None
+        self.assertEqual(section["kind"], "sankey")
+        chart = section["chart"]
+        labels = list(chart["nodes"])
         self.assertIn("sub: sub_1", labels)
         self.assertIn("sub: sub_2", labels)
         bus = labels.index("out: LFE")
-        links = {
-            (source, target): hover
-            for source, target, hover in zip(
-                sankey.link.source, sankey.link.target, sankey.link.customdata
-            )
-        }
+        links = {(link["source"], link["target"]) for link in chart["links"]}
         self.assertIn((bus, labels.index("sub: sub_1")), links)
         self.assertIn((bus, labels.index("sub: sub_2")), links)
-        driver_hover = links[(bus, labels.index("sub: sub_1"))]
-        self.assertIn("gain: +6.00 dB", driver_hover)
-        self.assertIn("delay: 2.500 ms", driver_hover)
 
     def test_routing_graph_without_drivers_has_no_sub_nodes(self):
         data = {
@@ -324,20 +425,20 @@ class ChannelOverlayFigureTests(unittest.TestCase):
             },
         }
 
-        fig = create_bass_management_routing_figure(data)
+        section = create_bass_management_routing_figure(data)
 
-        self.assertIsNotNone(fig)
-        assert fig is not None
-        labels = list(fig.data[0].node.label)
+        self.assertIsNotNone(section)
+        assert section is not None
+        labels = list(section["chart"]["nodes"])
         self.assertNotIn("sub: sub_1", labels)
         self.assertFalse(any(label.startswith("sub: ") for label in labels))
 
 
 class MultiSubEqRowTests(unittest.TestCase):
     def test_eq_row_shows_one_trace_per_subwoofer(self):
-        fig = create_combined_figure(two_sub_overview_data())
+        panels = combined_panels(two_sub_overview_data())
         eq_names = sorted(
-            trace.name for trace in fig.data if trace.name.startswith("EQ: ")
+            s["name"] for s in section_series(panels[1]) if s["name"].startswith("EQ: ")
         )
 
         self.assertEqual(
@@ -346,39 +447,28 @@ class MultiSubEqRowTests(unittest.TestCase):
         self.assertNotIn("EQ: LFE", eq_names)
 
     def test_per_sub_eq_traces_differ(self):
-        fig = create_combined_figure(two_sub_overview_data())
-        by_name = {trace.name: trace for trace in fig.data}
+        panels = combined_panels(two_sub_overview_data())
+        by_name = {s["name"]: s for s in all_combined_series(panels)}
 
-        first = list(by_name["EQ: Left Sub"].y)
-        second = list(by_name["EQ: Right Sub"].y)
+        first = list(by_name["EQ: Left Sub"]["y"])
+        second = list(by_name["EQ: Right Sub"]["y"])
         self.assertEqual(len(first), len(second))
         self.assertGreater(
             max(abs(a - b) for a, b in zip(first, second)), 1.0
         )
 
-    def test_driver_traces_use_lines_and_cross_markers(self):
-        fig = create_combined_figure(two_sub_overview_data())
-        by_name = {trace.name: trace for trace in fig.data}
+    def test_driver_traces_are_plain_lines_without_markers(self):
+        # The schema has no marker channel: every driver trace is a plain
+        # line; drivers stay distinguishable via their series names.
+        panels = combined_panels(two_sub_overview_data())
+        by_name = {s["name"]: s for s in all_combined_series(panels)}
 
-        first = by_name["EQ: Left Sub"]
-        self.assertEqual(first.mode, "lines")
-
-        second = by_name["EQ: Right Sub"]
-        self.assertEqual(second.mode, "lines+markers")
-        self.assertEqual(second.marker.symbol, "cross")
-        opacity = list(second.marker.opacity)
-        self.assertEqual(len(opacity), len(second.y))
-        for index, value in enumerate(opacity):
-            self.assertEqual(value, 1.0 if index % 10 == 0 else 0.0)
-
-        original_first = by_name["Original: LFE/Two subs_1"]
-        self.assertEqual(original_first.mode, "lines")
-        original_second = by_name["Original: LFE/Two subs_2"]
-        self.assertEqual(original_second.mode, "lines+markers")
-        self.assertEqual(original_second.marker.symbol, "cross")
-
-        # Whole-channel traces stay plain lines.
-        self.assertEqual(by_name["EQ: L"].mode, "lines")
+        for name in ("EQ: Left Sub", "EQ: Right Sub",
+                     "LFE/Two subs_1 (before)", "LFE/Two subs_2 (before)",
+                     "EQ: L"):
+            self.assertIn(name, by_name)
+            self.assertNotIn("marker", by_name[name])
+            self.assertNotIn("mode", by_name[name])
 
     def test_single_sub_keeps_collapsed_eq_trace(self):
         data = two_sub_overview_data()
@@ -389,9 +479,9 @@ class MultiSubEqRowTests(unittest.TestCase):
             "spl": [1.0, -1.0],
         }
 
-        fig = create_combined_figure(data)
+        panels = combined_panels(data)
         eq_names = sorted(
-            trace.name for trace in fig.data if trace.name.startswith("EQ: ")
+            s["name"] for s in section_series(panels[1]) if s["name"].startswith("EQ: ")
         )
 
         self.assertEqual(eq_names, ["EQ: L", "EQ: LFE", "EQ: R"])
@@ -403,12 +493,80 @@ class MultiSubEqRowTests(unittest.TestCase):
         for driver in channel["drivers"]:
             driver["plugins"] = []
 
-        fig = create_combined_figure(data)
+        panels = combined_panels(data)
         eq_names = sorted(
-            trace.name for trace in fig.data if trace.name.startswith("EQ: ")
+            s["name"] for s in section_series(panels[1]) if s["name"].startswith("EQ: ")
         )
 
         self.assertEqual(eq_names, ["EQ: L", "EQ: R"])
+
+
+def topology_sub_data():
+    """Stereo-topology fixture: sub measured to ~200 Hz, main full-range."""
+    freq = [20.0, 100.0, 199.951172, 1000.0, 20000.0]
+    driver = {
+        "name": "left_sub",
+        "measured_band_hz": [10.0, 199.951172],
+        "initial_curve": {"freq": list(freq), "spl": [60.0] * len(freq)},
+        "plugins": [
+            {
+                "plugin_type": "crossover",
+                "parameters": {"frequency": 100.0, "output": "low", "type": "LR24"},
+            },
+        ],
+    }
+    main = {
+        "name": "left_main",
+        "initial_curve": {"freq": list(freq), "spl": [65.0] * len(freq)},
+        "plugins": [
+            {
+                "plugin_type": "crossover",
+                "parameters": {"frequency": 100.0, "output": "high", "type": "LR24"},
+            },
+        ],
+    }
+    return {
+        "channels": {
+            "L": {
+                "initial_curve": {"freq": list(freq), "spl": [70.0] * len(freq)},
+                "final_curve": {"freq": list(freq), "spl": [71.0] * len(freq)},
+                "eq_response": {"freq": list(freq), "spl": [0.5] * len(freq)},
+                "plugins": [],
+                "drivers": [driver, main],
+            }
+        }
+    }
+
+
+class DriverMeasuredBandTests(unittest.TestCase):
+    def test_original_driver_trace_stops_at_measured_band(self):
+        panels = combined_panels(topology_sub_data())
+        by_name = {s["name"]: s for s in all_combined_series(panels)}
+
+        sub = by_name["L/left_sub (before)"]
+        self.assertAlmostEqual(max(sub["x"]), 199.951172)
+        self.assertEqual(len(sub["x"]), 3)
+        self.assertEqual(len(sub["y"]), 3)
+
+        # Drivers without a recorded band keep their full stored grid.
+        main = by_name["L/left_main (before)"]
+        self.assertAlmostEqual(max(main["x"]), 20000.0)
+
+    def test_clip_helper_passes_through_without_band(self):
+        from scripts.src.data_extract import clip_curve_to_measured_band
+
+        curve = {"freq": [20.0, 20000.0], "spl": [60.0, 61.0]}
+        self.assertIs(clip_curve_to_measured_band(curve, {}), curve)
+        self.assertIs(
+            clip_curve_to_measured_band(curve, {"measured_band_hz": [20.0, 20000.0]}),
+            curve,
+        )
+        clipped = clip_curve_to_measured_band(
+            {"freq": [20.0, 200.0, 20000.0], "spl": [60.0, 61.0, 62.0]},
+            {"measured_band_hz": [10.0, 200.0]},
+        )
+        self.assertEqual(clipped["freq"], [20.0, 200.0])
+        self.assertEqual(clipped["spl"], [60.0, 61.0])
 
 
 if __name__ == "__main__":

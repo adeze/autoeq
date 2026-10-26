@@ -84,7 +84,8 @@ impl PeqLayout for PeqModel {
             | PeqModel::HpPk
             | PeqModel::HpPkLp
             | PeqModel::LsPk
-            | PeqModel::LsPkHs => 3,
+            | PeqModel::LsPkHs
+            | PeqModel::PkLsHs => 3,
             PeqModel::FreePkFree | PeqModel::Free => 4,
         }
     }
@@ -95,7 +96,8 @@ impl PeqLayout for PeqModel {
             | PeqModel::HpPk
             | PeqModel::HpPkLp
             | PeqModel::LsPk
-            | PeqModel::LsPkHs => ParamLayout {
+            | PeqModel::LsPkHs
+            | PeqModel::PkLsHs => ParamLayout {
                 type_idx: None,
                 freq_idx: 0,
                 q_idx: 1,
@@ -172,6 +174,15 @@ impl PeqLayout for PeqModel {
                     BiquadFilterType::Peak
                 }
             }
+            PeqModel::PkLsHs => {
+                if num_filters >= 2 && i == num_filters - 2 {
+                    BiquadFilterType::Lowshelf
+                } else if num_filters >= 1 && i == num_filters - 1 {
+                    BiquadFilterType::Highshelf
+                } else {
+                    BiquadFilterType::Peak
+                }
+            }
             PeqModel::FreePkFree => {
                 if i == 0 || i == num_filters - 1 {
                     decode_filter_type(type_param.unwrap_or(0.0))
@@ -200,7 +211,7 @@ impl PeqLayout for PeqModel {
             group.push(0.0_f64.clamp(lower_bounds[type_idx], upper_bounds[type_idx]));
         }
 
-        let upper_frequency = upper_bounds[l.freq_idx].min(max_freq.log10());
+        let upper_frequency = upper_bounds[l.freq_idx].min(freq_to_log10(max_freq));
         let fraction = (i + 1) as f64 / (num_filters + 1).max(2) as f64;
         let freq = (lower_bounds[l.freq_idx]
             + fraction * (upper_frequency - lower_bounds[l.freq_idx]))
@@ -324,6 +335,24 @@ pub fn filter_type_bounds() -> (f64, f64) {
     (0.0, 11.999)
 }
 
+/// Convert a frequency to its portable base-10 parameter coordinate.
+///
+/// Bounds and initial parameters use the same pure-Rust implementation so
+/// host math libraries cannot choose different logarithm rounding. Callers
+/// retain responsibility for validating positive finite frequencies; this
+/// conversion preserves IEEE handling of zero, negative and nonfinite inputs.
+///
+/// # Examples
+///
+/// ```
+/// use autoeq_core::param_utils::freq_to_log10;
+/// assert_eq!(freq_to_log10(1000.0), 3.0);
+/// ```
+#[inline]
+pub fn freq_to_log10(frequency: f64) -> f64 {
+    libm::log10(frequency)
+}
+
 /// Convert log10 frequency parameter to Hz
 ///
 /// Filter frequencies are stored as log10(Hz) in the optimization parameter vector.
@@ -347,6 +376,56 @@ mod tests {
     use super::*;
     use crate::PeqModel;
     use crate::iir::BiquadFilterType;
+
+    #[test]
+    fn portable_frequency_coordinates_match_independent_reference_cases() {
+        // Expected coordinates were rounded from 140-digit Decimal ln(f)/ln(10).
+        let cases: &[(u64, u64)] = &[
+            (4591870180066957722, 13830554455654793216),
+            (4607182418800017408, 0),
+            (4621819117588971520, 4607182418800017408),
+            (4626322717216342016, 4608538137376317056),
+            (4630826316843712512, 4609893855952616703),
+            (4635329916471083008, 4611249574528916351),
+            (4636737291354636288, 4611686018427387904),
+            (4652007308841189376, 4613937818241073152),
+            (4657715973212602368, 4614833899478458752),
+            (4671226772094713856, 4616528547698833312),
+            (4676293871431319552, 4616915191402606031),
+            (4676829883349860352, 4616956627500456928),
+            (4638387916139006731, 4611892091835927077),
+            (9218868437227405311, 4644130490496809471),
+            (4503599627370496, 13867491935800207938),
+            (1, 13867767316136018804),
+            (4607182418800017407, 13586176430389519631),
+            (4607182418800017409, 4367307993162114317),
+        ];
+        for &(input, expected) in cases {
+            assert_eq!(freq_to_log10(f64::from_bits(input)).to_bits(), expected);
+        }
+    }
+
+    #[test]
+    fn portable_frequency_conversion_preserves_unsupported_input_handling() {
+        assert_eq!(freq_to_log10(0.0), f64::NEG_INFINITY);
+        assert_eq!(freq_to_log10(-0.0), f64::NEG_INFINITY);
+        assert!(freq_to_log10(-1.0).is_nan());
+        assert!(freq_to_log10(f64::NEG_INFINITY).is_nan());
+        assert!(freq_to_log10(f64::NAN).is_nan());
+        assert_eq!(freq_to_log10(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn encoded_peq_frequency_uses_the_portable_coordinate() {
+        let peq = vec![(
+            1.0,
+            crate::iir::Biquad::new(BiquadFilterType::Peak, 80.0, 48_000.0, 1.0, -3.0),
+        )];
+        let encoded = crate::x2peq::peq2x(&peq, PeqModel::Pk);
+        // Independent 140-digit reference for log10(80), not host log10.
+        assert_eq!(encoded[0].to_bits(), 4_611_249_574_528_916_351);
+        assert_eq!(encoded[1..], [1.0, -3.0]);
+    }
 
     #[test]
     fn get_filter_params_fixed() {
@@ -398,6 +477,42 @@ mod tests {
         assert_eq!(
             determine_filter_type(1, 3, PeqModel::HpPk, None),
             BiquadFilterType::Peak
+        );
+    }
+
+    #[test]
+    fn determine_filter_type_pk_ls_hs_trailing_pair() {
+        assert_eq!(
+            determine_filter_type(0, 4, PeqModel::PkLsHs, None),
+            BiquadFilterType::Peak
+        );
+        assert_eq!(
+            determine_filter_type(1, 4, PeqModel::PkLsHs, None),
+            BiquadFilterType::Peak
+        );
+        assert_eq!(
+            determine_filter_type(2, 4, PeqModel::PkLsHs, None),
+            BiquadFilterType::Lowshelf
+        );
+        assert_eq!(
+            determine_filter_type(3, 4, PeqModel::PkLsHs, None),
+            BiquadFilterType::Highshelf
+        );
+    }
+
+    #[test]
+    fn determine_filter_type_pk_ls_hs_degenerate_layouts() {
+        assert_eq!(
+            determine_filter_type(0, 2, PeqModel::PkLsHs, None),
+            BiquadFilterType::Lowshelf
+        );
+        assert_eq!(
+            determine_filter_type(1, 2, PeqModel::PkLsHs, None),
+            BiquadFilterType::Highshelf
+        );
+        assert_eq!(
+            determine_filter_type(0, 1, PeqModel::PkLsHs, None),
+            BiquadFilterType::Highshelf
         );
     }
 
@@ -480,18 +595,17 @@ mod tests {
         for model in models {
             let ppf = model.params_per_filter();
             let layout = model.layout();
-            let max_idx = layout.freq_idx.max(layout.q_idx).max(layout.gain_idx).max(
-                layout.type_idx.unwrap_or(0),
-            );
+            let max_idx = layout
+                .freq_idx
+                .max(layout.q_idx)
+                .max(layout.gain_idx)
+                .max(layout.type_idx.unwrap_or(0));
             assert_eq!(max_idx + 1, ppf, "{model:?}");
             let filters = 3;
             let mut x = vec![0.0; ppf * filters];
             for i in 0..filters {
                 let params = FilterParams {
-                    filter_type: model
-                        .layout()
-                        .type_idx
-                        .map(|_| (i as f64) % 12.0),
+                    filter_type: model.layout().type_idx.map(|_| (i as f64) % 12.0),
                     freq: 2.0 + i as f64 * 0.25,
                     q: 1.0 + i as f64 * 0.5,
                     gain: -2.0 + i as f64,

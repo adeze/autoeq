@@ -204,30 +204,37 @@ pub enum BudgetAggregation {
 
 /// Cumulative pruning budget over declared conditions.
 ///
-/// Stage 0 resolution of the cumulative-budget open decision: budgets are
-/// declared up front, span explicit condition ids (seats, programmes,
-/// levels), and are disabled (`None` cap) unless configured. A configured
-/// budget is validated for shape here; *enforcement* of the budget arrives
-/// with the Stage 1 cumulative checks, so a set budget is currently
-/// tracked in reports, not used to accept or reject removals.
+/// Experimental veto adjudication compares every accepted removal set with
+/// frozen F0. Per-condition differences use the configured sum or maximum;
+/// missing declared evidence retains filters rather than silently falling back.
+/// Native EQ workflows resolve measured conditions through `evaluation`.
+/// Without that declaration, adapters resolve only `flat-background`.
 ///
-/// Differences are measured in approximate masked-loudness delta (sones)
-/// under the experimental heuristic proxy until Stage 2 validates a
-/// replacement distance.
+/// Differences remain approximate masked-loudness deltas in experimental proxy
+/// units. These limits do not establish calibrated perceptual equivalence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct PruningBudget {
     /// Cumulative cap in approximate masked-loudness delta (sones,
-    /// experimental proxy units). `None` (default) disables budget
-    /// tracking.
+    /// experimental proxy units). `None` uses the veto's per-step quantum as
+    /// the cumulative cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cumulative_delta: Option<f64>,
     /// How per-condition differences aggregate against the cap.
     #[serde(default)]
     pub aggregation: BudgetAggregation,
     /// Declared condition ids the budget spans (seats, programmes,
-    /// levels). Empty means the budget is not bound to conditions yet.
+    /// levels). Empty uses the complete evaluation product when supplied, otherwise
+    /// the legacy flat-background scope. A nonempty
+    /// declaration requires matching evidence for every identifier.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<String>,
+    /// Optional versioned programme/level declaration over all supplied measurements.
+    ///
+    /// When present, empty `conditions` means the complete generated condition
+    /// set; a nonempty list must match that set exactly. Missing native evidence
+    /// retains filters. `None` preserves the legacy flat-background scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<super::pruning_evaluation::PruningEvaluation>,
 }
 
 #[cfg(test)]
@@ -241,7 +248,10 @@ mod report_outcome_tests {
             (ReportOutcome::Keep, "\"keep\""),
             (ReportOutcome::CandidateRemoval, "\"candidate_removal\""),
             (ReportOutcome::AcceptedRemoval, "\"accepted_removal\""),
-            (ReportOutcome::RiskLimitedCorrection, "\"risk_limited_correction\""),
+            (
+                ReportOutcome::RiskLimitedCorrection,
+                "\"risk_limited_correction\"",
+            ),
             (
                 ReportOutcome::InsufficientEvidence,
                 "\"insufficient_evidence\"",
@@ -275,7 +285,8 @@ mod report_outcome_tests {
     #[test]
     fn partial_json_fills_honest_sentinels() {
         // Missing fields degrade to explicit unknowns, never to claims.
-        let provenance: AssessmentProvenance = serde_json::from_value(serde_json::json!({})).unwrap();
+        let provenance: AssessmentProvenance =
+            serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(provenance.model, "unspecified");
         assert_eq!(provenance.calibration, "unknown");
         let record: AssessmentRecord = serde_json::from_value(serde_json::json!({})).unwrap();
@@ -287,8 +298,9 @@ mod report_outcome_tests {
     fn schema_advertises_new_vocabulary() {
         // Guards schema drift for the additive contract (mirrors the
         // seat/search parity test style in validation_rules).
-        let outcome_schema =
-            serde_json::to_value(schemars::schema_for!(ReportOutcome)).unwrap().to_string();
+        let outcome_schema = serde_json::to_value(schemars::schema_for!(ReportOutcome))
+            .unwrap()
+            .to_string();
         for variant in [
             "keep",
             "candidate_removal",
@@ -298,11 +310,16 @@ mod report_outcome_tests {
         ] {
             assert!(outcome_schema.contains(variant), "{outcome_schema}");
         }
-        let budget_schema =
-            serde_json::to_value(schemars::schema_for!(PruningBudget)).unwrap().to_string();
-        assert!(budget_schema.contains("max_cumulative_delta"), "{budget_schema}");
-        let record_schema =
-            serde_json::to_value(schemars::schema_for!(AssessmentRecord)).unwrap().to_string();
+        let budget_schema = serde_json::to_value(schemars::schema_for!(PruningBudget))
+            .unwrap()
+            .to_string();
+        assert!(
+            budget_schema.contains("max_cumulative_delta"),
+            "{budget_schema}"
+        );
+        let record_schema = serde_json::to_value(schemars::schema_for!(AssessmentRecord))
+            .unwrap()
+            .to_string();
         for field in ["outcome", "confidence", "enforcement", "provenance"] {
             assert!(record_schema.contains(field), "{record_schema}");
         }

@@ -16,13 +16,13 @@ pub use crate::Curve;
 /// Frequency response curve data for serialization
 ///
 /// Represents a curve with frequency points and SPL values.
-/// SPL values are normalized (mean-subtracted in the 1000-2000 Hz range)
-/// for consistent comparison across measurements.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Conversion preserves the source level; it does not normalize captures.
+/// Display normalization, when present, is identified by `norm_range`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CurveData {
     /// Frequency points in Hz
     pub freq: Vec<f64>,
-    /// Sound Pressure Level in dB (normalized)
+    /// Sound pressure level in dB, in the source curve's reference convention.
     pub spl: Vec<f64>,
     /// Phase in degrees (optional)
     #[serde(
@@ -34,6 +34,14 @@ pub struct CurveData {
     /// Optional frequency range used for normalization
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub norm_range: Option<(f64, f64)>,
+    /// Measured noise floor on this grid, in the same level reference as `spl`.
+    /// A level-reference shift must shift this array by the same amount.
+    /// Absent for legacy curves or when capture noise was not measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noise_floor_db: Option<Vec<f64>>,
+    /// Measured coherence on this grid; absence is not perfect coherence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coherence: Option<Vec<f64>>,
 }
 
 fn wrap_phase_degrees(phase: f64) -> f64 {
@@ -67,6 +75,8 @@ impl From<Curve> for CurveData {
             spl: curve.spl.to_vec(),
             phase: curve.phase.map(|p| p.to_vec()),
             norm_range: None,
+            noise_floor_db: curve.noise_floor_db.map(|values| values.to_vec()),
+            coherence: curve.coherence.map(|values| values.to_vec()),
         }
     }
 }
@@ -78,6 +88,8 @@ impl From<&Curve> for CurveData {
             spl: curve.spl.to_vec(),
             phase: curve.phase.as_ref().map(|p| p.to_vec()),
             norm_range: None,
+            noise_floor_db: curve.noise_floor_db.as_ref().map(|values| values.to_vec()),
+            coherence: curve.coherence.as_ref().map(|values| values.to_vec()),
         }
     }
 }
@@ -88,6 +100,8 @@ impl From<CurveData> for Curve {
             freq: ndarray::Array1::from(data.freq),
             spl: ndarray::Array1::from(data.spl),
             phase: data.phase.map(ndarray::Array1::from),
+            noise_floor_db: data.noise_floor_db.map(ndarray::Array1::from),
+            coherence: data.coherence.map(ndarray::Array1::from),
             ..Default::default()
         }
     }
@@ -105,6 +119,241 @@ pub use crate::IrWaveform;
 
 /// Backwards-compatible name for the canonical DSP execution/export graph.
 pub type DspChainOutput = crate::DspGraph;
+
+/// Third-octave early/late energy report for one channel's measured room IR.
+///
+/// The viewer renders this field only when `method`, `reference`,
+/// `smoothing`, and `split_ms` carry the exact values below and the three
+/// curves share one finite grid covering 1–8 kHz. Absence renders as
+/// "pending", never as success.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelEarlyLateCurves {
+    /// Energy-decomposition method; always `"incoherent_band_energy"`.
+    pub method: String,
+    /// Band-energy reference; always `"full_peak_band"`.
+    pub reference: String,
+    /// Frequency smoothing; always `"third_octave"`.
+    pub smoothing: String,
+    /// Early/late split after the direct reference, in milliseconds.
+    pub split_ms: f64,
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Direct-sound reference: `"broadband envelope peak"`, or
+    /// `"120 Hz lowpass envelope peak"` for subwoofer/LFE channels.
+    pub direct_reference: String,
+    /// Third-octave coverage of the emitted curves in Hz.
+    pub valid_band_hz: [f64; 2],
+    /// Incoherent sum of early and late band energies (not a complex sum).
+    pub full: CurveData,
+    /// Band energy in the first 20 ms after the direct reference.
+    pub early: CurveData,
+    /// Band energy after the first 20 ms until the IR ends.
+    pub late: CurveData,
+}
+
+/// One detected early reflection from a measured room IR.
+///
+/// Gains are dBFS relative to the 1–8 kHz filtered direct peak; times are
+/// post-direct milliseconds. The viewer cross-checks distance against
+/// 34.3 cm/ms and the first dip against 500/time_ms, and requires gains in
+/// `[-15, 0]` dBFS within 15 ms.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelReflectionEvent {
+    /// Event gain in dBFS relative to the filtered direct peak.
+    pub gain_dbfs: f64,
+    /// Post-direct arrival time in milliseconds.
+    pub time_ms: f64,
+    /// Path difference in centimeters.
+    pub distance_cm: f64,
+    /// First comb dip in Hz.
+    pub first_dip_hz: f64,
+    /// Comb ripple in dB; null when the gain equals direct (unbounded).
+    pub ripple_db: Option<f64>,
+}
+
+/// Band-limited early-reflection table for one channel's measured room IR.
+///
+/// The viewer renders this field only when `method`, `band_hz`,
+/// `threshold_dbfs`, and a nonempty `direct_reference` carry the exact
+/// values below. Absence renders as pending, never as success.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelEarlyReflections {
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Table method; always `"bandlimited_early_reflection_table_v1"`.
+    pub method: String,
+    /// Analysis band in Hz; always `[1000, 8000]`.
+    pub band_hz: [f64; 2],
+    /// Detection threshold in dBFS; always `-15`.
+    pub threshold_dbfs: f64,
+    /// Direct-sound reference description (nonempty).
+    pub direct_reference: String,
+    /// Pre-correction events from the measured IR.
+    pub pre: Vec<ChannelReflectionEvent>,
+    /// Post-correction events; empty until a post-correction IR is measured.
+    pub post: Vec<ChannelReflectionEvent>,
+}
+
+/// One octave-band Schroeder/T60 fit from a measured room IR.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelT60Band {
+    /// Octave centre frequency in Hz.
+    pub centre_hz: f64,
+    /// Selected T60 in seconds; null when invalid.
+    pub t60_s: Option<f64>,
+    /// Fit range that produced the value (`T30`/`T20`; also `EDT` on rows
+    /// that stay invalid because EDT alone is not late-decay T60).
+    pub fit_range: Option<String>,
+    /// `r²` of the selected fit (0.0 when invalid).
+    pub r2: f64,
+    /// Whether the value passed the fit-range + `min_r2` policy.
+    pub valid: bool,
+    /// Machine-readable reason when invalid (nonempty).
+    pub reason: String,
+}
+
+/// Nine-band octave T60 report for one channel's measured room IR.
+///
+/// The viewer requires all nine ordered bands with valid rows carrying
+/// `T20`/`T30` fits above `min_r2`, and invalid rows carrying a nonempty
+/// reason with no plotted value. Absence renders as pending.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelOctaveT60 {
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Minimum fit `r²` for validity.
+    pub min_r2: f64,
+    /// Nine octave bands, 63 Hz–16 kHz in order.
+    pub bands: Vec<ChannelT60Band>,
+}
+
+/// STFT waterfall decay grid for one channel's measured room IR (pre-
+/// correction only; there is no post-correction IR at optimization time).
+///
+/// The viewer renders this field only when `basis`, `method`, and
+/// `reference` carry the exact values below and the grid is a nonempty
+/// finite `times × freqs` matrix matching `mags_db`. Absence renders as
+/// pending, never as success.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelWaterfall {
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Analysis method; always `"hann_stft_waterfall_v1"`.
+    pub method: String,
+    /// Level reference; always `"full_grid_peak"` (each grid is relative
+    /// to its own peak, so two channels' grids do not compare absolutely).
+    pub reference: String,
+    /// Emitted frequency coverage in Hz.
+    pub valid_band_hz: [f64; 2],
+    /// STFT window in milliseconds; always `32`.
+    pub window_ms: f64,
+    /// STFT hop in milliseconds; always `2`.
+    pub hop_ms: f64,
+    /// Post-direct span in milliseconds; always `500`.
+    pub post_ms: f64,
+    /// Frame centre times relative to the direct peak in milliseconds.
+    pub times_ms: Vec<f64>,
+    /// Bin centre frequencies in Hz.
+    pub freqs_hz: Vec<f64>,
+    /// Magnitudes in dB relative to the grid peak, `mags_db[frame][bin]`.
+    pub mags_db: Vec<Vec<f32>>,
+    /// Machine-readable scope and non-comparison disclaimer.
+    pub scope: String,
+}
+
+/// One prominent resonance decay slice from a measured room IR.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelResonanceDecay {
+    /// Resonance frequency in Hz.
+    pub freq_hz: f64,
+    /// Level at the 60 ms slice in dB relative to the waterfall grid peak.
+    pub level_db: f64,
+    /// Fitted decay time in seconds; null when the bin has no fittable
+    /// 20–200 ms decay.
+    pub decay_time_s: Option<f64>,
+}
+
+/// Prominent-resonance decay slices for one channel's measured room IR.
+///
+/// The viewer renders this field only when `basis`, `method`, and
+/// `reference` carry the exact values below. An empty `decays` list means
+/// the analysis ran and found no prominent resonances, not a failure.
+/// Absence of the field renders as pending.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelResonanceDecays {
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Detection method; always `"hann_stft_waterfall_v1"`.
+    pub method: String,
+    /// Level reference; always `"full_grid_peak"`.
+    pub reference: String,
+    /// Slice offset after the direct peak in milliseconds; always `60`.
+    pub slice_ms: f64,
+    /// Detected resonances with fitted decay times.
+    pub decays: Vec<ChannelResonanceDecay>,
+}
+
+/// Three-cycle wavelet heatmap for one channel's measured room IR (pre-
+/// correction only).
+///
+/// The viewer renders this field only when `basis`, `method`, and
+/// `reference` carry the exact values below and the heatmap is a nonempty
+/// finite `freqs × times` matrix matching `mags_db` with at least two
+/// frequency rows and two time columns. Absence renders as pending.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelWavelet {
+    /// Evidence basis; always `"measured_room_ir"`.
+    pub basis: String,
+    /// Analysis method; always `"complex_morlet_three_cycle_v1"`.
+    pub method: String,
+    /// Level reference; always `"full_grid_peak"`.
+    pub reference: String,
+    /// Emitted frequency coverage in Hz.
+    pub valid_band_hz: [f64; 2],
+    /// Wavelet cycles; always `3`.
+    pub cycles: f64,
+    /// Log-grid density: `48` in dense measured exports, `6` in legacy reports.
+    pub freqs_per_octave: f64,
+    /// Minimum nominal hop in milliseconds; use `times_ms` for exact coordinates.
+    /// Dense exports sample at 0.1 ms through 15 ms and 1 ms thereafter.
+    pub hop_ms: f64,
+    /// Display range in dB; always `[-30, 0]`.
+    pub display_range_db: [f64; 2],
+    /// Centre frequencies in Hz.
+    pub freqs_hz: Vec<f64>,
+    /// Frame centre times relative to the direct peak in milliseconds.
+    pub times_ms: Vec<f64>,
+    /// Magnitudes in dB relative to the grid peak, `mags_db[freq][time]`.
+    pub mags_db: Vec<Vec<f32>>,
+}
+
+/// Owning physical Main target before structural routing.
+///
+/// The reference curve is in the initially calibrated measurement plane.
+/// `measurement_alignment_gain_db` maps raw measured pressure into that plane;
+/// later routing gains and correction trims are not part of this mapping.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PhysicalCorrectionTarget {
+    /// Owning Main solve target with its original shape and support.
+    pub curve: CurveData,
+    /// Initial measurement calibration gain, applied exactly once to pre/post.
+    pub measurement_alignment_gain_db: f64,
+}
+
+impl PhysicalCorrectionTarget {
+    /// Validate numerical target support and the explicit calibration mapping.
+    ///
+    /// # Errors
+    /// Rejects nonfinite gain or malformed target measurements.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.measurement_alignment_gain_db.is_finite() {
+            return Err("nonfinite physical target alignment gain".into());
+        }
+        crate::Curve::from(self.curve.clone())
+            .validate("physical correction target")
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// DSP chain for a single channel
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -128,6 +377,11 @@ pub struct ChannelDspChain {
     /// Effective target curve the optimizer worked against (optional)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_curve: Option<CurveData>,
+    /// Optional owning physical target for correction-only safety.
+    /// Native coherent evaluation continues to use `target_curve`.
+    /// Old results lack this evidence and retain their conservative legacy gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_correction_target: Option<PhysicalCorrectionTarget>,
     /// Impulse response before correction (optional, requires phase data)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_ir: Option<IrWaveform>,
@@ -141,11 +395,45 @@ pub struct ChannelDspChain {
     /// or any channel with phase-derived IRs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_early_late_correction: Option<DirectEarlyLateCorrectionMetrics>,
+    /// Stage-bound joint subwoofer diagnostics, when that method ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint_sub: Option<crate::JointSubDiagnostics>,
+    /// Third-octave early/late energy from the channel's measured room IR,
+    /// when a complete IR was declared at optimization time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub early_late_curves: Option<ChannelEarlyLateCurves>,
+    /// Band-limited early-reflection table from the channel's measured room
+    /// IR, when a complete IR was declared at optimization time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub early_reflections: Option<ChannelEarlyReflections>,
+    /// Nine-band octave T60 from the channel's measured room IR, when a
+    /// complete IR was declared at optimization time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t60_octaves: Option<ChannelOctaveT60>,
+    /// Full indirect STI from the native measured room impulse response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_transmission: Option<ChannelSpeechTransmission>,
+    /// STFT waterfall decay grid from the channel's measured room IR, when
+    /// a complete 500 ms post-peak window was declared at optimization
+    /// time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waterfall: Option<ChannelWaterfall>,
+    /// Prominent-resonance decay slices from the channel's measured room
+    /// IR, accompanying `waterfall`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resonance_decays: Option<ChannelResonanceDecays>,
+    /// Three-cycle wavelet heatmap from the channel's measured room IR,
+    /// when a complete post-peak window was declared at optimization time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wavelet: Option<ChannelWavelet>,
 }
 
 /// DSP chain for an individual driver in a multi-driver speaker
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DriverDspChain {
+    /// Native measured room capture and independent acoustic diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_acoustics: Option<MeasuredRoomAcoustics>,
     /// Driver name (e.g. "woofer", "tweeter")
     pub name: String,
     /// Driver index in the array (0 = lowest frequency)
@@ -155,15 +443,68 @@ pub struct DriverDspChain {
     /// Initial frequency response curve for this driver before optimization (optional)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_curve: Option<CurveData>,
+    /// Measured frequency span of this driver's capture in Hz, when the
+    /// stored display curve was extended past it for full-range DSP replay.
+    /// Plots of the raw measurement should clip to this band; points outside
+    /// it are trend continuation, not data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_band_hz: Option<[f64; 2]>,
 }
 
-/// Backend-neutral serialized plugin descriptor. Native adapters translate this
-/// contract into their runtime types; the model does not depend on AudioEngine.
+/// Independent acoustic diagnostics from one native measured room capture.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PluginConfigWrapper {
-    pub plugin_type: String,
-    pub parameters: serde_json::Value,
+pub struct MeasuredRoomAcoustics {
+    /// Native sampling rate verified against the waveform time grid.
+    pub sample_rate_hz: f64,
+    /// Explicit capture clock identity, absent when unknown.
+    pub timing_reference_id: Option<String>,
+    /// Unmodified measured waveform with its original time origin.
+    pub pre_ir: IrWaveform,
+    /// Measured early/late energy when its analysis band is available.
+    pub early_late_curves: Option<ChannelEarlyLateCurves>,
+    /// Measured early reflections when their analysis band is available.
+    pub early_reflections: Option<ChannelEarlyReflections>,
+    /// Measured octave decay fits, including invalid/unavailable bands.
+    pub t60_octaves: Option<ChannelOctaveT60>,
+    /// Full indirect STI from the native measured room impulse response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_transmission: Option<ChannelSpeechTransmission>,
+    /// Measured STFT decay grid within the capture's frequency coverage.
+    pub waterfall: Option<ChannelWaterfall>,
+    /// Resonance fits accompanying the measured waterfall.
+    pub resonance_decays: Option<ChannelResonanceDecays>,
+    /// Measured wavelet grid within the capture's frequency coverage.
+    pub wavelet: Option<ChannelWavelet>,
 }
+
+/// Full indirect speech transmission results with measured-capture provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelSpeechTransmission {
+    /// Analysis contract: `iec_60268_16_2020_indirect_ir_only_v1`.
+    pub method: String,
+    /// Always `measured_room_ir`; never derived from a synthesized waveform.
+    pub basis: String,
+    /// Native capture sampling rate in Hz.
+    pub sample_rate_hz: f64,
+    /// Original capture duration, without analysis padding, in seconds.
+    pub duration_s: f64,
+    /// Overall full STI in [0, 1].
+    pub sti: f64,
+    /// Seven nominal octave centers in ascending order, 125 Hz through 8 kHz.
+    pub octave_centers_hz: [f64; 7],
+    /// Fourteen nominal modulation frequencies, 0.63 Hz through 12.5 Hz.
+    pub modulation_frequencies_hz: [f64; 14],
+    /// Modulation transfer values, indexed by modulation frequency then octave.
+    pub modulation_transfer: [[f64; 7]; 14],
+    /// Per-octave mean transmission indices over all 14 modulations.
+    pub mti: [f64; 7],
+    /// Capture limitations, including possible decay truncation on short inputs.
+    pub warnings: Vec<String>,
+}
+
+/// Portable serialized plugin descriptor shared with canonical DSP realization.
+#[doc(inline)]
+pub use autoeq_core::serialized_plugins::PluginConfigWrapper;
 
 /// Per-channel EPA psychoacoustic metrics computed on the initial
 /// (pre-EQ) and final (post-EQ) frequency responses.
@@ -175,6 +516,36 @@ pub struct EpaChannelMetrics {
     pub pre: crate::EpaScore,
     /// EPA score computed from the final (post-EQ) response.
     pub post: crate::EpaScore,
+    /// Spectral comparison with explicit equal reference-band pressure energy.
+    /// Absent when shared support cannot establish the fixed matching band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_matched: Option<LevelMatchedEpaMetrics>,
+}
+
+/// Level-controlled EPA diagnostic, separate from delivered SPL and safety.
+/// Matching pressure energy is not equal-loudness calibration or a listening test.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelMatchedEpaMetrics {
+    /// Matching contract: `log_frequency_pressure_energy_1_2_khz_v1`.
+    pub method: String,
+    /// Fixed matching band, with both endpoints inside measured support.
+    pub reference_band_hz: [f64; 2],
+    /// SHA256 of the frozen baseline evaluation grid (little-endian f64).
+    pub frequency_grid_sha256: String,
+    /// Number of evaluation bins; post is interpolated onto the baseline grid.
+    pub sample_count: usize,
+    /// Baseline reference-band pressure-energy level removed before EPA scoring.
+    pub pre_reference_db: f64,
+    /// Delivered reference-band pressure-energy level removed before EPA scoring.
+    pub post_reference_db: f64,
+    /// Configured EPA presentation offset, not authenticated microphone calibration.
+    pub listening_level_phon: f64,
+    /// Baseline model score after reference-band level matching.
+    pub pre: crate::EpaScore,
+    /// Delivered model score after reference-band level matching.
+    pub post: crate::EpaScore,
+    /// Post minus pre modeled preference; not measured listener preference.
+    pub preference_delta: f64,
 }
 
 /// Aggregate EPA metrics for the whole reproduced channel set.
@@ -190,6 +561,9 @@ pub struct EpaMultichannelMetrics {
     pub post: crate::EpaScore,
     /// Human-readable aggregation standard/approximation.
     pub standard: String,
+    /// Whole-set level match preserving relative levels between channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_matched: Option<LevelMatchedEpaMetrics>,
 }
 
 /// Correction-energy split across direct, early, and late IR windows.
@@ -617,7 +991,7 @@ pub struct OptimizationMetadata {
     /// Optimization algorithm used
     pub algorithm: String,
     /// Loss function that the optimizer minimized.
-    /// One of `"flat"`, `"score"`, `"epa"`.
+    /// One of `"flat"`, `"headphone_flat"`, `"score"`, `"epa"`.
     ///
     /// Note: `pre_score` and `post_score` are *not* values of this loss
     /// function — they are always computed by
@@ -645,6 +1019,15 @@ pub struct OptimizationMetadata {
     /// channel-energy aggregation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epa_multichannel: Option<EpaMultichannelMetrics>,
+    /// Provenance for shipped EPA scores: model identity and the
+    /// calibration it assumed. Present whenever EPA scores ship.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epa_provenance: Option<crate::EpaProvenance>,
+    /// Claim-level playback summary: what shipped, what benefit was
+    /// demonstrated, and which limits apply. Rendered from the evidence
+    /// blocks at conversion; auditors re-derive it from the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_summary: Option<crate::PlaybackSummary>,
     /// Group delay optimisation summary (GD-Opt v2, Phase GD-4).
     /// Present when GD-Opt was attempted (success or skip with advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -694,6 +1077,22 @@ pub struct OptimizationMetadata {
     /// Audibility-first acceptance decision for the final correction chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correction_acceptance: Option<crate::CorrectionAcceptanceReport>,
+    /// Provisional decision records collected during the run (evidence
+    /// checks, constraints, target policy, phase/crossover/sub operations,
+    /// pruning, fallback decisions). In-memory threading only, never
+    /// serialized: observation stays separate from delivery claims, and
+    /// the finalized graph-bound ledger is attached to
+    /// `DspChainOutput.correction_decisions` by workflow reconciliation.
+    #[serde(skip)]
+    pub provisional_decisions: Vec<crate::decision_ledger::DecisionRecord>,
+    /// Per-filter audibility-veto verdicts keyed by channel.  Report-only
+    /// decisions remain visible even when no filter was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audibility_veto: Option<std::collections::BTreeMap<String, Vec<crate::FilterVetoVerdict>>>,
+    /// Frozen-chain adjudication summaries keyed by channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub veto_adjudication:
+        Option<std::collections::BTreeMap<String, crate::VetoAdjudicationReport>>,
     /// Backend termination, convergence, budget, seed, constraint, and
     /// confidence evidence for the optimizer runs that produced each channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -709,12 +1108,56 @@ pub struct OptimizationMetadata {
     /// verify that an override did not silently replace unrelated sections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_config: Option<Box<crate::RoomConfig>>,
+    /// Per-channel operation-boundary verdicts from the evidence intake.
+    /// Phase dispatch, target policy, and the final ledger read these
+    /// records; a missing gate means the channel ran before intake gating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_gates: Option<Vec<crate::eligibility::ChannelOperationGate>>,
+    /// Declared ±tolerance in seconds for the report Section 1 T60 flatness
+    /// share, carried from the input `reporting` policy. When absent the
+    /// viewer applies its documented standard default; it changes no
+    /// acceptance math.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t60_flatness_tolerance_s: Option<f64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::Array1;
+
+    #[test]
+    fn physical_target_contract_preserves_legacy_json_and_validates_metadata() {
+        let mut graph = crate::DspGraph::new("1");
+        graph.add_channel("L", Vec::new());
+        let legacy = serde_json::to_value(&graph.channels["L"]).unwrap();
+        assert!(legacy.get("physical_correction_target").is_none());
+        let restored: ChannelDspChain = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(restored.physical_correction_target.is_none());
+        assert_eq!(serde_json::to_value(restored).unwrap(), legacy);
+        let schema = serde_json::to_value(schemars::schema_for!(ChannelDspChain)).unwrap();
+        assert!(
+            schema["properties"]
+                .get("physical_correction_target")
+                .is_some()
+        );
+        let mut target = PhysicalCorrectionTarget {
+            curve: (&sample_curve()).into(),
+            measurement_alignment_gain_db: -3.0,
+        };
+        assert!(target.validate().is_ok());
+        target.measurement_alignment_gain_db = f64::NAN;
+        assert!(target.validate().is_err());
+        target.measurement_alignment_gain_db = 3.0;
+        target.curve.freq[1] = target.curve.freq[0];
+        assert!(target.validate().is_err());
+        graph
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .physical_correction_target = Some(target);
+        assert!(graph.validate().is_err());
+    }
 
     fn sample_curve() -> Curve {
         Curve {
@@ -784,11 +1227,39 @@ mod tests {
             spl: vec![80.0, 82.0, 81.0],
             phase: Some(vec![0.0, 45.0, 90.0]),
             norm_range: Some((1000.0, 2000.0)),
+            ..Default::default()
         };
         let curve: Curve = data.clone().into();
         assert_eq!(curve.freq.to_vec(), data.freq);
         assert_eq!(curve.spl.to_vec(), data.spl);
         assert_eq!(curve.phase.as_ref().map(|p| p.to_vec()), data.phase);
+    }
+
+    #[test]
+    fn curve_data_preserves_capture_quality_without_inventing_missing_evidence() {
+        let capture = Curve {
+            freq: ndarray::Array1::from_vec(vec![50.0, 100.0, 200.0]),
+            spl: ndarray::Array1::from_vec(vec![72.0, 81.0, 76.0]),
+            phase: Some(ndarray::Array1::from_vec(vec![10.0, 20.0, 30.0])),
+            noise_floor_db: Some(ndarray::Array1::from_vec(vec![50.0, 60.0, 55.0])),
+            coherence: Some(ndarray::Array1::from_vec(vec![0.95, 0.7, 0.99])),
+            ..Default::default()
+        };
+        for data in [CurveData::from(&capture), CurveData::from(capture.clone())] {
+            let json = serde_json::to_value(&data).unwrap();
+            let restored: Curve = serde_json::from_value::<CurveData>(json).unwrap().into();
+            assert_eq!(restored.noise_floor_db, capture.noise_floor_db);
+            assert_eq!(restored.coherence, capture.coherence);
+            assert_eq!(restored.spl, capture.spl);
+            restored.validate("round-tripped capture").unwrap();
+        }
+        let legacy: CurveData = serde_json::from_value(serde_json::json!({
+            "freq": [50.0, 100.0, 200.0], "spl": [72.0, 81.0, 76.0]
+        }))
+        .unwrap();
+        let restored: Curve = legacy.into();
+        assert!(restored.noise_floor_db.is_none());
+        assert!(restored.coherence.is_none());
     }
 
     #[test]
@@ -798,6 +1269,7 @@ mod tests {
             spl: vec![80.0, 82.0],
             phase: None,
             norm_range: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&data).unwrap();
         let back: CurveData = serde_json::from_str(&json).unwrap();

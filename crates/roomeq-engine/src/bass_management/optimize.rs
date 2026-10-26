@@ -2,7 +2,9 @@ use super::misc::differential_evolution_minimize;
 use super::misc::grouped_home_cinema_roles;
 use super::misc::joint_bass_management_report_from_parts;
 use super::predict::apply_source_pre_route_transfer;
-use super::sub_driver_info::sum_sub_output_responses_on_grid;
+use super::sub_driver_info::{
+    sum_sub_output_responses_on_grid, sum_weighted_sub_output_responses_on_grid,
+};
 use super::types::BassManagementJointGroupInput;
 use super::types::SubDriverInfo;
 use super::types::group_crossover_plan;
@@ -12,65 +14,154 @@ use crate::error::{AutoeqError, Result};
 use crate::topology::{
     all_curves_have_usable_phase, all_curves_share_frequency_grid,
     apply_crossover_response_to_curve, apply_delay_and_polarity_to_curve, average_mains_magnitude,
-    bass_management_crossover_cancellation_underfill_db, bass_management_crossover_type_candidates,
-    bass_management_max_underfill_db_with_target, bass_management_objective,
-    bass_management_objective_with_target, bass_management_underfill_is_acceptable,
-    complex_sum_mains, curve_has_usable_phase, normalize_crossover_delays,
+    bass_management_crossover_type_candidates, bass_management_max_underfill_db_with_target,
+    bass_management_objective, bass_management_objective_with_target, complex_sum_mains,
+    correctable_dip_depth_db, curve_has_usable_phase, normalize_crossover_delays,
     predict_bass_management_sum, select_bass_management_crossover_type,
 };
 use crate::{Curve, crossover, home_cinema};
 use math_audio_dsp::analysis::compute_average_response;
-use roomeq_model::{CrossoverConfig, RoomConfig};
+use roomeq_model::{CrossoverConfig, RoomConfig, headroom::HeadroomBudget};
 use std::collections::{BTreeMap, HashMap};
 
-// Leave room for serialized-chain interpolation and final grid replay. The
-// production hard gate remains MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB.
+// Soft target-tracking preference, not a hard cancellation acceptance limit.
+// Electrical and baseline-aware acoustic safety are assessed separately.
 const ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB: f64 = 1.0;
 
-fn worsens_excessive_underfill(candidate: &[f64], baseline: &[f64]) -> bool {
-    candidate.iter().zip(baseline).any(|(after, before)| {
-        !bass_management_underfill_is_acceptable(*after) && *after > *before + 1.0e-3
-    })
+fn cancellation_penalty_excess(evidence: &roomeq_model::CrossoverCancellationEvidence) -> f64 {
+    if !evidence.final_db.is_finite() || !evidence.limit_db.is_finite() {
+        return f64::INFINITY;
+    }
+    // Reserve one extra comparison tolerance for serialized replay while
+    // allowing useful residuals above the absolute limit when the measured
+    // baseline was worse. A fixed 1 dB safety hinge can silence bass merely
+    // to remove cancellation that the configured policy already accepts.
+    let ceiling = evidence
+        .baseline_db
+        .filter(|value| value.is_finite())
+        .map_or(evidence.limit_db, |baseline| {
+            evidence
+                .limit_db
+                .max(baseline - 2.0 * roomeq_model::CROSSOVER_CANCELLATION_TOLERANCE_DB)
+        });
+    (evidence.final_db - ceiling).max(0.0)
 }
 
-fn improves_but_remains_excessive(candidate: &[f64], baseline: &[f64]) -> bool {
-    candidate.iter().zip(baseline).any(|(after, before)| {
-        !bass_management_underfill_is_acceptable(*after) && *after + 1.0e-3 < *before
-    })
+/// Free trim deviation from the measured level-difference anchor, in dB.
+///
+/// Crossover interaction shifts the optimal trim slightly off the measured
+/// main/sub gap plus target lift; chase deviations run several dB further.
+const TRIM_ANCHOR_TOLERANCE_DB: f64 = 1.0;
+/// Quadratic price of trim deviation beyond the anchor tolerance.
+///
+/// Calibrated so a ~2 dB chase deviation costs ~20 units (more than the RMS
+/// crumbs hole filling earns) while legitimate tracking inside tolerance
+/// stays free.
+const TRIM_DEVIATION_WEIGHT: f64 = 30.0;
+/// Price of route trim above the joint-pool remainder, per dB squared.
+///
+/// Calibrated to zero (off): the trim and the MSO sub-output gains draw
+/// from one headroom pool, and trim stacked on spent pool is cut again by
+/// safety (measured unknown: +6 trim on +6 MSO, splice plays cold). But a
+/// static pool price cannot tell wasted overruns from affordable ones: it
+/// settles between the anchor pull and the pool regardless of downstream
+/// need, and any weight that moves unknown (10 and 30 measured) tips
+/// genelec-fir off its acceptance cliff into identity (even reshaping its
+/// basin: L rails to +6 at weight 10). Like the hard cap before it, correct
+/// enforcement needs true-headroom pools spanning route+FIR (Phase 3d).
+/// The mechanism stays wired so Phase 3d can price true overruns; the
+/// Phase 2 advisory keeps reporting the policy-pool position meanwhile.
+const POOL_OVERRUN_WEIGHT: f64 = 0.0;
+
+/// Price extreme route actuation so the DE prefers sane trims and delays.
+///
+/// The splice rewards (even hinged) still pay RMS crumbs for hole filling
+/// with no counter-pressure, so capping one actuator merely pushes the DE to
+/// rail another (measured: +6 dB railed trims, then 17 ms delays once trim
+/// was capped). Trim is therefore priced by deviation from its measured
+/// anchor (main/sub level gap plus target lift): pricing raw magnitude would
+/// also kill legitimate tracking once the dip hinge plateaus its reward.
+/// Trim above the joint-pool remainder is additionally priced quadratically:
+/// it stacks on MSO-spent headroom that safety cuts again, so the splice
+/// plays cold. Relative main/bass delay is free within one cycle at the
+/// crossover (genuine arrival alignment) and quadratic beyond it, where phase
+/// wraps make larger values redundant for the splice and only add latency and
+/// seat-dependent combing. Polarity is binary and stays unpriced.
+/// Non-finite anchor or pool prices nothing rather than masking through
+/// `f64::max`.
+fn route_actuation_regularization_db(
+    trim_db: f64,
+    trim_anchor_db: f64,
+    main_delay_ms: f64,
+    bass_delay_ms: f64,
+    crossover_hz: f64,
+    pool_up_db: f64,
+) -> f64 {
+    let trim_price = if trim_anchor_db.is_finite() {
+        let deviation = (trim_db - trim_anchor_db).abs() - TRIM_ANCHOR_TOLERANCE_DB;
+        TRIM_DEVIATION_WEIGHT * deviation.max(0.0).powi(2)
+    } else {
+        0.0
+    };
+    let pool_price = if pool_up_db.is_finite() {
+        let overrun = (trim_db - pool_up_db).max(0.0);
+        POOL_OVERRUN_WEIGHT * overrun.powi(2)
+    } else {
+        0.0
+    };
+    let relative_delay_ms = (main_delay_ms - bass_delay_ms).abs();
+    let cycle_ms = if crossover_hz.is_finite() && crossover_hz > 0.0 {
+        1000.0 / crossover_hz
+    } else {
+        0.0
+    };
+    let delay_excess_ms = (relative_delay_ms - cycle_ms).max(0.0);
+    trim_price + pool_price + delay_excess_ms * delay_excess_ms
 }
 
-fn has_excessive_underfill(underfills: &[f64]) -> bool {
-    underfills
-        .iter()
-        .any(|underfill| !bass_management_underfill_is_acceptable(*underfill))
+fn constrained_route_loss(
+    loss: f64,
+    underfill: f64,
+    evidence: &roomeq_model::CrossoverCancellationEvidence,
+) -> f64 {
+    let excess =
+        (correctable_dip_depth_db(underfill) - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
+    let unsafe_excess = cancellation_penalty_excess(evidence);
+    // Preserve the established separation of scales: target deficits dominate
+    // flatness, and policy violations dominate target fitting. Accepted measured
+    // residuals must not receive the latter penalty.
+    loss + 1_000.0 * excess * excess + 1_000_000.0 * unsafe_excess * unsafe_excess
 }
 
-/// True when the candidate restores hard crossover safety: the baseline
-/// has excessive underfill while every candidate underfill is fully
-/// acceptable. Recorded on accepted source reports so QA gates can exempt
-/// exactly this documented tradeoff — and nothing else — from per-source
-/// regression limits.
 fn candidate_restores_hard_safety(
-    candidate_underfills: &[f64],
-    baseline_underfills: &[f64],
+    evidence: &[roomeq_model::CrossoverCancellationEvidence],
 ) -> bool {
-    has_excessive_underfill(baseline_underfills) && !has_excessive_underfill(candidate_underfills)
+    !evidence.is_empty()
+        && evidence
+            .iter()
+            .all(|e| e.final_db <= e.limit_db + roomeq_model::CROSSOVER_CANCELLATION_TOLERANCE_DB)
+        && evidence.iter().any(|e| {
+            e.baseline_db
+                .is_some_and(|d| d > e.limit_db + roomeq_model::CROSSOVER_CANCELLATION_TOLERANCE_DB)
+        })
 }
 
 fn should_accept_route_candidate(
     candidate_score: f64,
     baseline_score: f64,
     regressed_source: bool,
-    candidate_underfills: &[f64],
-    baseline_underfills: &[f64],
+    evidence: &[roomeq_model::CrossoverCancellationEvidence],
 ) -> bool {
-    let baseline_is_unsafe = has_excessive_underfill(baseline_underfills);
-    let candidate_restores_safety =
-        candidate_restores_hard_safety(candidate_underfills, baseline_underfills);
-    let improves_quality = candidate_score < baseline_score - 1.0e-6;
-
-    (candidate_restores_safety || (improves_quality && (!regressed_source || baseline_is_unsafe)))
-        && !worsens_excessive_underfill(candidate_underfills, baseline_underfills)
+    !evidence.is_empty()
+        && evidence.iter().all(|e| e.accepted)
+        && (candidate_restores_hard_safety(evidence)
+            || (candidate_score < baseline_score - 1e-6
+                && (!regressed_source
+                    || evidence.iter().any(|e| {
+                        e.baseline_db.is_some_and(|d| {
+                            d > e.limit_db + roomeq_model::CROSSOVER_CANCELLATION_TOLERANCE_DB
+                        })
+                    }))))
 }
 
 /// Keep target tracking in the optimization constraint, but reserve the
@@ -123,6 +214,46 @@ fn joint_headroom_gain_reduction_db(margin_db: f64) -> f64 {
         (JOINT_HEADROOM_SAFETY_DB - margin_db).max(0.0)
     } else {
         0.0
+    }
+}
+
+/// Optimized per-group crossover solution pending the no-improvement check.
+struct GroupCrossoverSolution {
+    freq_hz: f64,
+    main_delay_ms: f64,
+    bass_delay_ms: f64,
+    polarity_inverted: bool,
+    trim_db: f64,
+    objective_after: Option<f64>,
+}
+
+/// Revert an optimized group solution to the baseline plan when it does not
+/// strictly improve on the baseline objective.
+///
+/// Pure decision logic extracted so it can be tested deterministically: the
+/// call site only runs inside the phase-gated optimizer, which is currently
+/// deferred (`phase_available = false`), so reaching the branch end-to-end is
+/// seed-dependent. The `Option` comparison preserves the call-site semantics
+/// exactly (`None >= None` reverts; `None < Some(_)` keeps the solution).
+fn revert_group_crossover_if_no_improvement(
+    solution: GroupCrossoverSolution,
+    objective_before: Option<f64>,
+    baseline_freq_hz: f64,
+) -> (GroupCrossoverSolution, bool) {
+    if solution.objective_after >= objective_before {
+        (
+            GroupCrossoverSolution {
+                freq_hz: baseline_freq_hz,
+                main_delay_ms: 0.0,
+                bass_delay_ms: 0.0,
+                polarity_inverted: false,
+                trim_db: 0.0,
+                objective_after: objective_before,
+            },
+            true,
+        )
+    } else {
+        (solution, false)
     }
 }
 
@@ -312,15 +443,27 @@ pub fn optimize_home_cinema_group_crossovers(
                 polarity_inverted,
             );
             objective_after = bass_management_objective(objective_after_curve.as_ref(), final_freq);
-            if objective_after >= objective_before {
+            let (reverted_solution, reverted) = revert_group_crossover_if_no_improvement(
+                GroupCrossoverSolution {
+                    freq_hz: final_freq,
+                    main_delay_ms,
+                    bass_delay_ms,
+                    polarity_inverted,
+                    trim_db,
+                    objective_after,
+                },
+                objective_before,
+                plan.frequency_hz,
+            );
+            if reverted {
                 advisories.push("group_optimizer_no_improvement".to_string());
-                final_freq = plan.frequency_hz;
-                main_delay_ms = 0.0;
-                bass_delay_ms = 0.0;
-                polarity_inverted = false;
-                trim_db = 0.0;
-                objective_after = objective_before;
             }
+            final_freq = reverted_solution.freq_hz;
+            main_delay_ms = reverted_solution.main_delay_ms;
+            bass_delay_ms = reverted_solution.bass_delay_ms;
+            polarity_inverted = reverted_solution.polarity_inverted;
+            trim_db = reverted_solution.trim_db;
+            objective_after = reverted_solution.objective_after;
         }
 
         if advisories.is_empty() {
@@ -374,6 +517,9 @@ fn optimize_home_cinema_joint_group_crossovers(
         return None;
     }
 
+    // Phase 1 headroom budget: values identical to the inlined config reads
+    // below; behavior-neutral by construction (see roomeq_model::headroom).
+    let headroom_budget = HeadroomBudget::from_legacy_config(config);
     let mut lower_bounds = Vec::new();
     let mut upper_bounds = Vec::new();
     let mut initial = Vec::new();
@@ -412,19 +558,21 @@ fn optimize_home_cinema_joint_group_crossovers(
             .plan
             .frequency_range
             .unwrap_or((input.plan.frequency_hz, input.plan.frequency_hz));
-        lower_bounds.extend_from_slice(&[min_freq, 0.0, 0.0, 0.0, 0.0, config.optimizer.min_db]);
+        lower_bounds.extend_from_slice(&[
+            min_freq,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            headroom_budget.max_route_trim_down_db,
+        ]);
         upper_bounds.extend_from_slice(&[
             max_freq,
             (type_candidates.last().unwrap().len().saturating_sub(1)) as f64,
             20.0,
             20.0,
             1.0,
-            config
-                .system
-                .as_ref()
-                .and_then(|system| system.bass_management.as_ref())
-                .map(|bm| bm.max_sub_boost_db.max(0.0))
-                .unwrap_or(config.optimizer.max_db.max(0.0)),
+            headroom_budget.max_route_trim_up_db,
         ]);
         initial.extend_from_slice(&[
             current_report
@@ -701,6 +849,9 @@ pub fn optimize_bass_management_joint_solution_legacy(
         return vec!["joint_route_optimizer_skipped_no_phase_valid_groups".to_string()];
     }
 
+    // Phase 1 headroom budget: values identical to the inlined config reads
+    // below; behavior-neutral by construction (see roomeq_model::headroom).
+    let headroom_budget = HeadroomBudget::from_legacy_config(config);
     let mut lower_bounds = Vec::new();
     let mut upper_bounds = Vec::new();
     let mut initial = Vec::new();
@@ -727,19 +878,21 @@ pub fn optimize_bass_management_joint_solution_legacy(
         let (min_freq, max_freq) = joint_group_frequency_bounds(config, group_id, current_freq);
         let initial_freq = current_freq.clamp(min_freq, max_freq);
         type_candidates.push(candidates);
-        lower_bounds.extend_from_slice(&[min_freq, 0.0, 0.0, 0.0, 0.0, config.optimizer.min_db]);
+        lower_bounds.extend_from_slice(&[
+            min_freq,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            headroom_budget.max_route_trim_down_db,
+        ]);
         upper_bounds.extend_from_slice(&[
             max_freq,
             (type_candidates.last().unwrap().len().saturating_sub(1)) as f64,
             20.0,
             20.0,
             1.0,
-            config
-                .system
-                .as_ref()
-                .and_then(|system| system.bass_management.as_ref())
-                .map(|bm| bm.max_sub_boost_db.max(0.0))
-                .unwrap_or(config.optimizer.max_db.max(0.0)),
+            headroom_budget.max_route_trim_up_db,
         ]);
         initial.extend_from_slice(&[
             initial_freq,
@@ -752,12 +905,7 @@ pub fn optimize_bass_management_joint_solution_legacy(
     }
 
     let output_offset = initial.len();
-    let max_output_boost = config
-        .system
-        .as_ref()
-        .and_then(|system| system.bass_management.as_ref())
-        .map(|bm| bm.max_sub_boost_db.max(0.0))
-        .unwrap_or(config.optimizer.max_db.max(0.0));
+    let max_output_boost = headroom_budget.max_output_boost_db;
     for output in sub_outputs.iter() {
         let is_dba_front = output.strategy_source == "dba_front";
         let is_dba_rear = output.strategy_source == "dba_rear";
@@ -1072,7 +1220,11 @@ fn measured_source_route_trim_db(
 /// correction designed from `measured_sub_curve` to
 /// `corrected_sub_curve`.  Route optimization must include the same transfer
 /// or it evaluates a different low branch than the exported DSP graph.
-fn apply_common_sub_correction(
+/// Apply the shared subwoofer correction to a physical driver response.
+///
+/// Only the electrical correction is extended outside common measurement support.
+/// Returns `None` when overlapping support or coherent phase is unavailable.
+pub fn apply_common_sub_correction(
     driver_sum: &Curve,
     measured_sub_curve: &Curve,
     corrected_sub_curve: &Curve,
@@ -1195,12 +1347,12 @@ pub fn baseline_bass_management_source_reports(
         .collect()
 }
 
-/// Grid density for the per-sub low-pass search. A deterministic log grid
-/// keeps the stage a fast path: pairs × points coherent splice evaluations,
-/// orders of magnitude below a DE rerun.
-const PER_SUB_SPLICE_GRID_POINTS: usize = 21;
-/// Near-tie tolerance: splice losses within this epsilon keep the candidate
-/// closest to the configured center instead of an arbitrary grid edge.
+/// Match the former maximum of three 21-point LP sweeps per physical output.
+/// Joint optimization spends this bounded budget across frequency, delay, and
+/// polarity rather than adding an unrestricted second routing search.
+const PER_SUB_SPLICE_EVALS_PER_OUTPUT: usize = 63;
+
+/// Preserve the exact retained controls when joint scores differ only numerically.
 const PER_SUB_SPLICE_TIE_EPS: f64 = 1.0e-9;
 
 /// Apply exactly the per-driver low-passes later serialized on the shared
@@ -1250,9 +1402,8 @@ fn low_pass_driver_inputs(
         .collect()
 }
 
-/// Coordinate search of the complete shared array, evaluated separately for
-/// every logical input with the actual main HP and shared LP. No positional
-/// main/sub pairing is implied by the per-driver crossover list.
+/// Jointly search physical low-pass, delay, and polarity on routed input sums.
+/// Matrix weights and per-source controls match the deployed graph.
 #[allow(clippy::too_many_arguments)]
 fn apply_per_sub_splice_selection(
     config: &RoomConfig,
@@ -1266,6 +1417,8 @@ fn apply_per_sub_splice_selection(
     sub_outputs: &mut [home_cinema::BassManagementSubOutputReport],
     drivers: &[SubDriverInfo],
     sample_rate: f64,
+    source_results: &[home_cinema::BassManagementSourceReport],
+    routing_matrix: Option<&[Vec<f64>]>,
 ) -> Vec<String> {
     if per_sub_crossover_keys(config).is_empty() {
         return Vec::new();
@@ -1276,8 +1429,53 @@ fn apply_per_sub_splice_selection(
     if plans.len() != drivers.len() || drivers.len() != sub_outputs.len() {
         return vec!["per_sub_splice_skipped_driver_count_mismatch".into()];
     }
-    let evaluate = |frequencies: &[f64]| -> Option<f64> {
-        let filtered = low_pass_driver_inputs(config, drivers, frequencies, sample_rate)?;
+    let mut lower = Vec::new();
+    let mut upper = Vec::new();
+    let mut initial = Vec::new();
+    for (plan, output) in plans.iter().zip(sub_outputs.iter()) {
+        let (low, high) = plan.selectable_bounds_hz();
+        // Preserve specialized DBA steering. Other sub outputs use the same
+        // nonnegative 20 ms delay authority as the existing route optimizer.
+        let fixed = output.strategy_source.starts_with("dba_");
+        let delay = output.delay_ms.max(0.0);
+        let polarity = f64::from(output.polarity_inverted);
+        lower.extend([
+            low,
+            if fixed { delay } else { 0.0 },
+            if fixed { polarity } else { 0.0 },
+        ]);
+        upper.extend([
+            high,
+            if fixed { delay } else { delay.max(20.0) },
+            if fixed { polarity } else { 1.0 },
+        ]);
+        initial.extend([
+            output.selected_low_pass_hz.unwrap_or(high).clamp(low, high),
+            delay,
+            polarity,
+        ]);
+    }
+    let decode = |params: &[f64]| {
+        let mut outputs = sub_outputs.to_vec();
+        for (index, output) in outputs.iter_mut().enumerate() {
+            let base = index * 3;
+            output.selected_low_pass_hz = Some(params[base].clamp(lower[base], upper[base]));
+            output.delay_ms = params[base + 1].clamp(lower[base + 1], upper[base + 1]);
+            output.polarity_inverted = params[base + 2]
+                .round()
+                .clamp(lower[base + 2], upper[base + 2])
+                >= 0.5;
+        }
+        outputs
+    };
+    let evaluate = |params: &[f64]| -> Option<(f64, Vec<f64>, bool)> {
+        let outputs = decode(params);
+        let frequencies: Vec<_> = outputs
+            .iter()
+            .filter_map(|output| output.selected_low_pass_hz)
+            .collect();
+        let filtered = low_pass_driver_inputs(config, drivers, &frequencies, sample_rate)?;
+        let mut cancellation_passed = true;
         let mut losses = Vec::new();
         for role in main_roles {
             let main = aligned_pre_eq_curves.get(role)?;
@@ -1286,7 +1484,24 @@ fn apply_per_sub_splice_selection(
             let frequency = group
                 .selected_crossover_hz
                 .or(group.configured_crossover_hz)?;
-            let mut sub = sum_sub_output_responses_on_grid(&main.freq, &filtered, sub_outputs)?;
+            let source = source_results
+                .iter()
+                .find(|source| source.source_channel == *role && source.group_id == group_id);
+            let mut sub = if let Some(matrix) = routing_matrix {
+                let column = main_roles.iter().position(|input| input == role)?;
+                if matrix.len() != outputs.len() {
+                    return None;
+                }
+                let weights = matrix
+                    .iter()
+                    .map(|row| row.get(column).copied())
+                    .collect::<Option<Vec<_>>>()?;
+                sum_weighted_sub_output_responses_on_grid(
+                    &main.freq, &filtered, &outputs, &weights,
+                )?
+            } else {
+                sum_sub_output_responses_on_grid(&main.freq, &filtered, &outputs)?
+            };
             sub = apply_common_sub_correction(&sub, measured_sub_curve?, corrected_sub_curve?)?;
             sub = apply_source_pre_route_transfer(
                 &sub,
@@ -1299,13 +1514,20 @@ fn apply_per_sub_splice_selection(
                 sample_rate,
                 false,
             );
-            let main_branch =
-                apply_delay_and_polarity_to_curve(&main_branch, group.main_delay_ms, false);
-            sub.spl.mapv_inplace(|level| level + group.trim_db);
+            let main_branch = apply_delay_and_polarity_to_curve(
+                &main_branch,
+                source.map_or(group.main_delay_ms, |source| source.main_delay_ms),
+                false,
+            );
+            sub.spl.mapv_inplace(|level| {
+                level + source.map_or(group.trim_db, |source| source.trim_db)
+            });
             let sub = apply_delay_and_polarity_to_curve(
                 &sub,
-                group.bass_route_delay_ms,
-                group.polarity_inverted,
+                source.map_or(group.bass_route_delay_ms, |source| {
+                    source.bass_route_delay_ms
+                }),
+                source.map_or(group.polarity_inverted, |source| source.polarity_inverted),
             );
             let predicted = complex_sum_mains(&[&main_branch, &sub]);
             let target = target_curves.and_then(|targets| targets.get(role));
@@ -1313,56 +1535,109 @@ fn apply_per_sub_splice_selection(
             let underfill =
                 bass_management_max_underfill_db_with_target(Some(&predicted), target, frequency)
                     .unwrap_or(0.0);
-            losses.push(
-                loss + 1000.0
-                    * (underfill - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB)
-                        .max(0.0)
-                        .powi(2),
-            );
+            let cancellation = crate::topology::assess_configured_crossover_cancellation(
+                config,
+                role,
+                &main_branch,
+                &sub,
+                &predicted,
+                frequency,
+            )?;
+            cancellation_passed &= cancellation.accepted;
+            losses.push(constrained_route_loss(loss, underfill, &cancellation));
         }
         if losses.is_empty() {
             return None;
         }
-        Some(
-            0.5 * losses.iter().sum::<f64>() / losses.len() as f64
-                + 0.5 * losses.into_iter().fold(f64::NEG_INFINITY, f64::max),
-        )
+        // Reuse the existing one-cycle delay price so partial hole filling
+        // does not reward redundant wrapped delays on the physical outputs.
+        let delay_price = outputs
+            .iter()
+            .filter(|output| !output.strategy_source.starts_with("dba_"))
+            .map(|output| {
+                route_actuation_regularization_db(
+                    0.0,
+                    0.0,
+                    output.delay_ms,
+                    0.0,
+                    output.selected_low_pass_hz.unwrap_or(0.0),
+                    0.0,
+                )
+            })
+            .sum::<f64>()
+            / outputs.len() as f64;
+        let score = 0.5 * losses.iter().sum::<f64>() / losses.len() as f64
+            + 0.5 * losses.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            + delay_price;
+        score
+            .is_finite()
+            .then_some((score, losses, cancellation_passed))
     };
-    let mut frequencies: Vec<_> = plans
-        .iter()
-        .map(|plan| plan.selectable_bounds_hz().1)
-        .collect();
-    let Some(mut best) = evaluate(&frequencies).filter(|score| score.is_finite()) else {
+    let Some((baseline, baseline_losses, _)) = evaluate(&initial) else {
         return vec!["per_sub_splice_skipped_missing_phase_or_correction".into()];
     };
-    for _ in 0..3 {
-        let mut improved = false;
-        for (index, plan) in plans.iter().enumerate() {
-            let (low, high) = plan.selectable_bounds_hz();
-            for step in 0..PER_SUB_SPLICE_GRID_POINTS {
-                let candidate = (low.ln()
-                    + (high / low).ln() * step as f64 / (PER_SUB_SPLICE_GRID_POINTS - 1) as f64)
-                    .exp()
-                    .clamp(low, high);
-                let previous = frequencies[index];
-                frequencies[index] = candidate;
-                if let Some(score) = evaluate(&frequencies)
-                    .filter(|score| score.is_finite() && *score < best - PER_SUB_SPLICE_TIE_EPS)
-                {
-                    best = score;
-                    improved = true;
-                } else {
-                    frequencies[index] = previous;
-                }
-            }
+    let feasible = |losses: &[f64], cancellation_passed: bool| {
+        cancellation_passed
+            && losses
+                .iter()
+                .zip(&baseline_losses)
+                .all(|(after, before)| *after <= *before + PER_SUB_SPLICE_TIE_EPS)
+    };
+    // Exact polarity seeds avoid depending on random discovery of a discrete
+    // phase repair while another source is already at its optimum.
+    let mut seed = initial.clone();
+    let mut seed_score = baseline;
+    for index in 0..sub_outputs.len() {
+        let base = index * 3;
+        if lower[base + 2] == upper[base + 2] {
+            continue;
         }
-        if !improved {
-            break;
+        let mut trial = seed.clone();
+        trial[base + 2] = 1.0 - trial[base + 2];
+        if let Some((score, _, _)) = evaluate(&trial)
+            && score + PER_SUB_SPLICE_TIE_EPS < seed_score
+        {
+            seed = trial;
+            seed_score = score;
         }
     }
-    for (output, &frequency) in sub_outputs.iter_mut().zip(&frequencies) {
-        output.selected_low_pass_hz = Some(frequency);
-    }
+    let objective = |params: &[f64]| {
+        evaluate(params)
+            .filter(|(_, losses, passed)| feasible(losses, *passed))
+            .map_or(f64::INFINITY, |(score, _, _)| score)
+    };
+    // Replace repeated coordinate sweeps with one seeded joint search using
+    // their previous worst-case budget. Limit population so the DE helper's
+    // minimum four generations fits that budget. Unqualified winners restore
+    // the original controls; polarity preparation adds one trial per output.
+    let (candidate, _) = differential_evolution_minimize(
+        &lower,
+        &upper,
+        &seed,
+        &objective,
+        config.optimizer.population.min(initial.len() * 4),
+        config
+            .optimizer
+            .max_iter
+            .min(PER_SUB_SPLICE_EVALS_PER_OUTPUT * sub_outputs.len()),
+        config.optimizer.seed.unwrap_or(42),
+    );
+    let improved = evaluate(&candidate).is_some_and(|(score, losses, cancellation_passed)| {
+        cancellation_passed
+            && score + PER_SUB_SPLICE_TIE_EPS < baseline
+            && losses
+                .iter()
+                .zip(&baseline_losses)
+                .all(|(after, before)| *after <= *before + PER_SUB_SPLICE_TIE_EPS)
+    });
+    let selected_params = if improved { &candidate } else { &initial };
+    let score_after = evaluate(selected_params).map_or(baseline, |(score, _, _)| score);
+    let selected = decode(selected_params);
+    let frequencies: Vec<_> = selected
+        .iter()
+        .filter_map(|output| output.selected_low_pass_hz)
+        .collect();
+    sub_outputs.clone_from_slice(&selected);
     for group in group_results.values_mut() {
         group.selected_sub_low_pass_hz = frequencies.clone();
         group.advisories.push("per_sub_splice_lp_selected".into());
@@ -1381,8 +1656,14 @@ fn apply_per_sub_splice_selection(
                 .collect::<Vec<_>>()
                 .join(",")
         ),
+        format!(
+            "per_sub_splice_joint_lp_delay_polarity:{}; score_before={baseline:.9}; score_after={score_after:.9}; matrix={}",
+            if improved { "improved" } else { "retained" },
+            routing_matrix.is_some()
+        ),
         "per_sub_splice_routes_use_driver_lp".into(),
         "per_sub_splice_scored_deployed_array_per_input".into(),
+        "per_sub_splice_representative_curves_only; final_seat_replay_required".into(),
     ]
 }
 
@@ -1400,6 +1681,39 @@ pub fn optimize_bass_management_joint_solution(
     drivers: Option<&[SubDriverInfo]>,
     sub_role: &str,
     sample_rate: f64,
+) -> Vec<String> {
+    optimize_bass_management_joint_solution_with_matrix(
+        config,
+        main_roles,
+        aligned_measurement_curves,
+        aligned_pre_eq_curves,
+        source_pre_route_transfers,
+        target_curves,
+        group_results,
+        source_results,
+        sub_outputs,
+        drivers,
+        sub_role,
+        sample_rate,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_bass_management_joint_solution_with_matrix(
+    config: &RoomConfig,
+    main_roles: &[String],
+    aligned_measurement_curves: &HashMap<String, Curve>,
+    aligned_pre_eq_curves: &HashMap<String, Curve>,
+    source_pre_route_transfers: Option<&HashMap<String, Curve>>,
+    target_curves: Option<&HashMap<String, Curve>>,
+    group_results: &mut BTreeMap<String, home_cinema::BassManagementGroupReport>,
+    source_results: &mut Vec<home_cinema::BassManagementSourceReport>,
+    sub_outputs: &mut [home_cinema::BassManagementSubOutputReport],
+    drivers: Option<&[SubDriverInfo]>,
+    sub_role: &str,
+    sample_rate: f64,
+    routing_matrix: Option<&[Vec<f64>]>,
 ) -> Vec<String> {
     let driver_responses_need_common_correction = drivers.is_some();
     let driver_inputs = if let Some(drivers) = drivers {
@@ -1434,12 +1748,25 @@ pub fn optimize_bass_management_joint_solution(
     let grouped_roles = grouped_home_cinema_roles(main_roles);
     let group_count = grouped_roles.len().max(1);
     let per_group_max_iter = (config.optimizer.max_iter / group_count).max(1);
-    let max_route_trim = config
-        .system
-        .as_ref()
-        .and_then(|system| system.bass_management.as_ref())
-        .map(|bm| bm.max_sub_boost_db.max(0.0))
-        .unwrap_or(config.optimizer.max_db.max(0.0));
+    // Phase 1 headroom budget: values identical to the inlined config reads
+    // replaced here; behavior-neutral by construction.
+    let headroom_budget = HeadroomBudget::from_legacy_config(config);
+    // Joint-pool enforcement stays OFF, hard and soft: capping trim-up at
+    // the fixed-policy remainder over-constrains electrically feasible
+    // fixtures (measured genelec-fir: MSO spends the 6 dB policy pool while
+    // the -20 dBFS provisioned sub bus still holds ~10 dB of true headroom,
+    // so hard enforcement collapsed a 0.41 dB correction into a 0.04 dB
+    // placebo), and a soft pool price settles need-blind between the anchor
+    // pull and the pool (measured: weights 10 and 30 both tip genelec-fir
+    // into identity while unknown needs pool dominance to move). Correct
+    // enforcement needs true-headroom pools spanning route+FIR (Phase 3d).
+    // The Phase 2 advisory below still reports the joint-pool position
+    // (`pool_db`) so wars stay diagnosed without harming feasible fixtures.
+    let applied_mso_boost_db = sub_outputs
+        .iter()
+        .map(|output| output.gain_db)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_route_trim = headroom_budget.max_route_trim_up_db;
     let mut optimized_sources = Vec::new();
     let mut overall_advisories = Vec::new();
     overall_advisories.extend(apply_per_sub_splice_selection(
@@ -1454,6 +1781,8 @@ pub fn optimize_bass_management_joint_solution(
         sub_outputs,
         &driver_inputs,
         sample_rate,
+        &existing_sources,
+        routing_matrix,
     ));
 
     let frequencies: Vec<_> = sub_outputs
@@ -1491,8 +1820,30 @@ pub fn optimize_bass_management_joint_solution(
 
         let mut sub_curves = Vec::with_capacity(sources.len());
         for (source_channel, source_curve) in &sources {
+            let routed_sub_curve = routing_matrix.and_then(|matrix| {
+                let source_index = main_roles.iter().position(|role| role == source_channel)?;
+                if matrix.len() != driver_inputs.len() {
+                    return None;
+                }
+                let weights = matrix
+                    .iter()
+                    .map(|row| row.get(source_index).copied())
+                    .collect::<Option<Vec<_>>>()?;
+                sum_weighted_sub_output_responses_on_grid(
+                    &source_curve.freq,
+                    &driver_inputs,
+                    sub_outputs,
+                    &weights,
+                )
+            });
             let Some(mut sub_curve) =
-                sum_sub_output_responses_on_grid(&source_curve.freq, &driver_inputs, sub_outputs)
+                routing_matrix.map(|_| routed_sub_curve).unwrap_or_else(|| {
+                    sum_sub_output_responses_on_grid(
+                        &source_curve.freq,
+                        &driver_inputs,
+                        sub_outputs,
+                    )
+                })
             else {
                 overall_advisories.push(format!(
                     "source_route_optimizer_skipped_sub_grid:{group_id}"
@@ -1569,7 +1920,12 @@ pub fn optimize_bass_management_joint_solution(
             let previous_source = existing_sources.iter().find(|source| {
                 source.source_channel == *source_channel && source.group_id == group_id
             });
-            lower_bounds.extend_from_slice(&[0.0, 0.0, 0.0, config.optimizer.min_db]);
+            lower_bounds.extend_from_slice(&[
+                0.0,
+                0.0,
+                0.0,
+                headroom_budget.max_route_trim_down_db,
+            ]);
             upper_bounds.extend_from_slice(&[20.0, 20.0, 1.0, max_route_trim]);
             initial.extend_from_slice(&[
                 previous_source
@@ -1593,7 +1949,7 @@ pub fn optimize_bass_management_joint_solution(
                             measured_sub_curve,
                             target_curves.and_then(|targets| targets.get(source_channel)),
                             current_frequency,
-                            config.optimizer.min_db,
+                            headroom_budget.max_route_trim_down_db,
                             max_route_trim,
                         )
                     })
@@ -1601,12 +1957,24 @@ pub fn optimize_bass_management_joint_solution(
                         previous_source
                             .map(|source| source.trim_db)
                             .unwrap_or(previous_group.trim_db)
-                            .clamp(config.optimizer.min_db, max_route_trim)
+                            .clamp(headroom_budget.max_route_trim_down_db, max_route_trim)
                     }),
             ]);
         }
 
-        let evaluate = |params: &[f64]| -> Option<(f64, Vec<f64>, Vec<f64>)> {
+        // Anchor trim regularization at the measured level-difference seed
+        // (initial trim per source) so the penalty prices chase deviations,
+        // not legitimate target tracking.
+        let trim_anchors: Vec<f64> = (0..sources.len()).map(|i| initial[2 + i * 4 + 3]).collect();
+        log::debug!("source route group '{group_id}' trim anchors: {trim_anchors:?}");
+
+        type CrossoverEvaluation = (
+            f64,
+            Vec<f64>,
+            Vec<f64>,
+            Vec<roomeq_model::CrossoverCancellationEvidence>,
+        );
+        let evaluate = |params: &[f64]| -> Option<CrossoverEvaluation> {
             let frequency = params[0].clamp(minimum_frequency, maximum_frequency);
             let type_index = params[1]
                 .round()
@@ -1615,7 +1983,9 @@ pub fn optimize_bass_management_joint_solution(
             let crossover_type = &type_candidates[type_index];
             let mut losses = Vec::with_capacity(sources.len());
             let mut cancellation_underfills = Vec::with_capacity(sources.len());
+            let mut cancellation_evidence = Vec::with_capacity(sources.len());
             let mut constrained_underfills = Vec::with_capacity(sources.len());
+            let mut actuation_penalties = Vec::with_capacity(sources.len());
             for (source_index, (source_channel, source_curve)) in sources.iter().enumerate() {
                 let base = 2 + source_index * 4;
                 let (main_delay_ms, bass_delay_ms) = normalize_crossover_delays(
@@ -1623,7 +1993,8 @@ pub fn optimize_bass_management_joint_solution(
                     params[base + 1].clamp(0.0, 20.0),
                 );
                 let polarity_inverted = params[base + 2].round().clamp(0.0, 1.0) >= 0.5;
-                let trim_db = params[base + 3].clamp(config.optimizer.min_db, max_route_trim);
+                let trim_db =
+                    params[base + 3].clamp(headroom_budget.max_route_trim_down_db, max_route_trim);
                 let mut main_branch = apply_crossover_response_to_curve(
                     source_curve,
                     crossover_type,
@@ -1658,13 +2029,24 @@ pub fn optimize_bass_management_joint_solution(
                     target,
                     frequency,
                 )?);
-                let cancellation_underfill = bass_management_crossover_cancellation_underfill_db(
+                actuation_penalties.push(route_actuation_regularization_db(
+                    trim_db,
+                    trim_anchors[source_index],
+                    main_delay_ms,
+                    bass_delay_ms,
+                    frequency,
+                    headroom_budget.joint_route_trim_up_db(applied_mso_boost_db),
+                ));
+                let evidence = crate::topology::assess_configured_crossover_cancellation(
+                    config,
+                    source_channel,
                     &main_branch,
                     &bass_branch,
                     &predicted,
                     frequency,
-                )
-                .unwrap_or(0.0);
+                )?;
+                let cancellation_underfill = evidence.final_db;
+                cancellation_evidence.push(evidence);
                 let target_underfill = bass_management_max_underfill_db_with_target(
                     Some(&predicted),
                     target,
@@ -1679,14 +2061,10 @@ pub fn optimize_bass_management_joint_solution(
             let constrained_losses = losses
                 .iter()
                 .zip(&constrained_underfills)
-                .zip(&cancellation_underfills)
-                .map(|((loss, underfill), cancellation)| {
-                    let excess = (underfill - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
-                    let unsafe_excess =
-                        (cancellation - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
-                    // A large target deficit must not hide unsafe cancellation
-                    // inside max(target_deficit, cancellation_deficit).
-                    loss + 1_000.0 * excess * excess + 1_000_000.0 * unsafe_excess * unsafe_excess
+                .zip(&cancellation_evidence)
+                .zip(&actuation_penalties)
+                .map(|(((loss, underfill), evidence), penalty)| {
+                    constrained_route_loss(*loss, *underfill, evidence) + penalty
                 })
                 .collect::<Vec<_>>();
             let mean = constrained_losses.iter().sum::<f64>() / constrained_losses.len() as f64;
@@ -1694,11 +2072,19 @@ pub fn optimize_bass_management_joint_solution(
                 .iter()
                 .copied()
                 .fold(f64::NEG_INFINITY, f64::max);
-            Some((0.5 * mean + 0.5 * worst, losses, cancellation_underfills))
+            Some((
+                0.5 * mean + 0.5 * worst,
+                losses,
+                cancellation_underfills,
+                cancellation_evidence,
+            ))
         };
-        let objective =
-            |params: &[f64]| evaluate(params).map(|(loss, _, _)| loss).unwrap_or(1.0e12);
-        let Some((baseline_score, baseline_losses, baseline_underfills)) = evaluate(&initial)
+        let objective = |params: &[f64]| {
+            evaluate(params)
+                .map(|(loss, _, _, _)| loss)
+                .unwrap_or(1.0e12)
+        };
+        let Some((baseline_score, baseline_losses, baseline_underfills, _)) = evaluate(&initial)
         else {
             overall_advisories.push(format!(
                 "source_route_optimizer_skipped_invalid_baseline:{group_id}"
@@ -1748,7 +2134,7 @@ pub fn optimize_bass_management_joint_solution(
                         measured_sub_curve,
                         target_curves.and_then(|targets| targets.get(source_channel)),
                         refined[0],
-                        config.optimizer.min_db,
+                        headroom_budget.max_route_trim_down_db,
                         max_route_trim,
                     )
                 })
@@ -1766,11 +2152,27 @@ pub fn optimize_bass_management_joint_solution(
                 let mut params = refined.clone();
                 params[base..base + 4].copy_from_slice(route);
                 evaluate(&params)
-                    .and_then(|(_, losses, underfills)| {
+                    .and_then(|(_, losses, underfills, _)| {
                         let loss = *losses.get(source_index)?;
                         let underfill = *underfills.get(source_index)?;
-                        let excess = (underfill - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB).max(0.0);
-                        Some(loss + 1_000.0 * excess * excess)
+                        let excess = (correctable_dip_depth_db(underfill)
+                            - ROUTE_OPTIMIZER_UNDERFILL_LIMIT_DB
+                                .min(config.optimizer.max_crossover_cancellation_db))
+                        .max(0.0);
+                        let (main_delay_ms, bass_delay_ms) = normalize_crossover_delays(
+                            route[0].clamp(0.0, 20.0),
+                            route[1].clamp(0.0, 20.0),
+                        );
+                        let frequency = refined[0].clamp(minimum_frequency, maximum_frequency);
+                        let penalty = route_actuation_regularization_db(
+                            route[3].clamp(headroom_budget.max_route_trim_down_db, max_route_trim),
+                            trim_anchors[source_index],
+                            main_delay_ms,
+                            bass_delay_ms,
+                            frequency,
+                            headroom_budget.joint_route_trim_up_db(applied_mso_boost_db),
+                        );
+                        Some(loss + 1_000.0 * excess * excess + penalty)
                     })
                     .unwrap_or(1.0e12)
             };
@@ -1790,54 +2192,106 @@ pub fn optimize_bass_management_joint_solution(
         }
 
         let candidate = evaluate(&refined);
-        let regressed_source = candidate.as_ref().is_some_and(|(_, candidate_losses, _)| {
-            candidate_losses
-                .iter()
-                .zip(&baseline_losses)
-                .any(|(after, before)| *after > *before + (before.abs() * 0.01).max(1.0e-9))
-        });
+        let regressed_source = candidate
+            .as_ref()
+            .is_some_and(|(_, candidate_losses, _, _)| {
+                candidate_losses
+                    .iter()
+                    .zip(&baseline_losses)
+                    .any(|(after, before)| *after > *before + (before.abs() * 0.01).max(1.0e-9))
+            });
         let candidate_underfill_db = candidate
             .as_ref()
-            .and_then(|(_, _, underfills)| underfills.iter().copied().reduce(f64::max));
+            .and_then(|(_, _, underfills, _)| underfills.iter().copied().reduce(f64::max));
         log::debug!(
             "source route group '{group_id}' crossover underfill: baseline={baseline_underfills:?}, candidate={:?}",
-            candidate.as_ref().map(|(_, _, underfills)| underfills)
+            candidate.as_ref().map(|(_, _, underfills, _)| underfills)
         );
+        // Phase 2 headroom pre-pass (advisory only): predict per-source
+        // splice feasibility against the joint trim pool. Magnitudes only:
+        // delay/polarity do not change levels and trim is what is being
+        // budgeted. No verdict changes; Phase 3 consumers act on these.
+        {
+            let assessed_frequency = refined[0].clamp(minimum_frequency, maximum_frequency);
+            let assessed_type = refined[1]
+                .round()
+                .clamp(0.0, type_candidates.len().saturating_sub(1) as f64)
+                as usize;
+            let assessed_crossover = &type_candidates[assessed_type];
+            let applied_sub_boost = applied_mso_boost_db;
+            for (source_index, (source_channel, source_curve)) in sources.iter().enumerate() {
+                let Some(sub_curve) = sub_curves.get(source_index) else {
+                    continue;
+                };
+                let main_branch = apply_crossover_response_to_curve(
+                    source_curve,
+                    assessed_crossover,
+                    assessed_frequency,
+                    sample_rate,
+                    false,
+                );
+                let sub_branch = if per_driver_low_pass_active {
+                    sub_curve.clone()
+                } else {
+                    apply_crossover_response_to_curve(
+                        sub_curve,
+                        assessed_crossover,
+                        assessed_frequency,
+                        sample_rate,
+                        true,
+                    )
+                };
+                if let Some(verdict) = super::headroom_assess::assess_splice_headroom(
+                    source_channel,
+                    &main_branch,
+                    &sub_branch,
+                    target_curves.and_then(|targets| targets.get(source_channel)),
+                    assessed_frequency,
+                    &headroom_budget,
+                    applied_sub_boost,
+                ) {
+                    let strategy = match verdict.strategy {
+                        roomeq_model::headroom::HeadroomStrategy::Balanced => "balanced",
+                        roomeq_model::headroom::HeadroomStrategy::SubFlexes => "sub_flexes",
+                        roomeq_model::headroom::HeadroomStrategy::MainProtects => "main_protects",
+                        roomeq_model::headroom::HeadroomStrategy::Fixed => "fixed",
+                    };
+                    overall_advisories.push(format!(
+                        "headroom_splice:{source_channel}:requires_db={:+.1}:pool_db={:.1}:shortfall_db={:.1}:strategy={strategy}",
+                        verdict.required_sub_boost_db,
+                        headroom_budget.joint_route_trim_up_db(applied_sub_boost),
+                        verdict.shortfall_db,
+                    ));
+                }
+            }
+        }
         // The route pass runs before the narrow-band corrective EQ pass.  A
         // measured response can therefore already exceed the final absolute
         // underfill limit.  Reject candidates that introduce or worsen an
         // excessive dip, but allow a strictly improving candidate to reach
         // the corrective pass instead of restoring a demonstrably worse
         // baseline route.
-        let worsened_excessive_underfill =
-            candidate
-                .as_ref()
-                .is_some_and(|(_, _, candidate_underfills)| {
-                    worsens_excessive_underfill(candidate_underfills, &baseline_underfills)
-                });
+        let limit = config.optimizer.max_crossover_cancellation_db;
+        let tolerance = roomeq_model::CROSSOVER_CANCELLATION_TOLERANCE_DB;
+        let worsened_excessive_underfill = candidate
+            .as_ref()
+            .is_some_and(|(_, _, _, evidence)| evidence.iter().any(|e| !e.accepted));
         let improving_but_still_excessive =
-            candidate
+            candidate.as_ref().is_some_and(|(_, _, _, evidence)| {
+                evidence
+                    .iter()
+                    .any(|e| e.accepted && e.final_db > limit + tolerance)
+            });
+        let accepted = candidate.as_ref().is_some_and(|(score, _, _, evidence)| {
+            should_accept_route_candidate(*score, baseline_score, regressed_source, evidence)
+        });
+        let safety_restored = accepted
+            && candidate
                 .as_ref()
-                .is_some_and(|(_, _, candidate_underfills)| {
-                    improves_but_remains_excessive(candidate_underfills, &baseline_underfills)
-                });
-        let accepted = candidate.as_ref().is_some_and(|(score, _, underfills)| {
-            should_accept_route_candidate(
-                *score,
-                baseline_score,
-                regressed_source,
-                underfills,
-                &baseline_underfills,
-            )
-        });
-        // Acceptance basis for the report: restoration always implies
-        // acceptance (it satisfies the first disjunct outright), so this
-        // flag marks exactly the documented safety tradeoff.
-        let safety_restored = candidate.as_ref().is_some_and(|(_, _, underfills)| {
-            candidate_restores_hard_safety(underfills, &baseline_underfills)
-        });
+                .is_some_and(|(_, _, _, evidence)| candidate_restores_hard_safety(evidence));
         let chosen = if accepted { refined } else { initial.clone() };
-        let (_, chosen_losses, _) = evaluate(&chosen).expect("validated source route parameters");
+        let (_, chosen_losses, _, _) =
+            evaluate(&chosen).expect("validated source route parameters");
         let chosen_frequency = chosen[0].clamp(minimum_frequency, maximum_frequency);
         let chosen_type_index = chosen[1]
             .round()
@@ -1857,7 +2311,8 @@ pub fn optimize_bass_management_joint_solution(
                 main_delay_ms,
                 bass_route_delay_ms,
                 polarity_inverted: chosen[base + 2].round().clamp(0.0, 1.0) >= 0.5,
-                trim_db: chosen[base + 3].clamp(config.optimizer.min_db, max_route_trim),
+                trim_db: chosen[base + 3]
+                    .clamp(headroom_budget.max_route_trim_down_db, max_route_trim),
                 objective_before: Some(baseline_losses[source_index]),
                 objective_after: Some(chosen_losses[source_index]),
                 accepted,
@@ -1897,7 +2352,7 @@ pub fn optimize_bass_management_joint_solution(
         updated_group.objective_before = Some(baseline_score);
         updated_group.objective_after = Some(if accepted {
             candidate
-                .map(|(score, _, _)| score)
+                .map(|(score, _, _, _)| score)
                 .unwrap_or(baseline_score)
         } else {
             baseline_score
@@ -1984,51 +2439,141 @@ mod tests {
     }
 
     #[test]
-    fn staged_underfill_gate_never_restores_a_worse_baseline() {
-        assert!(worsens_excessive_underfill(&[4.1], &[2.5]));
-        assert!(worsens_excessive_underfill(&[5.0], &[4.0]));
-        assert!(!worsens_excessive_underfill(&[4.0], &[5.0]));
-        assert!(improves_but_remains_excessive(&[4.0], &[5.0]));
-        assert!(!improves_but_remains_excessive(&[2.5], &[5.0]));
-        assert!(has_excessive_underfill(&[2.5, 3.1]));
-        assert!(!has_excessive_underfill(&[2.5, 3.0]));
-        assert!(!has_excessive_underfill(&[2.5, 3.04]));
+    fn constrained_route_loss_plateaus_beyond_correctable_dip_depth() {
+        let evidence = roomeq_model::CrossoverCancellationEvidence {
+            source_channel: "L".into(),
+            baseline_db: None,
+            baseline_worst_frequency_hz: None,
+            final_db: 0.0,
+            final_worst_frequency_hz: 80.0,
+            comparison_band_hz: [40.0, 160.0],
+            limit_db: 3.0,
+            improvement_db: None,
+            accepted: true,
+            reason: String::new(),
+        };
+        let priced = |underfill: f64| constrained_route_loss(0.0, underfill, &evidence);
+        assert_eq!(priced(25.0), priced(20.0));
+        assert_eq!(priced(25.0), priced(6.0));
+        assert!(priced(6.0) > priced(2.0));
+        assert_eq!(priced(0.5), 0.0);
     }
 
     #[test]
-    fn route_candidate_that_restores_hard_underfill_safety_beats_quality_score() {
+    fn actuation_regularization_prices_anchor_deviations_and_wrapped_delays() {
+        // Sane routing: trim on its measured anchor, sub-cycle delay.
+        let sane = super::route_actuation_regularization_db(4.2, 4.2, 1.0, 2.0, 72.0, 6.0);
+        assert!((sane - 0.0).abs() < 1e-9, "sane routing overpriced: {sane}");
+        // Tolerance keeps crossover interaction free.
+        let near = super::route_actuation_regularization_db(5.0, 4.2, 1.0, 2.0, 72.0, 6.0);
+        assert!(
+            (near - 0.0).abs() < 1e-9,
+            "in-tolerance trim priced: {near}"
+        );
+        // Chase deviation past tolerance costs more than RMS crumbs.
+        let railed = super::route_actuation_regularization_db(6.0, 4.2, 1.0, 2.0, 72.0, 6.0);
+        assert!(railed > 15.0, "chase deviation underpriced: {railed}");
+        // Opposite-rail cut (measured kef R: -12 dB) is punished hard.
+        let cut_rail = super::route_actuation_regularization_db(-12.0, 2.0, 1.0, 2.0, 72.0, 6.0);
+        assert!(cut_rail > 100.0);
+        // Non-finite anchor prices nothing instead of masking.
+        let unanchored =
+            super::route_actuation_regularization_db(6.0, f64::NAN, 1.0, 2.0, 72.0, 6.0);
+        assert!((unanchored - 0.0).abs() < 1e-9);
+        // Degenerate delay (measured: 17.6 ms at ~72 Hz crossover) exceeds
+        // one cycle (13.9 ms) and pays quadratic excess.
+        let wrapped = super::route_actuation_regularization_db(1.0, 1.0, 17.6, 0.0, 72.0, 6.0);
+        let cycle_ms: f64 = 1000.0 / 72.0;
+        let expected = (17.6 - cycle_ms).powi(2);
+        assert!((wrapped - expected).abs() < 1e-9);
+        assert!(wrapped > 10.0);
+        // Sub-cycle delays stay free.
+        let aligned = super::route_actuation_regularization_db(1.0, 1.0, 6.0, 2.0, 72.0, 6.0);
+        assert!((aligned - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pool_overrun_follows_the_calibrated_weight_and_cuts_stay_free() {
+        // Trim at the pool remainder pays nothing beyond anchor pricing.
+        let at_pool = super::route_actuation_regularization_db(2.0, 2.0, 1.0, 2.0, 72.0, 2.0);
+        assert!(
+            (at_pool - 0.0).abs() < 1e-9,
+            "at-pool trim priced: {at_pool}"
+        );
+        // Overrun pays the calibrated quadratic (currently zero: positive
+        // weights tip genelec-fir into identity while unknown needs pool
+        // dominance to move, so enforcement stays off pending true-headroom
+        // pools). The formula stays exact at any weight.
+        let overrun = super::route_actuation_regularization_db(6.0, 6.0, 1.0, 2.0, 72.0, 0.0);
+        let expected = super::POOL_OVERRUN_WEIGHT * 6.0_f64.powi(2);
+        assert!((overrun - expected).abs() < 1e-9);
+        assert_eq!(
+            super::POOL_OVERRUN_WEIGHT,
+            0.0,
+            "pool enforcement recalibrated; update the calibration record"
+        );
+        let cut = super::route_actuation_regularization_db(-4.0, -4.0, 1.0, 2.0, 72.0, 0.0);
+        assert!((cut - 0.0).abs() < 1e-9, "cut priced against pool: {cut}");
+        // Non-finite pool prices nothing instead of masking.
+        let nopool = super::route_actuation_regularization_db(6.0, 6.0, 1.0, 2.0, 72.0, f64::NAN);
+        assert!((nopool - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn route_acceptance_uses_numeric_baseline_for_every_source() {
+        let evidence = |after: f64, before: f64| roomeq_model::CrossoverCancellationEvidence {
+            source_channel: "L".into(),
+            baseline_db: Some(before),
+            baseline_worst_frequency_hz: Some(80.0),
+            final_db: after,
+            final_worst_frequency_hz: 80.0,
+            comparison_band_hz: [40.0, 160.0],
+            limit_db: 3.0,
+            improvement_db: Some(before - after),
+            accepted: roomeq_model::crossover_cancellation_accepted(after, Some(before), 3.0),
+            reason: String::new(),
+        };
         assert!(should_accept_route_candidate(
-            12.0,
+            9.0,
             10.0,
-            true,
-            &[1.1, 1.3, 1.0, 1.1],
-            &[1.8, 1.5, 7.7, 8.7],
+            false,
+            &[evidence(4.0, 10.0)]
         ));
         assert!(!should_accept_route_candidate(
             9.0,
             10.0,
             false,
-            &[1.1, 1.3, 4.0, 1.1],
-            &[1.8, 1.5, 3.5, 8.7],
+            &[evidence(10.0, 10.0)]
         ));
-    }
-
-    #[test]
-    fn safety_restoration_basis_marks_exactly_the_documented_tradeoff() {
-        // Baseline excessive, candidate fully acceptable: the recorded
-        // basis for the QA exemption.
-        assert!(candidate_restores_hard_safety(
-            &[1.1, 1.3, 1.0, 1.1],
-            &[1.8, 1.5, 7.7, 8.7],
+        assert!(!should_accept_route_candidate(
+            9.0,
+            10.0,
+            false,
+            &[evidence(4.0, 10.0), evidence(4.0, 3.5)]
         ));
-        // Safe baselines never mark, however good the candidate is.
-        assert!(!candidate_restores_hard_safety(&[0.5, 0.4], &[0.9, 0.8],));
-        // A candidate that stays excessive is not a restoration, even
-        // when it improves on the baseline.
-        assert!(!candidate_restores_hard_safety(
-            &[1.1, 1.3, 4.0, 1.1],
-            &[1.8, 1.5, 7.7, 8.7],
+        assert!(should_accept_route_candidate(
+            12.0,
+            10.0,
+            true,
+            &[evidence(1.0, 10.0)]
         ));
+        assert!(candidate_restores_hard_safety(&[evidence(1.0, 10.0)]));
+        assert!(!candidate_restores_hard_safety(&[evidence(4.0, 10.0)]));
+        assert_eq!(cancellation_penalty_excess(&evidence(4.0, 10.0)), 0.0);
+        assert!(
+            constrained_route_loss(1.0, 4.0, &evidence(4.0, 10.0))
+                < constrained_route_loss(1.0, 10.0, &evidence(0.0, 10.0)),
+            "turning bass down must not beat a useful baseline-improving residual"
+        );
+        assert!(cancellation_penalty_excess(&evidence(10.0, 10.0)) > 0.0);
+        assert!(cancellation_penalty_excess(&evidence(4.0, 3.5)) > 0.0);
+        let mut configured = evidence(4.0, 3.5);
+        configured.baseline_db = None;
+        assert!((cancellation_penalty_excess(&configured) - 1.0).abs() < 1e-12);
+        configured.limit_db = 5.0;
+        assert_eq!(cancellation_penalty_excess(&configured), 0.0);
+        configured.final_db = f64::NAN;
+        assert!(cancellation_penalty_excess(&configured).is_infinite());
     }
 
     #[test]
@@ -2054,7 +2599,8 @@ mod tests {
                 subwoofers: Some(SubwooferSystemConfig {
                     config: SubwooferStrategy::Single,
                     crossover: Some("bass_xover".to_string().into()),
-                    mapping: HashMap::new(),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                 }),
                 bass_management: Some(BassManagementConfig::default()),
                 ..SystemConfig::default()
@@ -2123,7 +2669,9 @@ mod tests {
             optimizer,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -2298,7 +2846,9 @@ mod tests {
             optimizer,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         };
 
@@ -2324,15 +2874,82 @@ mod tests {
         );
     }
 
+    fn revert_candidate() -> GroupCrossoverSolution {
+        GroupCrossoverSolution {
+            freq_hz: 95.0,
+            main_delay_ms: 3.0,
+            bass_delay_ms: 7.0,
+            polarity_inverted: true,
+            trim_db: 1.5,
+            objective_after: Some(2.0),
+        }
+    }
+
     #[test]
-    #[ignore = "no-improvement revert branch is hard to trigger deterministically"]
-    fn group_crossover_no_improvement_revert_branch_documented() {
-        // The revert branch is reached when the crossover optimizer cannot
-        // produce a lower objective than the baseline. Because the DE objective
-        // surface is non-convex and seed-dependent, forcing this outcome is not
-        // reliable in a unit test; the branch is exercised indirectly by the
-        // optimizer when conditions happen to produce objective_after >=
-        // objective_before.
+    fn group_crossover_no_improvement_reverts_to_baseline() {
+        // Ties do not count as improvements: objective_after >= objective_before
+        // restores the baseline plan and reports the baseline objective.
+        let (solution, reverted) =
+            revert_group_crossover_if_no_improvement(revert_candidate(), Some(2.0), 80.0);
+        assert!(reverted);
+        assert_eq!(solution.freq_hz, 80.0);
+        assert_eq!(solution.main_delay_ms, 0.0);
+        assert_eq!(solution.bass_delay_ms, 0.0);
+        assert!(!solution.polarity_inverted);
+        assert_eq!(solution.trim_db, 0.0);
+        assert_eq!(solution.objective_after, Some(2.0));
+
+        let (solution, reverted) = revert_group_crossover_if_no_improvement(
+            GroupCrossoverSolution {
+                objective_after: Some(3.0),
+                ..revert_candidate()
+            },
+            Some(2.0),
+            80.0,
+        );
+        assert!(reverted);
+        assert_eq!(solution.freq_hz, 80.0);
+        assert_eq!(solution.objective_after, Some(2.0));
+    }
+
+    #[test]
+    fn group_crossover_strict_improvement_keeps_solution() {
+        let (solution, reverted) = revert_group_crossover_if_no_improvement(
+            GroupCrossoverSolution {
+                objective_after: Some(1.5),
+                ..revert_candidate()
+            },
+            Some(2.0),
+            80.0,
+        );
+        assert!(!reverted);
+        assert_eq!(solution.freq_hz, 95.0);
+        assert_eq!(solution.main_delay_ms, 3.0);
+        assert_eq!(solution.bass_delay_ms, 7.0);
+        assert!(solution.polarity_inverted);
+        assert_eq!(solution.trim_db, 1.5);
+        assert_eq!(solution.objective_after, Some(1.5));
+    }
+
+    #[test]
+    fn group_crossover_revert_preserves_option_ordering() {
+        // Missing optimized objective (None) is worse than any measured
+        // baseline, so the solution is kept; missing baseline reverts.
+        let (_, reverted) = revert_group_crossover_if_no_improvement(
+            GroupCrossoverSolution {
+                objective_after: None,
+                ..revert_candidate()
+            },
+            Some(2.0),
+            80.0,
+        );
+        assert!(!reverted);
+
+        let (solution, reverted) =
+            revert_group_crossover_if_no_improvement(revert_candidate(), None, 80.0);
+        assert!(reverted);
+        assert_eq!(solution.freq_hz, 80.0);
+        assert_eq!(solution.objective_after, None);
     }
 
     #[test]
@@ -2639,7 +3256,8 @@ mod tests {
             subwoofers: Some(SubwooferSystemConfig {
                 config: SubwooferStrategy::default(),
                 crossover: Some("bass".to_string().into()),
-                mapping: HashMap::new(),
+                routing: Default::default(),
+                outputs: Vec::new(),
             }),
             ..SystemConfig::default()
         });
@@ -2866,7 +3484,8 @@ mod tests {
                 subwoofers: Some(SubwooferSystemConfig {
                     config: SubwooferStrategy::Mso,
                     crossover: Some(crossover),
-                    mapping: HashMap::new(),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                 }),
                 bass_management: Some(BassManagementConfig::default()),
                 ..SystemConfig::default()
@@ -2896,7 +3515,9 @@ mod tests {
             optimizer: tiny_optimizer(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -2933,6 +3554,147 @@ mod tests {
         ]));
         assert_eq!(per_sub_crossover_keys(&missing).len(), 2);
         assert!(per_sub_crossover_plans(&missing).is_none());
+    }
+
+    #[test]
+    fn per_sub_joint_search_matches_matrix_and_source_polarity_without_harming_other_input() {
+        let mut config = per_sub_config(SubwooferCrossoverRef::PerSub(vec![
+            "bass_xover1".into(),
+            "bass_xover2".into(),
+        ]));
+        for crossover in config.crossovers.as_mut().unwrap().values_mut() {
+            crossover.frequency = Some(80.0);
+            crossover.frequency_range = None;
+        }
+        let curves = make_curves(true);
+        let groups = optimize_home_cinema_group_crossovers(
+            &config,
+            &two_mains(),
+            &curves,
+            &curves,
+            "LFE",
+            &fallback_crossover(),
+            48000.0,
+            None,
+        )
+        .unwrap();
+        let mut opposite = curves["LFE"].clone();
+        opposite.phase.as_mut().unwrap().fill(180.0);
+        let drivers: Vec<_> = [curves["LFE"].clone(), opposite]
+            .into_iter()
+            .enumerate()
+            .map(|(index, curve)| SubDriverInfo {
+                name: format!("sub{}", index + 1),
+                gain: 0.0,
+                delay: 0.0,
+                inverted: false,
+                processing: None,
+                initial_curve: Some(curve),
+            })
+            .collect();
+        let original: Vec<_> = (0..2)
+            .map(|index| BassManagementSubOutputReport {
+                output_role: format!("sub{}", index + 1),
+                gain_db: 0.0,
+                delay_ms: 0.0,
+                polarity_inverted: false,
+                strategy_source: "mso".into(),
+                headroom_contribution_db: 0.0,
+                selected_low_pass_hz: None,
+            })
+            .collect();
+        let matrix = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        for source_polarity in [false, true] {
+            let sources = vec![home_cinema::BassManagementSourceReport {
+                source_channel: "Right".into(),
+                group_id: "lcr".into(),
+                main_delay_ms: 0.0,
+                bass_route_delay_ms: 0.0,
+                polarity_inverted: source_polarity,
+                trim_db: 0.0,
+                objective_before: None,
+                objective_after: None,
+                accepted: true,
+                safety_restored: false,
+                advisories: Vec::new(),
+            }];
+            let mut selected = original.clone();
+            let mut selected_groups = groups.clone();
+            let advisories = apply_per_sub_splice_selection(
+                &config,
+                &two_mains(),
+                &curves,
+                Some(&curves["LFE"]),
+                Some(&curves["LFE"]),
+                None,
+                Some(&curves),
+                &mut selected_groups,
+                &mut selected,
+                &drivers,
+                48000.0,
+                &sources,
+                Some(&matrix),
+            );
+            assert!(!selected[0].polarity_inverted, "{advisories:?}");
+            assert_eq!(
+                selected[1].polarity_inverted, !source_polarity,
+                "{advisories:?}"
+            );
+            let filtered =
+                low_pass_driver_inputs(&config, &drivers, &[80.0, 80.0], 48000.0).unwrap();
+            for (column, role) in two_mains().iter().enumerate() {
+                let weights: Vec<_> = matrix.iter().map(|row| row[column]).collect();
+                let bass = sum_weighted_sub_output_responses_on_grid(
+                    &curves[role].freq,
+                    &filtered,
+                    &selected,
+                    &weights,
+                )
+                .unwrap();
+                let bass =
+                    apply_delay_and_polarity_to_curve(&bass, 0.0, column == 1 && source_polarity);
+                let main =
+                    apply_crossover_response_to_curve(&curves[role], "LR24", 80.0, 48000.0, false);
+                let combined = complex_sum_mains(&[&main, &bass]);
+                let underfill = bass_management_max_underfill_db_with_target(
+                    Some(&combined),
+                    Some(&curves[role]),
+                    80.0,
+                )
+                .unwrap();
+                assert!(
+                    underfill < 0.01,
+                    "{role}: {underfill:.9} dB; {advisories:?}"
+                );
+            }
+        }
+        // Invalid matrices never silently fall back to an unweighted array.
+        let mut selected = original.clone();
+        let mut selected_groups = groups.clone();
+        let advisories = apply_per_sub_splice_selection(
+            &config,
+            &two_mains(),
+            &curves,
+            Some(&curves["LFE"]),
+            Some(&curves["LFE"]),
+            None,
+            Some(&curves),
+            &mut selected_groups,
+            &mut selected,
+            &drivers,
+            48000.0,
+            &[],
+            Some(&[vec![1.0, 0.0]]),
+        );
+        assert_eq!(
+            serde_json::to_value(&selected).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        assert!(
+            advisories
+                .iter()
+                .any(|advisory| advisory.contains("skipped"))
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod db;
 mod default;
 mod epa;
 mod epa_config;
+mod level_matching;
 mod misc;
 mod temporal;
 mod temporal_masking_config;
@@ -19,6 +20,8 @@ mod types;
 pub use compute::*;
 pub use epa::*;
 pub use epa_config::*;
+#[doc(inline)]
+pub use level_matching::reference_band_energy_db;
 pub use temporal::*;
 pub use temporal_masking_config::*;
 pub use types::*;

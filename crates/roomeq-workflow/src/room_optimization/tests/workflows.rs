@@ -100,15 +100,15 @@ fn execute_topology_workflow_home_cinema_with_sub_returns_result() {
         system: Some(SystemConfig {
             model: SystemModel::HomeCinema,
             speakers: HashMap::from([
-                ("Left".to_string(), "left".to_string()),
-                ("Right".to_string(), "right".to_string()),
+                ("L".to_string(), "left".to_string()),
+                ("R".to_string(), "right".to_string()),
                 ("Center".to_string(), "center".to_string()),
-                ("LFE".to_string(), "sub".to_string()),
             ]),
             subwoofers: Some(SubwooferSystemConfig {
                 config: SubwooferStrategy::Single,
-                crossover: Some("xo".to_string().into()),
-                mapping: [("sub".to_string(), "Center".to_string())].into(),
+                crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec!["xo".to_string()])),
+                routing: Default::default(),
+                    outputs: vec![roomeq_model::SubwooferOutput { id: "sub".to_string(), speaker: "sub".to_string() }],
             }),
             bass_management: None,
             ..Default::default()
@@ -119,7 +119,9 @@ fn execute_topology_workflow_home_cinema_with_sub_returns_result() {
         optimizer: tiny_optimizer(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
     let sys = config.system.as_ref().unwrap();
@@ -162,6 +164,9 @@ fn optimize_room_with_group_delay_enabled_succeeds() {
 #[test]
 fn optimize_room_with_phase_alignment_enabled_succeeds() {
     let mut config = stereo_2_1_config();
+    // This dispatch test uses small-signal excitation, not simultaneous
+    // full-scale programme inputs. Full-scale rejection is tested separately.
+    config.optimizer.finalization.default_input_peak = 0.01;
     let mut phased = flat_curve();
     phased.phase = Some(ndarray::Array1::zeros(phased.freq.len()));
     for name in ["left", "right", "sub"] {

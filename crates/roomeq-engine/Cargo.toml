@@ -1,6 +1,6 @@
 [package]
 name = "roomeq-engine"
-version = "0.5.81"
+version = "0.5.83"
 edition = "2024"
 description = "RoomEQ analysis, optimization, and pipeline execution"
 license = "GPL-3.0-or-later"
@@ -11,9 +11,10 @@ homepage = "https://github.com/pierreaubert/autoeq"
 workspace = true
 
 [features]
-measurement-zarr = ["dep:zarrs", "dep:sha2"]
+measurement-zarr = ["dep:zarrs"]
 
 [dependencies]
+autoeq-measurements = { workspace = true }
 autoeq-core = { workspace = true }
 autoeq-fir = { workspace = true }
 autoeq-optim = { workspace = true }
@@ -36,8 +37,9 @@ rustfft = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true, optional = true }
+sha2 = { workspace = true }
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "gzip"], optional = true }
 
 [dev-dependencies]
 hound = { workspace = true }
+tempfile = { workspace = true }

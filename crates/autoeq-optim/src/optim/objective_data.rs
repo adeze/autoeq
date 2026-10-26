@@ -2,7 +2,7 @@ use super::super::loss::{
     AsymmetricLossConfig, DriversLossData, HeadphoneLossData, LossType, SpeakerLossData,
 };
 use super::super::x2peq::x2spl;
-use super::de::optimize_filters_autoeq_with_callback;
+use super::de::optimize_filters_autoeq_with_callback_and_completion;
 use super::loss::{
     AsymmetricStrategy, DriversMode, DriversStrategy, EpaStrategy, FlatStrategy,
     HeadphoneScoreStrategy, Objective, ObjectiveContext, SpeakerScoreStrategy,
@@ -97,8 +97,8 @@ pub struct ObjectiveData {
     pub min_cut_envelope: Option<Vec<(f64, f64)>>,
     /// Experimental EPA diagnostics and active spectral-flatness blend.
     ///
-    /// Used only when `loss_type == LossType::Epa`. When `None`, the
-    /// optimizer falls back to `EpaConfig::default()`.
+    /// Used by the EPA objective and optional flat-objective spectral regression
+    /// cost. When `None`, the optimizer uses `EpaConfig::default()`.
     pub epa_config: Option<crate::loss::epa::score::EpaConfig>,
     /// Detected modal ringing data retained for EPA diagnostic compatibility.
     ///
@@ -120,14 +120,17 @@ pub struct ObjectiveData {
     /// Defaults to empty, which preserves the old behaviour
     /// (auto-detected peaks/dips).
     pub detected_problems: Vec<(f64, f64, f64)>,
-    /// Per-frequency dip-suppression mask for
-    /// [`LossType::SpeakerFlatAsymmetric`].
+    /// Measured modal evidence used by the audibility veto's optional
+    /// proximity rule.  This is empty when no decomposition evidence exists.
+    pub mode_proximity_evidence: Vec<crate::roomeq::ModeProximityEvidence>,
+    /// Per-frequency dip-suppression mask for RoomEQ flat and asymmetric
+    /// objectives.
     ///
-    /// `Some(mask)` scales the dip branch of the asymmetric loss toward
-    /// zero inside detected narrow nulls (see
+    /// `Some(mask)` scales only the boost-seeking dip residual toward zero
+    /// inside detected narrow nulls (see
     /// [`crate::roomeq::impulse_analysis::build_null_suppression_mask`]).
-    /// `None` disables suppression — dips are weighted with the
-    /// full `bass_dip_weight` / `dip_weight` of the asymmetric config.
+    /// `None` disables suppression; asymmetric dips use their configured
+    /// `bass_dip_weight` / `dip_weight`, while flat loss remains symmetric.
     /// Must have the same length as `freqs` when provided.
     pub null_suppression: Option<Arc<Array1<f64>>>,
     /// Peak/dip weights for [`LossType::SpeakerFlatAsymmetric`].
@@ -135,6 +138,27 @@ pub struct ObjectiveData {
     /// Optional smoothness regularizer on the correction curve.
     /// `None` disables the penalty.
     pub smoothness_penalty: Option<SmoothnessPenaltyConfig>,
+    /// Optional peak-filter Q-rail regularizer `(rail_q, relative_gain_weight)`.
+    ///
+    /// Adds weight times absolute gain times `(Q / rail_q)^4`, summed over
+    /// active standard/matched peaks. Shelves, neutral filters, and non-PEQ losses are
+    /// excluded. This is an engineering complexity cost, not audibility proof.
+    pub q_rail_penalty: Option<(f64, f64)>,
+    /// Optional measurement-derived peak bandwidth guard for RoomEQ.
+    /// Search and final emission project peak Q using the same retained grids.
+    pub peak_resolution_guard: Option<super::resolution_guard::PeakResolutionGuard>,
+    /// Captured one-RMS perturbation bound for this prepared scalar loss.
+    ///
+    /// Runtime RoomEQ evidence for adaptive stopping, not statistical confidence.
+    /// `None` means unavailable; spatial variation must not supply this value.
+    pub captured_loss_perturbation_bound: Option<f64>,
+    /// Weight for regression in EPA spectral error against the frozen baseline.
+    ///
+    /// Zero disables this cost. Uses the EPA flatness configuration without
+    /// residual deadband or null suppression. It does not optimize transfer-only
+    /// loudness, roughness, sharpness, or preference diagnostics.
+    /// Only flat PEQ and flat realized-response objectives consult this weight.
+    pub epa_flatness_regression_weight: f64,
     /// Optional audibility/JND deadband applied to residual errors before
     /// spectral objective scoring.
     pub audibility_deadband: Option<crate::roomeq::AudibilityDeadbandConfig>,
@@ -144,6 +168,58 @@ impl ObjectiveData {
     pub(crate) fn prepared(&self) -> &super::prepared_objective::PreparedObjective {
         self.prepared
             .get_or_init(|| super::prepared_objective::PreparedObjective::new(self))
+    }
+
+    pub(crate) fn with_run_control(
+        &self,
+        run_control: super::run_control::OptimizerRunControl,
+    ) -> Self {
+        self.with_evaluation_tracking(run_control, super::run_control::EvaluationStage::Search)
+    }
+
+    /// Count post-search scores separately from the shared search cap.
+    ///
+    /// Finalization and pipeline safety checks remain possible after the search
+    /// cap is exhausted. Callers must check cancellation before starting them.
+    pub fn with_validation_tracking(
+        &self,
+        run_control: super::run_control::OptimizerRunControl,
+    ) -> Self {
+        self.with_evaluation_tracking(run_control, super::run_control::EvaluationStage::Validation)
+    }
+
+    /// Preserve shared accounting while moving post-search scores to validation.
+    pub(crate) fn post_search_validation_view(&self) -> Self {
+        self.prepared().run_control.as_ref().map_or_else(
+            || self.clone(),
+            |control| self.with_validation_tracking(control.clone()),
+        )
+    }
+
+    /// Check explicit terminal requests independently of search-cap exhaustion.
+    pub(crate) fn terminal_stop_requested(&self) -> bool {
+        self.prepared().run_control.as_ref().is_some_and(|control| {
+            let snapshot = control.snapshot();
+            snapshot.cancellation_requested || snapshot.deadline_reached
+        })
+    }
+
+    fn with_evaluation_tracking(
+        &self,
+        run_control: super::run_control::OptimizerRunControl,
+        stage: super::run_control::EvaluationStage,
+    ) -> Self {
+        // Do not share a source cache that may already have been initialized:
+        // every controlled run gets candidate-independent data tied to this
+        // ObjectiveData and its own accounting gate.
+        let prepared = std::sync::OnceLock::new();
+        let mut prepared_objective =
+            super::prepared_objective::PreparedObjective::new(self).with_run_control(run_control);
+        prepared_objective.evaluation_stage = stage;
+        let _ = prepared.set(prepared_objective);
+        let mut controlled = self.clone();
+        controlled.prepared = Arc::new(prepared);
+        controlled
     }
 
     /// Build the [`Objective`] strategy that corresponds to the configured
@@ -226,6 +302,40 @@ impl ObjectiveData {
 /// selecting the invalid candidate.
 struct MissingDataStrategy;
 
+impl ObjectiveData {
+    /// Read-only response for a single prepared PEQ objective, without scoring.
+    pub fn response_snapshot(
+        &self,
+        parameters: &[f64],
+    ) -> Option<Arc<super::OptimizerResponseSnapshot>> {
+        if self.multi_objective.is_some() || self.drivers_data.is_some() || parameters.is_empty() {
+            return None;
+        }
+        let filter = x2spl(&self.freqs, parameters, self.srate, self.peq_model);
+        let measured = &*self.target - &*self.deviation;
+        let predicted = &measured + &filter;
+        if self.freqs.iter().any(|v| !v.is_finite() || *v <= 0.)
+            || self.freqs.windows(2).into_iter().any(|p| p[0] >= p[1])
+            || self
+                .target
+                .iter()
+                .chain(measured.iter())
+                .chain(filter.iter())
+                .chain(predicted.iter())
+                .any(|v| !v.is_finite())
+        {
+            return None;
+        }
+        Some(Arc::new(super::OptimizerResponseSnapshot {
+            frequency_hz: self.freqs.to_vec(),
+            prepared_measurement_db: measured.to_vec(),
+            target_db: self.target.to_vec(),
+            filter_db: filter.to_vec(),
+            predicted_db: predicted.to_vec(),
+        }))
+    }
+}
+
 impl Objective for MissingDataStrategy {
     fn compute(&self, _x: &[f64], _ctx: &ObjectiveContext) -> f64 {
         f64::INFINITY
@@ -268,6 +378,16 @@ impl std::fmt::Debug for ObjectiveData {
             .field("null_suppression", &self.null_suppression)
             .field("asymmetric_loss_config", &self.asymmetric_loss_config)
             .field("smoothness_penalty", &self.smoothness_penalty)
+            .field("q_rail_penalty", &self.q_rail_penalty)
+            .field("peak_resolution_guard", &self.peak_resolution_guard)
+            .field(
+                "captured_loss_perturbation_bound",
+                &self.captured_loss_perturbation_bound,
+            )
+            .field(
+                "epa_flatness_regression_weight",
+                &self.epa_flatness_regression_weight,
+            )
             .field("audibility_deadband", &self.audibility_deadband)
             .finish()
     }
@@ -306,7 +426,7 @@ pub(super) fn run_autoeq_de_with_epa_callback(
     params: &crate::OptimParams,
     autoeq_name: &str,
     mut callback: OptimProgressCallback,
-) -> Result<(String, f64), (String, f64)> {
+) -> super::de::AutoeqDeCompletionResult {
     const EPA_INTERVAL: usize = 10;
 
     let epa_config = objective_data.epa_config.clone();
@@ -316,6 +436,7 @@ pub(super) fn run_autoeq_de_with_epa_callback(
     let epa_srate = objective_data.srate;
     let epa_model = objective_data.peq_model;
     let mut epa_gen_counter: usize = 0;
+    let response_objective = objective_data.clone();
 
     let de_cb: Box<dyn FnMut(&crate::de::DEIntermediate) -> crate::de::CallbackAction + Send> =
         Box::new(move |intermediate| {
@@ -344,9 +465,13 @@ pub(super) fn run_autoeq_de_with_epa_callback(
             } else {
                 None
             };
-            callback(intermediate.iter, intermediate.fun, epa)
+            let response = intermediate
+                .x
+                .as_slice()
+                .and_then(|x| response_objective.response_snapshot(x));
+            callback(intermediate.iter, intermediate.fun, epa, response)
         });
-    optimize_filters_autoeq_with_callback(
+    optimize_filters_autoeq_with_callback_and_completion(
         x,
         lower_bounds,
         upper_bounds,

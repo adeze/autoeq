@@ -8,21 +8,62 @@ Run with: python3 scripts/test_roomeq_synthetic_exit.py
 from pathlib import Path
 from copy import deepcopy
 import json
+import math
 import subprocess
 import struct
 import unittest
 from parameter_crossover_contract import verify_crossover
 from parameter_signal_contract import verify_signal_axes
+from src.payload_binding import verify_payload_binding
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "target/release/roomeq-qa-synthetic"
-# Progress observers now preserve adaptive selection and its existing per-pass
-# budgets. The full five-seed matrix takes minutes, not the old fixed-pass
-# smoke path's seconds. This limits process runtime, not acoustic acceptance.
-MATRIX_TIMEOUT_SECONDS = 15 * 60
+# Progress observers preserve adaptive selection and its existing per-pass
+# budgets. A single full-scale 5.1 refusal row can exceed 15 minutes, and the
+# reduced-level matrix contains 17 rows (parallel workers by default, serial
+# with --jobs 1). This only bounds subprocess runtime; it does not relax any
+# acoustic or safety assertion.
+MATRIX_TIMEOUT_SECONDS = 3 * 60 * 60
+
+
+class SavedOutput(dict):
+    """Retain the sidecar directory when checking a saved RoomEQ payload."""
+
 
 
 class SyntheticExitContract(unittest.TestCase):
+    def assert_hybrid_selection(self, row):
+        stages = [stage for stage in row["stage_outcomes"]
+                  if stage["stage"] == "hybrid_best_part_selection"]
+        self.assertEqual(len(stages), 1, row["row"])
+        stage = stages[0]
+        self.assertEqual(stage["status"], "applied", row["row"])
+        selected = [value.removeprefix("selected=")
+                    for value in stage["advisories"] if value.startswith("selected=")]
+        self.assertEqual(len(selected), 1)
+        self.assertIn(selected[0], {"iir", "fir", "hybrid"})
+        self.assertEqual(len(stage["checks"]), 2)
+        parts = {}
+        initial = []
+        for check in stage["checks"]:
+            name = check["id"].removeprefix("hybrid_best_part_")
+            self.assertIn(name, {"iir", "fir"})
+            details = json.loads(check["diagnostic"])
+            self.assertEqual(details["score_basis"], "configured_reference_training_mean")
+            self.assertTrue(details["original_hybrid_safety_budgets"])
+            parts[name] = details["part_post_mean_db"]
+            initial.append(details["hybrid_post_mean_db"])
+        self.assertEqual(set(parts), {"iir", "fir"})
+        self.assertAlmostEqual(initial[0], initial[1], places=9)
+        rows = row["selected_acceptance"]["acoustic_quality"]["training"]["configured_baseline"]["residuals"]
+        post = sum(value["score"]["post_weighted_rms_db"] for value in rows) / len(rows)
+        self.assertTrue(all(math.isfinite(value) and value >= 0
+                            for value in [post, *initial, *parts.values()]))
+        expected = initial[0] if selected[0] == "hybrid" else parts[selected[0]]
+        self.assertAlmostEqual(post, expected, places=9)
+        self.assertLessEqual(post, min(initial[0], *parts.values()) + 1e-9)
+        return selected[0]
+
     def run_qa(self, *args, timeout_seconds=60):
         self.assertTrue(BINARY.is_file(), "Build the release QA binary first")
         return subprocess.run(
@@ -41,7 +82,7 @@ class SyntheticExitContract(unittest.TestCase):
         self.assertIn("mode filter", result.stderr)
 
     def test_parameter_smoke_matrix_exits_zero_and_records_scope(self):
-        result = self.run_qa("--parameter-matrix", timeout_seconds=MATRIX_TIMEOUT_SECONDS)
+        result = self.run_qa("--parameter-matrix-reduced-level", timeout_seconds=MATRIX_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("finite-output smoke rows passed", result.stdout)
         records = json.loads((ROOT / "target/qa/roomeq-parameter-matrix.json").read_text())
@@ -76,20 +117,44 @@ class SyntheticExitContract(unittest.TestCase):
         routes.remove(next(route for route in routes if route["route_kind"] == "redirected_bass_lowpass_to_sub"))
         with self.assertRaises(AssertionError):
             verify_crossover(fault)
-        fir_failures = []
+        applied_fir_modes = set()
+        safe_fallback_rows = set()
         for row in records:
+            self.assertEqual(row["input_scenario"], "reduced_level_processing")
+            limits = row["effective_config"]["optimizer"]["finalization"]
+            self.assertEqual(limits["default_input_peak"], 0.1)
+            self.assertEqual(limits["max_attenuation_db"], 12.0)
+            self.assertEqual(limits["output_ceiling_dbfs"], 0.0)
+            self.assertEqual(limits["input_peak_limits"], {})
             self.assertEqual(row["outcome_scope"], "finite_output_smoke")
             bundle = row["replay_bundle"]
             directory = (ROOT / bundle["directory"]).resolve()
             self.assertTrue(directory.is_relative_to((ROOT / "target/qa/roomeq-parameter-bundles").resolve()))
             request = json.loads((directory / bundle["request"]).read_text())
             output = json.loads((directory / bundle["selected_output"]).read_text())
+            # QA seed metadata must not leave the selected DSP output unbound.
+            saved_output = SavedOutput(output)
+            saved_output.source_directory = directory
+            binding_verified, binding_reason, _ = verify_payload_binding(saved_output)
+            self.assertTrue(binding_verified, binding_reason)
             self.assertEqual(request["row"], row["row"])
             self.assertEqual(request["sample_rate_hz"], row["sample_rate_hz"])
             self.assertEqual(request["requested_axes"], row["requested_axes"])
+            self.assertEqual(request["input_scenario"], "reduced_level_processing")
+            self.assertEqual(request["inputs"]["configuration_without_speakers"]["optimizer"]["finalization"], limits)
             self.assertEqual(set(request["inputs"]["single_speaker_measurements"]),
                              set(row["effective_config"]["measurements"]))
-            self.assertEqual(set(output["channels"]), set(row["delivered_fir_taps"]))
+            declared = request["inputs"]["declared_measurement_sources"]
+            if row["requested_axes"]["phase"] == 1:
+                self.assertEqual(set(declared), set(row["effective_config"]["measurements"]))
+                for source in declared.values():
+                    self.assertEqual(source["provenance"]["capture_kind"], "stationary_ir")
+                    self.assertEqual(source["provenance"]["timing_reference_id"],
+                                     "qa-analytic-common-clock")
+                    self.assertIn("phase_deg", source["inline"])
+            else:
+                self.assertEqual(declared, {})
+                self.assertEqual(set(output["channels"]), set(row["delivered_fir_taps"]))
             for name, chain in output["channels"].items():
                 convolutions = [plugin for plugin in chain["plugins"]
                                 if plugin["plugin_type"] == "convolution"]
@@ -136,7 +201,8 @@ class SyntheticExitContract(unittest.TestCase):
             if axes["topology"]:
                 self.assertEqual(row["home_cinema_layout"]["bed_channels"], [0, 2, 5][axes["topology"]])
                 self.assertTrue(row["bass_management"]["enabled"])
-                self.assertEqual(len(row["bass_management"]["signal_flow"]), len(measurements))
+                self.assertEqual(len(row["bass_management"]["signal_flow"]),
+                                 len(row["bass_management"]["routing_graph"]["input_channels"]))
             for measurement in measurements.values():
                 self.assertEqual(measurement["has_phase"], axes["phase"] == 1)
             if axes["measurement_shape"] == 1:
@@ -149,15 +215,51 @@ class SyntheticExitContract(unittest.TestCase):
                 taps = row["effective_config"]["optimizer"]["fir"]["taps"]
                 duration = taps * 1000 / row["sample_rate_hz"]
                 self.assertLessEqual(abs(duration - row["requested_fir_duration_ms"]), 500 / row["sample_rate_hz"] + 1e-9)
-                delivered = row["delivered_fir_taps"]
-                mismatched = {name: value for name, value in delivered.items() if value != taps}
-                if not delivered or mismatched:
-                    fir_failures.append({"row": row["row"], "mode": row["mode"],
-                                         "sample_rate_hz": row["sample_rate_hz"],
-                                         "expected_taps": taps, "mismatched_channels": mismatched,
-                                         "decision": (row["selected_acceptance"] or {}).get("decision"),
-                                         "violations": (row["selected_acceptance"] or {}).get("violations")})
-        self.assertEqual(fir_failures, [], f"FIR retention failed for matrix rows: {fir_failures}")
+            acceptance = row["selected_acceptance"] or {}
+            decision = acceptance.get("decision")
+            delivered = row["delivered_fir_taps"]
+            self.assertTrue(delivered)
+            if decision == "identity_fallback":
+                safe_fallback_rows.add(row["row"])
+                self.assertTrue(acceptance.get("violations"), row["row"])
+                self.assertTrue(all(value is None for value in delivered.values()), row["row"])
+            else:
+                self.assertEqual(decision, "accepted", row["row"])
+                winner = self.assert_hybrid_selection(row) if row["mode"] == "Hybrid" else None
+                if winner == "iir":
+                    self.assertTrue(all(value is None for value in delivered.values()), row["row"])
+                elif row["fir_duration_applicable"]:
+                    self.assertEqual(set(delivered.values()), {taps}, row["row"])
+                    applied_fir_modes.add(row["mode"])
+                else:
+                    self.assertTrue(all(value is None for value in delivered.values()), row["row"])
+        self.assertEqual(applied_fir_modes, {"PhaseLinear", "Hybrid"})
+        self.assertTrue(safe_fallback_rows, "matrix must report declined correction candidates")
+
+    def test_full_scale_parameter_cases_refuse_for_structural_headroom(self):
+        result = self.run_qa("--parameter-matrix-refusals", timeout_seconds=MATRIX_TIMEOUT_SECONDS)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rows = json.loads((ROOT / "target/qa/roomeq-parameter-refusals.json").read_text())
+        self.assertEqual({row["row"] for row in rows}, {0, 5, 6, 11, 12, 14, 15, 16})
+        for row in rows:
+            self.assertEqual(row["input_scenario"], "full_scale_safety_refusal")
+            self.assertEqual(row["processing_status"], "refused")
+            self.assertEqual(row["outcome_scope"], "expected_safety_refusal")
+            self.assertEqual(row["assertion_status"], "passed")
+            self.assertEqual(row["finalization"]["default_input_peak"], 1.0)
+            self.assertEqual(row["finalization"]["max_attenuation_db"], 12.0)
+            self.assertEqual(row["finalization"]["output_ceiling_dbfs"], -24.0)
+            required = row["required_attenuation_db_by_seed"]
+            self.assertEqual(len(required), 5)
+            self.assertTrue(all(value > 12.0 for value in required))
+            bundle = row["replay_bundle"]
+            directory = (ROOT / bundle["directory"]).resolve()
+            self.assertTrue(directory.is_relative_to((ROOT / "target/qa/roomeq-parameter-bundles").resolve()))
+            self.assertFalse((directory / "selected-output.json").exists())
+            self.assertEqual(json.loads((directory / bundle["refusal"]).read_text()), row)
+            request = json.loads((directory / bundle["request"]).read_text())
+            self.assertEqual(request["input_scenario"], row["input_scenario"])
+            self.assertEqual(request["inputs"]["configuration_without_speakers"]["optimizer"]["finalization"], row["finalization"])
 
 
 if __name__ == "__main__":

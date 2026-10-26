@@ -17,14 +17,12 @@ use roomeq_model::{Curve, MeasurementSource};
 use std::collections::HashMap;
 
 #[test]
+#[ignore = "requires ROOMEQ_CAMILLADSP_BIN; run scripts/run_camilladsp_backend_contracts.py"]
 fn tool_contract_camilladsp_fractional_gd_matches_exported_response() {
     use num_complex::Complex64;
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let Ok(binary) = std::env::var("ROOMEQ_CAMILLADSP_BIN") else {
-        eprintln!("skipping optional PCM backend contract; set ROOMEQ_CAMILLADSP_BIN");
-        return;
-    };
+    let binary = std::env::var("ROOMEQ_CAMILLADSP_BIN").expect("CamillaDSP backend is required");
     let amplitude = 1_i32 << 28;
     let impulse_offset = 128;
     for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
@@ -98,8 +96,10 @@ fn tool_contract_camilladsp_fractional_gd_matches_exported_response() {
                 assert_eq!(output.stdout.len() % 4, 0);
                 let pcm: Vec<_> = output
                     .stdout
-                    .chunks_exact(4)
-                    .map(|sample| i32::from_le_bytes(sample.try_into().unwrap()))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|sample| i32::from_le_bytes(*sample))
                     .collect();
                 let report = &results["left"].final_curve;
                 let taps = results["left"].fir_coeffs.as_ref().unwrap().len();
@@ -234,6 +234,7 @@ fn fractional_gd_sidecars_match_reported_transfer_and_shared_latency() {
             );
         }
         let mut room = roomeq_engine::room_result::RoomOptimizationResult {
+            finalized_decisions: None,
             channels: chains,
             channel_results: results,
             deployed_source_curves: HashMap::new(),
@@ -406,6 +407,7 @@ fn flat_curve(n: usize) -> Curve {
 fn channel_result(name: &str, delay_ms: f64) -> ChannelOptimizationResult {
     let curve = measurement_curve_with_delay(32, delay_ms, 0.0);
     ChannelOptimizationResult {
+        measurement_conditioning: None,
         name: name.to_string(),
         pre_score: 0.0,
         post_score: 0.0,
@@ -414,11 +416,14 @@ fn channel_result(name: &str, delay_ms: f64) -> ChannelOptimizationResult {
         biquads: Vec::new(),
         fir_coeffs: None,
         optimizer_evidence: Vec::new(),
+        audibility_veto: Vec::new(),
+        veto_adjudication: None,
     }
 }
 
 fn dsp_chain(name: &str) -> ChannelDspChain {
     ChannelDspChain {
+        physical_correction_target: None,
         channel: name.to_string(),
         plugins: Vec::new(),
         drivers: None,
@@ -430,6 +435,14 @@ fn dsp_chain(name: &str) -> ChannelDspChain {
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
     }
 }
 
@@ -443,7 +456,9 @@ fn room_config_with_in_memory_speakers(speakers: HashMap<String, SpeakerConfig>)
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }
@@ -577,6 +592,7 @@ fn coherence_average_gd_realisations_uses_circular_phase_mean() {
         spl: Array1::from_vec(vec![80.0]),
         phase: Array1::from_vec(vec![phase_deg.to_radians()]),
         coherence: Array1::from_vec(vec![1.0]),
+        resolution: None,
     };
     let realisations = vec![vec![make_input(179.0)], vec![make_input(-179.0)]];
 
@@ -1735,4 +1751,32 @@ fn try_run_phase_linear_fir_gd_without_output_dir() {
     )
     .unwrap();
     assert!(summary.advisory.contains("success") || summary.advisory.contains("minimal"));
+}
+
+#[test]
+fn corrected_and_averaged_gd_inputs_keep_original_resolution() {
+    let raw = Curve {
+        freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+        spl: Array1::from_elem(5, 80.0),
+        phase: Some(Array1::zeros(5)),
+        coherence: Some(Array1::ones(5)),
+        ..Default::default()
+    };
+    let dense = autoeq_core::interpolate_response(&Array1::linspace(20.0, 200.0, 128), &raw);
+    let first = corrected_realisation_to_gd_input(&raw, &dense, &dense).unwrap();
+    assert_eq!(
+        first.resolution.as_ref().unwrap().width_octaves(80.0),
+        Some(2.0)
+    );
+    let mut second = first.clone();
+    second.resolution = first
+        .resolution
+        .as_ref()
+        .unwrap()
+        .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+    let averaged = coherence_average_gd_realisations(&[vec![first], vec![second]]).unwrap();
+    assert_eq!(
+        averaged[0].resolution.as_ref().unwrap().width_octaves(80.0),
+        Some(4.0)
+    );
 }

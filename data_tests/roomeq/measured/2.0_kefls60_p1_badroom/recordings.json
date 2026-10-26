@@ -1,0 +1,69 @@
+{
+  "version": "3.0.0",
+  "speakers": {
+    "L": {
+      "measurements": [
+        "left_m1.csv",
+        "left_m2.csv",
+        "left_m3.csv",
+        "left_m4.csv"
+      ],
+      "speaker_name": "KEF LS60"
+    },
+    "R": {
+      "measurements": [
+        "right_m1.csv",
+        "right_m2.csv",
+        "right_m3.csv",
+        "right_m4.csv"
+      ],
+      "speaker_name": "KEF LS60"
+    }
+  },
+  "measured_impulse_responses": {
+    "L": {
+      "path": "measured_ir/L_KEF_LS60_M1_P1__ir.csv",
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.0_kefls60_p1_badroom"
+    },
+    "R": {
+      "path": "measured_ir/R_KEF_LS60_M1_P1__ir.csv",
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.0_kefls60_p1_badroom"
+    }
+  },
+  "optimizer": {
+    "algorithm": "autoeq:cmaes",
+    "population": 21,
+    "max_iter": 500000,
+    "loss_type": "flat",
+    "min_freq": 20.0,
+    "max_freq": 1000.0,
+    "num_filters": 7,
+    "min_q": 0.5,
+    "max_q": 3.0,
+    "min_db": -12.0,
+    "max_db": 4.0,
+    "psychoacoustic": true,
+    "asymmetric_loss": true,
+    "phase_alignment": {
+      "enabled": true,
+      "min_freq": 30.0,
+      "max_freq": 120.0,
+      "optimize_polarity": true,
+      "max_delay_ms": 20.0
+    },
+    "inter_channel_timbre_matching": {
+      "enabled": true,
+      "reference_channel": "L",
+      "min_improvement_db": 0.05
+    }
+  },
+  "recording_config": {
+    "room_dimensions": {
+      "length": 10.0,
+      "width": 6.0,
+      "height": 2.5
+    }
+  }
+}

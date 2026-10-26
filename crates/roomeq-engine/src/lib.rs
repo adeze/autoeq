@@ -13,7 +13,8 @@ pub use autoeq_optim::optim::{OptimProgressCallback, OptimizerConfidence, Optimi
 pub mod analysis {
     pub use math_audio_dsp::spatial_evaluation;
     pub use roomeq_analysis::{
-        crossover_utils, frequency_grid, ir_waveform, response_metrics, slope, time_align,
+        crossover_utils, frequency_grid, ir_waveform, quasi_anechoic, response_metrics, slope,
+        time_align,
     };
 }
 pub mod error {
@@ -62,6 +63,8 @@ pub mod crossover;
 pub mod ctc;
 /// Double-bass-array optimization and phase-critical array summation.
 pub mod dba;
+/// DSP convention and numerical-discipline audit checks.
+pub mod dsp_conventions;
 /// Canonical complex-response evaluation of serialized DSP chains.
 pub mod dsp_realization;
 /// In-memory per-channel and multi-measurement EQ optimization.
@@ -82,6 +85,8 @@ pub mod height_channel_alignment;
 pub mod home_cinema;
 /// Inter-channel tonal matching using broadband spectral correction.
 pub mod inter_channel_timbre_matching;
+/// Measured-room acoustics (early reflections, octave T60) for reporting.
+pub mod ir_acoustics;
 #[cfg(feature = "measurement-zarr")]
 pub mod measurement_array;
 /// Path-free frequency-split FIR/IIR channel processing.
@@ -101,12 +106,25 @@ pub mod physical_routing;
 pub mod pipeline;
 /// Progress reporting for long-running RoomEQ operations.
 pub mod progress;
+/// Filesystem-capable validation of configured measurement provenance.
+pub mod provenance;
+/// Provisional correction decision records emitted at the decision site (E2).
+pub mod provisional_decisions;
+/// Cumulative pruning audit and source-summation checks (E3).
+pub mod pruning_audit;
 pub mod report_adapter;
 /// Shared in-memory results returned by RoomEQ execution workflows.
 pub mod room_result;
+pub mod runtime_limiter;
+/// Post-realization authorization for multi-segment measurement support.
+pub mod segment_support;
 /// Broadband spectral inter-channel response alignment.
 pub mod spectral_align;
+pub mod summation_search;
+pub mod target_enforcement;
 pub use roomeq_analysis::spatial_robustness;
+/// Evidence-aware operation gating and local constraint evaluation (E1).
+pub mod evidence_gate;
 /// Supporting-source room compensation filter design.
 pub mod supporting_source;
 /// Deterministic topology, crossover, and bass-routing primitives.
@@ -124,3 +142,17 @@ pub use pipeline::{
     EngineRequest, PipelineControl, PipelineEvent, PipelineObserver, PipelineStepId,
     PipelineStepStatus, RoomEngine,
 };
+
+/// QA evidence directory for test artifact retention (test builds only).
+///
+/// Tests that retain JSON evidence for the QA harness write through this
+/// directory: `ROOMEQ_QA_DIR` when set, otherwise the workspace `target/qa`
+/// directory beside the crate. The override keeps runs hermetic where the
+/// shared workspace target is read-only, without changing default
+/// artifact locations.
+#[cfg(test)]
+pub(crate) fn qa_evidence_dir() -> std::path::PathBuf {
+    std::env::var_os("ROOMEQ_QA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa"))
+}

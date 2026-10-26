@@ -23,7 +23,14 @@ pub fn to_temporal_ir_masking(
         post_ringing_peak_db: value.post_ringing_peak_db,
         pre_ringing_audible_db: value.pre_ringing_audible_db,
         post_ringing_audible_db: value.post_ringing_audible_db,
+        pre_energy_ratio_db: value.pre_energy_ratio_db,
         penalty: value.penalty,
+        taps: value.taps,
+        sample_rate_hz: value.sample_rate_hz,
+        masking_profile: value.masking_profile,
+        pre_mask_ms: value.pre_mask_ms,
+        post_mask_ms: value.post_mask_ms,
+        audibility_threshold_db: value.audibility_threshold_db,
     }
 }
 
@@ -55,6 +62,9 @@ fn to_optimizer_termination(
         autoeq_optim::optim::OptimizerTermination::UserStopped => {
             roomeq_model::OptimizerTermination::UserStopped
         }
+        autoeq_optim::optim::OptimizerTermination::TimedOut => {
+            roomeq_model::OptimizerTermination::TimedOut
+        }
         autoeq_optim::optim::OptimizerTermination::BackendFailure => {
             roomeq_model::OptimizerTermination::BackendFailure
         }
@@ -68,6 +78,8 @@ pub fn to_optimizer_run_evidence(
     value: &autoeq_optim::optim::OptimizerRunEvidence,
 ) -> roomeq_model::OptimizerRunEvidence {
     roomeq_model::OptimizerRunEvidence {
+        input_normalization: value.input_normalization.clone(),
+        multi_input_normalization: value.multi_input_normalization.clone(),
         algorithm: value.algorithm.clone(),
         termination: to_optimizer_termination(value.termination),
         converged: value.converged,
@@ -90,5 +102,19 @@ pub fn to_optimizer_run_evidence(
                 objective: restart.objective,
             })
             .collect(),
+        pareto_report: value.pareto_report.clone(),
+    }
+}
+
+#[cfg(test)]
+mod termination_tests {
+    use super::to_optimizer_termination;
+
+    #[test]
+    fn timeout_reason_survives_the_room_report_adapter() {
+        assert_eq!(
+            to_optimizer_termination(autoeq_optim::optim::OptimizerTermination::TimedOut),
+            roomeq_model::OptimizerTermination::TimedOut
+        );
     }
 }

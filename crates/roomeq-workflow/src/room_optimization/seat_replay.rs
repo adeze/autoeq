@@ -1,14 +1,19 @@
 //! Raw, position-identified evidence survives optimization until final replay.
 use super::RoomOptimizationResult;
 use roomeq_model::{
-    AutoeqError, ChannelDspChain, Curve, FinalSeatEvaluation, MeasurementSource,
-    PluginConfigWrapper, Result, RoomConfig, SpeakerConfig,
+    AutoeqError, ChannelDspChain, CoherentTimingEvidence, Curve, FinalSeatEvaluation,
+    MeasurementSource, PluginConfigWrapper, Result, RoomConfig, SpeakerConfig,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-mod bounded_sum;
 #[cfg(test)]
 mod asymmetric;
+mod bounded_sum;
+mod configured_reference;
+pub(super) use configured_reference::ConfiguredComparison;
+pub(super) use configured_reference::attach_configured_comparison;
+pub(super) use configured_reference::configured_selection_metrics;
+mod intake;
 use bounded_sum::{Summed, process_branch, sum_branches};
 
 type DriverIdentity = (Option<String>, usize);
@@ -20,6 +25,16 @@ pub struct Capture {
     driver: Option<DriverIdentity>,
     curves: Vec<Curve>,
     seat_labels: Option<Vec<String>>,
+}
+
+/// Whether final replay would need coherent branch summation but one or more
+/// measured branches carry magnitude only. Keep this check in the capture
+/// module so callers cannot bypass the phase-evidence contract by inspecting
+/// private capture representation.
+pub(super) fn has_unmeasured_multi_branch_phase(captures: &[Capture]) -> bool {
+    captures.iter().any(|capture| {
+        capture.driver.is_some() && capture.curves.iter().any(|curve| curve.phase.is_none())
+    })
 }
 
 /// Explicit label from the immutable pre-optimization capture, without inferring
@@ -37,6 +52,46 @@ pub fn training_seat_label(
         .cloned()
 }
 
+/// Validate raw quality evidence before crossover optimization or seat replay.
+/// Unknown quality is reported separately from explicitly unreliable evidence.
+pub(crate) fn crossover_phase_advisories(
+    config: &RoomConfig,
+    band: (f64, f64),
+) -> Result<Vec<String>> {
+    let captures = capture_training(config)?;
+    let mut advisories = std::collections::BTreeSet::new();
+    let mut seat_order = None;
+    for capture in &captures {
+        if let Some(labels) = capture
+            .seat_labels
+            .as_ref()
+            .filter(|labels| labels.len() > 1)
+        {
+            if seat_order.is_some_and(|previous| previous != labels) {
+                return Err(invalid(
+                    "crossover phase captures must use identical seat order",
+                ));
+            }
+            seat_order = Some(labels);
+        }
+        for (seat, curve) in capture.curves.iter().enumerate() {
+            let evidence = roomeq_engine::bass_phase_confidence::crossover_phase_advisories(
+                curve,
+                band,
+                config.recording_config.as_ref(),
+            )
+            .map_err(|error| {
+                invalid(format!(
+                    "channel '{}' seat {seat}: {error}",
+                    capture.channel
+                ))
+            })?;
+            advisories.extend(evidence.into_iter().map(str::to_owned));
+        }
+    }
+    Ok(advisories.into_iter().collect())
+}
+
 fn invalid(message: impl Into<String>) -> AutoeqError {
     AutoeqError::InvalidMeasurement {
         message: message.into(),
@@ -44,12 +99,54 @@ fn invalid(message: impl Into<String>) -> AutoeqError {
 }
 
 pub fn capture_training(config: &RoomConfig) -> Result<Vec<Capture>> {
+    capture_training_impl(config, None)
+}
+
+pub(super) fn capture_with_receipt(
+    config: &RoomConfig,
+    held_out: &HashMap<String, Vec<Curve>>,
+) -> Result<(Vec<Capture>, roomeq_model::StageOutcome)> {
+    let mut receipt = intake::Receipt::default();
+    let captures = capture_training_impl(config, Some(&mut receipt))?;
+    // Stable ordering makes retained identity independent of HashMap iteration.
+    let held_out: BTreeMap<_, _> = held_out.iter().collect();
+    for (channel, curves) in held_out {
+        receipt.record(
+            "held_out",
+            None,
+            &Capture {
+                channel: channel.clone(),
+                driver: None,
+                curves: curves.clone(),
+                seat_labels: None,
+            },
+            Default::default(),
+        )?;
+    }
+    Ok((captures, receipt.into_stage()))
+}
+
+fn capture_training_impl(
+    config: &RoomConfig,
+    mut receipt: Option<&mut intake::Receipt>,
+) -> Result<Vec<Capture>> {
     let roles: BTreeMap<String, String> = match &config.system {
-        Some(system) => system
-            .speakers
-            .iter()
-            .map(|(a, b)| (a.clone(), b.clone()))
-            .collect(),
+        Some(system) => {
+            let mut roles: BTreeMap<String, String> = system
+                .speakers
+                .iter()
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .collect();
+            if let Some(subwoofers) = system.subwoofers.as_ref() {
+                roles.extend(
+                    subwoofers
+                        .outputs
+                        .iter()
+                        .map(|output| (output.id.clone(), output.speaker.clone())),
+                );
+            }
+            roles
+        }
         None => config
             .speakers
             .keys()
@@ -62,7 +159,7 @@ pub fn capture_training(config: &RoomConfig) -> Result<Vec<Capture>> {
             .speakers
             .get(&key)
             .ok_or_else(|| invalid(format!("unknown measurement '{key}'")))?;
-        let sources: Vec<SourceCapture<'_>> = match speaker {
+        let mut sources: Vec<SourceCapture<'_>> = match speaker {
             SpeakerConfig::Single(source) => vec![(None, source)],
             SpeakerConfig::Topology(topology) => topology
                 .drivers
@@ -93,17 +190,46 @@ pub fn capture_training(config: &RoomConfig) -> Result<Vec<Capture>> {
                 .enumerate()
                 .map(|(i, source)| (Some((None, i)), source))
                 .collect(),
-            // This mode's timing and coherent evidence have a separate explicit
-            // contract. Do not certify its spatial power average as measured seats.
-            SpeakerConfig::SupportingSource(_) => continue,
+            // The primary loudspeaker remains a physical room-seat branch and
+            // must participate in final replay. The supporting signal is a
+            // generated, delayed/decorrelated source; it has no independent
+            // room-seat measurement in this configuration, so it is deliberately
+            // not treated as additional seat evidence.
+            SpeakerConfig::SupportingSource(group) => vec![(None, &group.primary)],
         };
+        // A v3 grouped sub measurement may be referenced by one declaration
+        // per physical output. Assign each declaration its own branch instead
+        // of loading the complete group again under every output name.
+        if matches!(
+            speaker,
+            SpeakerConfig::MultiSub(_) | SpeakerConfig::Dba(_) | SpeakerConfig::Cardioid(_)
+        ) && let Some(subwoofers) = config
+            .system
+            .as_ref()
+            .and_then(|system| system.subwoofers.as_ref())
+        {
+            let outputs: Vec<_> = subwoofers
+                .outputs
+                .iter()
+                .filter(|output| output.speaker == key)
+                .collect();
+            if outputs.len() > 1
+                && let Some(index) = outputs.iter().position(|output| output.id == role)
+            {
+                if outputs.len() != sources.len() {
+                    return Err(invalid(
+                        "physical sub output declarations must cover every grouped capture branch",
+                    ));
+                }
+                sources = vec![(None, sources[index].1)];
+            }
+        }
         for (driver, source) in sources {
-            // No optimization/display cap: native narrow features are evidence.
-            let curves = crate::measurement::load_source_individual_with_frequency_samples(
-                source,
-                usize::MAX,
-            )
-            .map_err(|error| invalid(error.to_string()))?;
+            // Retain native support, grids, levels, and auxiliary evidence.
+            // Alignment belongs to the later physical-branch summation, not
+            // capture retention. Parsed responses are not raw recordings.
+            let curves = autoeq_measurements::read::load_source_unaligned(source)
+                .map_err(|error| invalid(format!("{error:#}")))?;
             for curve in &curves {
                 curve.validate("final-seat raw capture")?;
             }
@@ -112,12 +238,16 @@ pub fn capture_training(config: &RoomConfig) -> Result<Vec<Capture>> {
                     "multi-seat legacy driver groups require explicit topology IDs for final replay",
                 ));
             }
-            captures.push(Capture {
+            let capture = Capture {
                 channel: role.clone(),
                 driver,
                 curves,
                 seat_labels: crate::group_measurements::seat_labels(source),
-            });
+            };
+            if let Some(receipt) = receipt.as_deref_mut() {
+                receipt.record("training", Some(&key), &capture, source.provenance())?;
+            }
+            captures.push(capture);
         }
     }
     Ok(captures)
@@ -138,6 +268,10 @@ fn physical_captures(
         for other in &captures[..i] {
             if (routed || capture.channel == other.channel)
                 && let (Some(a), Some(b)) = (&capture.seat_labels, &other.seat_labels)
+                // Single-curve captures carry the measurement name, not seat
+                // order; only multi-seat label sequences can disagree.
+                && a.len() > 1
+                && b.len() > 1
                 && a != b
             {
                 return Err(invalid(
@@ -181,7 +315,170 @@ fn physical_captures(
 }
 
 fn correction(plugin: &PluginConfigWrapper) -> bool {
-    matches!(plugin.plugin_type.as_str(), "eq" | "convolution")
+    super::room_optimization_result::is_baseline_correction(plugin)
+}
+
+fn is_level_alignment(plugin: &PluginConfigWrapper) -> bool {
+    matches!(
+        plugin
+            .parameters
+            .get("label")
+            .and_then(serde_json::Value::as_str),
+        Some(
+            "automatic_input_level_alignment"
+                | "post_dsp_input_level_alignment"
+                | "final_channel_level_alignment"
+        )
+    )
+}
+
+fn correction_differs(
+    candidate: &RoomOptimizationResult,
+    baseline: &RoomOptimizationResult,
+    input: &str,
+) -> bool {
+    let stages = |result: &RoomOptimizationResult| -> Vec<String> {
+        let mut plugins = Vec::new();
+        if let Some(chain) = result.channels.get(input) {
+            plugins.extend(chain.plugins.iter());
+            if let Some(drivers) = &chain.drivers {
+                plugins.extend(drivers.iter().flat_map(|driver| driver.plugins.iter()));
+            }
+        }
+        let mut stages: Vec<String> = plugins
+            .into_iter()
+            .filter(|plugin| correction(plugin) && !is_level_alignment(plugin))
+            .map(|plugin| format!("{}:{}", plugin.plugin_type, plugin.parameters))
+            .collect();
+        stages.sort();
+        stages
+    };
+    stages(candidate) != stages(baseline)
+}
+
+/// Per-input temporal evidence for one replayed scorecard, mirroring runtime
+/// acceptance. The induced-GD metric must unwrap post phase with the bulk
+/// FIR design delay actually present on this branch; a zero prior breaks
+/// unwrapping on sparse grids and reads ~10 ms of spurious dispersion on a
+/// 42.67 ms-delay graph at every correction strength. Inputs without
+/// optimizer evidence (e.g. unoptimized LFE) keep the zero prior.
+fn replay_scorecard_temporal(
+    result: &RoomOptimizationResult,
+    input: &str,
+    pre: &roomeq_model::Curve,
+    post: &roomeq_model::Curve,
+    sample_rate: f64,
+    processing_mode: roomeq_model::ProcessingMode,
+) -> roomeq_model::TemporalQualityEvidence {
+    if !result.channel_results.contains_key(input) {
+        let Some(chain) = result.channels.get(input) else {
+            return roomeq_model::TemporalQualityEvidence::default();
+        };
+        let has_fir = {
+            chain
+                .plugins
+                .iter()
+                .chain(
+                    chain
+                        .drivers
+                        .iter()
+                        .flatten()
+                        .flat_map(|driver| &driver.plugins),
+                )
+                .any(|plugin| plugin.plugin_type == "convolution")
+        };
+        // An implicit logical input can have no optimizer result. A real
+        // convolution still requires measured temporal evidence; an identity
+        // or IIR graph has no FIR precursor and uses the documented floor.
+        return if has_fir {
+            roomeq_model::TemporalQualityEvidence::default()
+        } else {
+            roomeq_quality::derive_temporal_quality_evidence(
+                &[],
+                std::slice::from_ref(pre),
+                std::slice::from_ref(post),
+                sample_rate,
+            )
+        };
+    }
+    let name = input.to_string();
+    super::room_optimization_result::runtime_temporal_quality_evidence(
+        result,
+        std::slice::from_ref(&name),
+        std::slice::from_ref(pre),
+        std::slice::from_ref(post),
+        sample_rate,
+        processing_mode,
+    )
+}
+
+/// Aggregate measured temporal evidence without losing an unevaluated seat.
+fn aggregate_replay_temporal(
+    training: &[roomeq_model::AcousticQualityScorecard],
+    held_out: &[roomeq_model::AcousticQualityScorecard],
+) -> roomeq_model::TemporalQualityEvidence {
+    let scores: Vec<_> = training
+        .iter()
+        .chain(held_out)
+        .map(|score| &score.temporal)
+        .collect();
+    let aggregate = |field: fn(&roomeq_model::TemporalQualityEvidence) -> Option<f64>,
+                     minimum: bool| {
+        scores
+            .iter()
+            .map(|score| field(score))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|values| {
+                values.into_iter().reduce(|left, right| {
+                    if minimum {
+                        left.min(right)
+                    } else {
+                        left.max(right)
+                    }
+                })
+            })
+    };
+    roomeq_model::TemporalQualityEvidence {
+        pre_ringing_audible_db: aggregate(|score| score.pre_ringing_audible_db, false),
+        latency_ms: aggregate(|score| score.latency_ms, false),
+        available_headroom_db: aggregate(|score| score.available_headroom_db, true),
+        temporal_evidence_available: !scores.is_empty()
+            && scores.iter().all(|score| score.temporal_evidence_available),
+        phase_evidence_available: !scores.is_empty()
+            && scores.iter().all(|score| score.phase_evidence_available),
+        ..Default::default()
+    }
+}
+
+/// Materialize the same structural baseline used by physical-seat replay.
+/// Visit every output and driver, including outputs with no optimizer result.
+pub(super) fn restore_structural_baseline(result: &mut RoomOptimizationResult) {
+    let supporting = super::room_optimization_result::supporting_source_output_names(result);
+    for (name, chain) in &mut result.channels {
+        if supporting.contains(name) {
+            continue;
+        }
+        chain.plugins.retain(|plugin| !correction(plugin));
+        if let Some(drivers) = &mut chain.drivers {
+            for driver in drivers {
+                driver.plugins.retain(|plugin| !correction(plugin));
+            }
+        }
+        chain.eq_response = None;
+    }
+    for (name, channel) in &mut result.channel_results {
+        if supporting.contains(name) {
+            continue;
+        }
+        channel.biquads.clear();
+        channel.fir_coeffs = None;
+        for run in &mut channel.optimizer_evidence {
+            run.selected_for_output = false;
+        }
+    }
+    // Retain search history and counts, but do not bind discarded parameters
+    // to the structural playback graph or retain its old confidence summary.
+    super::room_optimization_result::refresh_optimizer_evidence(result);
 }
 
 fn apply(
@@ -193,8 +490,15 @@ fn apply(
     fs: f64,
     dir: &Path,
 ) -> Result<Curve> {
-    if baseline {
-        plugins.retain(|p| !correction(p));
+    if baseline
+        && !super::room_optimization_result::supporting_source_output_names(result).contains(owner)
+    {
+        // Scoring only: level-alignment gains are structural calibration,
+        // not the correction being judged. Retaining them on the baseline
+        // keeps pre/post in the same level plane so the marginal EQ effect
+        // is scored. Actual rollback (restore_structural_baseline) still
+        // removes them via `correction`.
+        plugins.retain(|p| !correction(p) || is_level_alignment(p));
     }
     let mut chain = result
         .channels
@@ -203,12 +507,17 @@ fn apply(
         .ok_or_else(|| invalid(format!("missing DSP owner '{owner}'")))?;
     // channel_results[owner].fir_coeffs owns the channel-level FIR, not an
     // arbitrary single convolution in a driver/stage replay sharing this owner.
-    let channel_convolutions: Vec<_> = chain.plugins.iter()
+    let channel_convolutions: Vec<_> = chain
+        .plugins
+        .iter()
         .filter(|plugin| plugin.plugin_type == "convolution")
         .collect();
     let retained_reference = if channel_convolutions.len() == 1 {
-        channel_convolutions[0].parameters.get("ir_file")
-            .and_then(|value| value.as_str()).map(str::to_owned)
+        channel_convolutions[0]
+            .parameters
+            .get("ir_file")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
     } else {
         None
     };
@@ -225,16 +534,23 @@ fn apply(
         .collect();
     if paths.len() == 1
         && retained_reference.as_deref() == Some(paths[0])
-        && let Some(taps) = result.channel_results.get(owner).and_then(|c| c.fir_coeffs.as_ref())
+        && let Some(taps) = result
+            .channel_results
+            .get(owner)
+            .and_then(|c| c.fir_coeffs.as_ref())
     {
         let path = dir.join(paths[0]);
         let evaluated_taps = if path.exists() {
             let mut channels = crate::ctc::read_wav_channels_f64(
-                &path, crate::ctc::checked_sample_rate(fs)?, "final-seat convolution",
+                &path,
+                crate::ctc::checked_sample_rate(fs)?,
+                "final-seat convolution",
             )?;
-            if channels.len() != 1 || channels[0].len() != taps.len()
+            if channels.len() != 1
+                || channels[0].len() != taps.len()
                 || channels[0].iter().zip(taps).any(|(stored, retained)| {
-                    !stored.is_finite() || !retained.is_finite()
+                    !stored.is_finite()
+                        || !retained.is_finite()
                         || (*stored as f32) != (*retained as f32)
                 })
             {
@@ -318,6 +634,68 @@ pub struct FinalPhysicalSeatPlayback {
     pub delivered_support: Vec<roomeq_model::SummationSupportEvidence>,
 }
 
+/// Exact curves and settings used for one final useful-output score.
+/// Routed physical-main scores use the main-only view; ordinary outputs use
+/// the same logical-output replay that produced their retained seat score.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(super) struct PhysicalMeasurementContributor {
+    /// Physical output identity whose raw capture contributes to a logical input.
+    pub physical_output: String,
+    /// Raw captured response before routed playback processing.
+    pub measured_curve: Curve,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(super) struct UsefulOutputReplayCapture {
+    pub logical_input: String,
+    pub partition: String,
+    pub seat_index: usize,
+    pub sample_rate_hz: f64,
+    pub baseline_kind: String,
+    /// Hash of the serialized graph projection emitted with the replay event.
+    pub replayed_serialized_dsp_graph_projection_sha256: Option<String>,
+    /// Hash of executable plugin/routing payloads; excludes evidence metadata.
+    pub replayed_playback_graph_sha256: Option<String>,
+    /// Raw physical captures used by baseline and delivered route sums.
+    pub baseline_measurement_contributors: Vec<PhysicalMeasurementContributor>,
+    pub delivered_measurement_contributors: Vec<PhysicalMeasurementContributor>,
+    pub baseline_curve: Curve,
+    pub delivered_curve: Curve,
+    pub target_curve: Option<Curve>,
+    pub min_freq_hz: f64,
+    pub max_freq_hz: f64,
+    pub schroeder_hz: Option<f64>,
+    pub normalize_level: bool,
+    pub permitted_gain_db: f64,
+    pub scorecard: roomeq_model::AcousticQualityScorecard,
+}
+
+fn capture_measurement_contributors(
+    physical: &BTreeMap<String, Vec<Curve>>,
+    outputs: &[String],
+    seat: usize,
+) -> Result<Vec<PhysicalMeasurementContributor>> {
+    outputs
+        .iter()
+        .map(|output| {
+            Ok(PhysicalMeasurementContributor {
+                physical_output: output.clone(),
+                measured_curve: measured(physical, output, seat)?.clone(),
+            })
+        })
+        .collect()
+}
+
+struct FinalSeatReplayContext<'a> {
+    baseline: Option<&'a RoomOptimizationResult>,
+    trace: Option<&'a mut Vec<UsefulOutputReplayCapture>>,
+}
+
+struct PhysicalMainReplayContext<'a> {
+    target: Option<&'a Curve>,
+    trace: Option<&'a mut Vec<UsefulOutputReplayCapture>>,
+}
+
 /// Resolve a pre-optimization capture snapshot using runtime output identities.
 pub fn training_physical_captures(
     captures: &[Capture],
@@ -375,6 +753,373 @@ pub fn replay_final_physical_seat(
     })
 }
 
+/// Upper edge of the fixed mono-bass assessment band in Hz.
+///
+/// Covers every redirected-bass and LFE low-pass in the validated range
+/// (the LFE low-pass validates within 20..=250 Hz) with margin, without
+/// claiming a per-system crossover derivation.
+const MONO_BASS_MAX_HZ: f64 = 300.0;
+
+/// Correlated (identical-drive) bass sum over the mono band.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct MonoBassAssessment {
+    /// Mains inputs summed.
+    pub inputs: usize,
+    /// Assessed band actually covered by common bins.
+    pub band_hz: [f64; 2],
+    /// Peak coherent level in dB.
+    pub peak_coherent_db: f64,
+    /// Frequency of the coherent peak in Hz.
+    pub peak_freq_hz: f64,
+    /// Maximum coherent buildup over the incoherent (RSS) sum in dB.
+    pub max_buildup_db: f64,
+    /// Frequency of maximum buildup in Hz.
+    pub buildup_freq_hz: f64,
+}
+
+/// Coherent identical-drive sum of delivered per-input seat responses.
+///
+/// F6 answers correlated program (L=R and wider) through the exact
+/// serialized matrix as the acoustic sibling of the electrical
+/// correlated-bus headroom bound. Every curve must share one frequency
+/// grid and carry measured phase; grid mismatch or missing phase refuses
+/// rather than interpolates or invents (WP2a). Reports the peak coherent
+/// level and the buildup over the incoherent power sum across the mono
+/// band. Advisory: no acceptance limit is attached until matrix evidence
+/// justifies one.
+fn assess_mono_bass_sums(
+    delivered: &[Curve],
+    max_mono_hz: f64,
+) -> std::result::Result<MonoBassAssessment, String> {
+    if delivered.len() < 2 {
+        return Err("mono-bass assessment needs at least two inputs".to_string());
+    }
+    let grid = &delivered[0].freq;
+    for (index, curve) in delivered.iter().enumerate() {
+        if !roomeq_analysis::frequency_grid::same_frequency_grid(grid, &curve.freq) {
+            return Err(format!("mono-bass input {index} leaves the common grid"));
+        }
+        if curve.spl.len() != grid.len() {
+            return Err(format!("mono-bass input {index} has ragged levels"));
+        }
+        match curve.phase.as_ref() {
+            Some(phase) if phase.len() == grid.len() => {}
+            _ => return Err(format!("mono-bass input {index} has no measured phase")),
+        }
+        if curve.spl.iter().any(|value| !value.is_finite())
+            || curve
+                .phase
+                .as_ref()
+                .is_some_and(|phase| phase.iter().any(|value| !value.is_finite()))
+        {
+            return Err(format!("mono-bass input {index} is nonfinite"));
+        }
+    }
+    let bins: Vec<usize> = grid
+        .iter()
+        .enumerate()
+        .filter(|(_, frequency)| **frequency <= max_mono_hz)
+        .map(|(index, _)| index)
+        .collect();
+    if bins.len() < 2 {
+        return Err("mono-bass band has no common support".to_string());
+    }
+    let mut peak = (f64::NEG_INFINITY, grid[bins[0]]);
+    let mut buildup = (f64::NEG_INFINITY, grid[bins[0]]);
+    for bin in &bins {
+        let mut coherent = num_complex::Complex64::new(0.0, 0.0);
+        let mut power = 0.0;
+        for curve in delivered {
+            let magnitude = 10.0_f64.powf(curve.spl[*bin] / 20.0);
+            let angle = curve.phase.as_ref().expect("checked above")[*bin].to_radians();
+            coherent += num_complex::Complex64::from_polar(magnitude, angle);
+            power += magnitude * magnitude;
+        }
+        let coherent_db = 20.0 * coherent.norm().max(1e-24).log10();
+        let rss_db = 10.0 * power.max(1e-24).log10();
+        if coherent_db > peak.0 {
+            peak = (coherent_db, grid[*bin]);
+        }
+        let ratio = coherent_db - rss_db;
+        if ratio > buildup.0 {
+            buildup = (ratio, grid[*bin]);
+        }
+    }
+    if !peak.0.is_finite() || !buildup.0.is_finite() {
+        return Err("mono-bass sums are nonfinite".to_string());
+    }
+    Ok(MonoBassAssessment {
+        inputs: delivered.len(),
+        band_hz: [grid[bins[0]], grid[*bins.last().expect("checked above")]],
+        peak_coherent_db: peak.0,
+        peak_freq_hz: peak.1,
+        max_buildup_db: buildup.0,
+        buildup_freq_hz: buildup.1,
+    })
+}
+
+/// Final-boundary correlated-bass stage for the delivered graph.
+///
+/// Replays every mains input at the prime training seat through the final
+/// serialized matrix and sums them as identical-drive program. Never fails:
+/// single-input systems, CTC, replay errors, and missing phase each record
+/// an explicit skip/unassessed advisory instead of a verdict.
+pub(super) fn correlated_bass_stage(
+    result: &RoomOptimizationResult,
+    captures: &[Capture],
+    config: &RoomConfig,
+    fs: f64,
+    dir: &Path,
+) -> roomeq_model::StageOutcome {
+    let skipped = |reason: String| roomeq_model::StageOutcome {
+        stage: "final_correlated_bass_sum".into(),
+        status: roomeq_model::StageStatus::Skipped,
+        advisories: vec![reason],
+        checks: Vec::new(),
+    };
+    if result.metadata.ctc.is_some() {
+        return skipped("mono_bass_skipped:ctc".to_string());
+    }
+    let mut inputs: Vec<String> = result
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+        .map(|graph| {
+            graph
+                .input_channels
+                .iter()
+                .filter(|input| {
+                    graph
+                        .routes
+                        .iter()
+                        .any(|route| &route.source_channel == *input)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_else(|| independent_input_channels(captures, result).unwrap_or_default());
+    inputs.retain(|input| {
+        roomeq_model::home_cinema::role_for_channel(input) != roomeq_model::HomeCinemaRole::Lfe
+    });
+    inputs.sort();
+    inputs.dedup();
+    if inputs.len() < 2 {
+        return skipped("mono_bass_skipped:single_mains_input".to_string());
+    }
+    let physical = match training_physical_captures(captures, result) {
+        Ok(physical) => physical,
+        Err(error) => return skipped(format!("mono_bass_unassessed:captures:{error}")),
+    };
+    let mut delivered = Vec::with_capacity(inputs.len());
+    for input in &inputs {
+        match replay_final_physical_seat(result, &physical, input, 0, config, fs, dir, "training") {
+            Ok(playback) => delivered.push(playback.delivered),
+            Err(error) => {
+                return skipped(format!("mono_bass_unassessed:{input}:{error}"));
+            }
+        }
+    }
+    match assess_mono_bass_sums(&delivered, MONO_BASS_MAX_HZ) {
+        Ok(assessment) => roomeq_model::StageOutcome {
+            stage: "final_correlated_bass_sum".into(),
+            status: roomeq_model::StageStatus::Applied,
+            advisories: vec![format!(
+                "mono_bass:inputs={}:band_hz={:.1}-{:.1}:peak_db={:.2}:peak_hz={:.1}:max_buildup_db={:.2}:buildup_hz={:.1}",
+                assessment.inputs,
+                assessment.band_hz[0],
+                assessment.band_hz[1],
+                assessment.peak_coherent_db,
+                assessment.peak_freq_hz,
+                assessment.max_buildup_db,
+                assessment.buildup_freq_hz,
+            )],
+            checks: Vec::new(),
+        },
+        Err(reason) => skipped(format!("mono_bass_unassessed:{reason}")),
+    }
+}
+
+/// Standalone subwoofer groups are assessed over their common measured band,
+/// not the full-range optimizer ceiling. Do not apply this to routed main/sub
+/// sums: their acoustic tails still need evidence across the main's band.
+fn standalone_summation_max_hz(
+    config: &RoomConfig,
+    input: &str,
+    branches: &[bounded_sum::Branch],
+) -> f64 {
+    let key = config
+        .system
+        .as_ref()
+        .and_then(|system| system.speakers.get(input))
+        .map(String::as_str)
+        .unwrap_or(input);
+    let subwoofer = matches!(
+        config.speakers.get(key),
+        Some(SpeakerConfig::MultiSub(_) | SpeakerConfig::Dba(_) | SpeakerConfig::Cardioid(_))
+    ) || super::misc::is_subwoofer_channel(config, input);
+    if subwoofer {
+        branches
+            .iter()
+            .fold(config.optimizer.max_freq, |high, branch| {
+                high.min(branch.measured.freq.last().copied().unwrap_or(high))
+            })
+    } else {
+        config.optimizer.max_freq
+    }
+}
+
+/// Observe routed playback over measured support, independently of EQ bounds.
+fn passband_observation_config(
+    config: &RoomConfig,
+    result: &RoomOptimizationResult,
+    physical: &BTreeMap<String, Vec<Curve>>,
+    input: &str,
+    seat: usize,
+) -> Result<RoomConfig> {
+    let mut observation = config.clone();
+    let Some(graph) = result
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+    else {
+        // Independent stereo speakers have the same distinction between EQ
+        // bounds and playback observation as routed home-cinema speakers.
+        // Driver groups retain their separate common-support calculation.
+        if let Some(raw) = physical.get(input).and_then(|curves| curves.get(seat)) {
+            let (passband, _) =
+                roomeq_engine::analysis::response_metrics::detect_passband_and_mean(raw);
+            let (low, high) = passband.ok_or_else(|| {
+                invalid(format!("no measured passband for '{input}' seat {seat}"))
+            })?;
+            observation.optimizer.min_freq = low;
+            observation.optimizer.max_freq = high;
+        }
+        return Ok(observation);
+    };
+    let routes: Vec<_> = graph
+        .routes
+        .iter()
+        .filter(|route| route.source_channel == input)
+        .collect();
+    let main = routes
+        .iter()
+        .find(|route| route.high_pass_hz.is_some() || route.destination == input);
+    let mut lower = f64::INFINITY;
+    let mut upper = 0.0_f64;
+    for route in &routes {
+        let raw = measured(physical, &route.destination, seat)?;
+        let (passband, _) =
+            roomeq_engine::analysis::response_metrics::detect_passband_and_mean(raw);
+        let (lo, hi) = passband.ok_or_else(|| {
+            invalid(format!(
+                "no measured passband for '{}' seat {seat}",
+                route.destination
+            ))
+        })?;
+        lower = lower.min(lo);
+        if main.is_some_and(|main| main.destination == route.destination) {
+            upper = hi;
+        } else if main.is_none() {
+            // A native LFE input is assessed in its actual low-pass band, not
+            // through the treble merely because the optimizer allows it.
+            upper = upper.max(hi.min(route.low_pass_hz.unwrap_or(hi)));
+        }
+    }
+    if lower.is_finite() && upper > lower {
+        observation.optimizer.min_freq = lower;
+        observation.optimizer.max_freq = upper;
+    } else {
+        return Err(invalid(format!(
+            "no supported playback band for '{input}' seat {seat}"
+        )));
+    }
+    Ok(observation)
+}
+
+/// Trial safety transplantable onto the replay baseline.
+///
+/// Only per-output (post_route) ceiling compliance is deployment-inherent.
+/// Pre-route (input-level, e.g. common-mode blanket) safety is the trial's
+/// own blunt choice and stays judged.
+fn transplantable_trial_safety(plugin: &PluginConfigWrapper, physical_driver: bool) -> bool {
+    let stage = plugin
+        .parameters
+        .get("room_eq_stage")
+        .and_then(serde_json::Value::as_str);
+    // A physical driver's untagged safety gain is downstream of the logical
+    // input's routing/sum. Legacy standalone driver outputs have no stage tags.
+    // Shared-chain gains still need an explicit post-route owner; an explicit
+    // pre-route tag never becomes transplantable merely by visiting a driver.
+    let post_route = stage == Some("post_route") || (physical_driver && stage.is_none());
+    if !post_route {
+        return false;
+    }
+    plugin
+        .parameters
+        .get("room_eq_safety_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || plugin
+            .parameters
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            == Some("post_dsp_output_headroom_safety")
+}
+
+/// Copy the trial's post-route safety onto a baseline clone for replay.
+///
+/// The baseline predates trial safety, so without matching the trial's
+/// per-output attenuation reads as loss/regression even at zero correction
+/// strength. Transplanting makes pre/post deployment-identical, leaving pure
+/// correction-marginal judgment. Unmatched chains/drivers keep baseline
+/// values (fail-closed: unmatched trial safety stays charged).
+fn transplant_trial_safety(
+    baseline: &RoomOptimizationResult,
+    trial: &RoomOptimizationResult,
+) -> RoomOptimizationResult {
+    fn transplant_plugins(
+        base: &mut Vec<PluginConfigWrapper>,
+        trial_plugins: &[PluginConfigWrapper],
+        physical_driver: bool,
+    ) -> bool {
+        let before = base.len();
+        base.retain(|plugin| !transplantable_trial_safety(plugin, physical_driver));
+        let mut changed = base.len() != before;
+        for plugin in trial_plugins
+            .iter()
+            .filter(|plugin| transplantable_trial_safety(plugin, physical_driver))
+        {
+            base.insert(0, plugin.clone());
+            changed = true;
+        }
+        changed
+    }
+    let mut matched = baseline.clone();
+    for (name, trial_chain) in &trial.channels {
+        let Some(base_chain) = matched.channels.get_mut(name) else {
+            continue;
+        };
+        if transplant_plugins(&mut base_chain.plugins, &trial_chain.plugins, false) {
+            base_chain.final_curve.take();
+        }
+        if let (Some(base_drivers), Some(trial_drivers)) =
+            (base_chain.drivers.as_mut(), trial_chain.drivers.as_ref())
+        {
+            for trial_driver in trial_drivers {
+                if let Some(base_driver) = base_drivers
+                    .iter_mut()
+                    .find(|driver| driver.name == trial_driver.name)
+                {
+                    transplant_plugins(&mut base_driver.plugins, &trial_driver.plugins, true);
+                }
+            }
+        }
+    }
+    matched
+}
+
 fn replay(
     result: &RoomOptimizationResult,
     physical: &BTreeMap<String, Vec<Curve>>,
@@ -382,6 +1127,19 @@ fn replay(
     seat: usize,
     baseline: bool,
     context: &ReplayContext<'_>,
+) -> Result<(Summed, Vec<String>)> {
+    replay_output(result, physical, input, seat, baseline, context, None)
+}
+
+/// Replay the same serialized graph, optionally selecting one physical output.
+fn replay_output(
+    result: &RoomOptimizationResult,
+    physical: &BTreeMap<String, Vec<Curve>>,
+    input: &str,
+    seat: usize,
+    baseline: bool,
+    context: &ReplayContext<'_>,
+    destination: Option<&str>,
 ) -> Result<(Summed, Vec<String>)> {
     let ReplayContext {
         config,
@@ -406,14 +1164,21 @@ fn replay(
     {
         let mut branches = Vec::new();
         let mut outputs = Vec::new();
-        for route in graph.routes.iter().filter(|r| r.source_channel == input) {
+        for route in graph.routes.iter().filter(|r| {
+            r.source_channel == input && destination.is_none_or(|output| r.destination == output)
+        }) {
             let raw = measured(physical, &route.destination, seat)?;
             // Match serialized routed export: input pre-route -> route matrix
             // gain/polarity, crossover/delay -> destination post-route.
-            let pre = result
-                .channels
-                .get(input)
-                .ok_or_else(|| invalid("missing route input"))?;
+            let pre_route_plugins = match result.channels.get(input) {
+                Some(chain) => stage(chain, "pre_route"),
+                None if roomeq_model::home_cinema::role_for_channel(input)
+                    == roomeq_model::HomeCinemaRole::Lfe =>
+                {
+                    Vec::new()
+                }
+                None => return Err(invalid("missing route input")),
+            };
             let (post_owner, post) = result
                 .channels
                 .get_key_value(&route.destination)
@@ -444,10 +1209,52 @@ fn replay(
                         "low"
                     },
                 ));
+            } else {
+                // The routing graph omits the crossover when the physical
+                // destination chain carries it as a route-owned plugin (the
+                // serialized driver's own low-pass). Apply that serialized
+                // filter so replay matches the delivered graph instead of
+                // summing the destination's full-range capture.
+                route_plugins.extend(
+                    post.plugins
+                        .iter()
+                        .filter(|plugin| {
+                            plugin.plugin_type == "crossover"
+                                && plugin
+                                    .parameters
+                                    .get("room_eq_stage")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("route_owned")
+                        })
+                        .cloned(),
+                );
             }
             if route.delay_ms.abs() > 0.001 {
                 route_plugins.push(roomeq_engine::output::create_delay_plugin(route.delay_ms));
             }
+            let subwoofer_low_pass_hz = matches!(
+                route.route_kind.as_str(),
+                "redirected_bass_lowpass_to_sub" | "lfe_lowpass_to_sub"
+            )
+            .then(|| {
+                route.low_pass_hz.or_else(|| {
+                    post.drivers
+                        .as_ref()?
+                        .iter()
+                        .find(|driver| driver.name == route.destination)?
+                        .plugins
+                        .iter()
+                        .filter(|plugin| {
+                            plugin.plugin_type == "crossover"
+                                && plugin.parameters["output"] == "low"
+                                && plugin.parameters["room_eq_stage"] == "post_route"
+                        })
+                        .filter_map(|plugin| plugin.parameters["frequency"].as_f64())
+                        .filter(|frequency| frequency.is_finite() && *frequency > 0.0)
+                        .min_by(f64::total_cmp)
+                })
+            })
+            .flatten();
             let branch = process_branch(
                 &route.destination,
                 raw,
@@ -455,18 +1262,30 @@ fn replay(
                 partition,
                 seat,
                 &grid,
+                subwoofer_low_pass_hz,
                 |curve| {
+                    let curve = if pre_route_plugins.is_empty() {
+                        curve.clone()
+                    } else {
+                        apply(
+                            result,
+                            input,
+                            pre_route_plugins.clone(),
+                            curve,
+                            baseline,
+                            fs,
+                            dir,
+                        )?
+                    };
                     let curve = apply(
                         result,
-                        input,
-                        stage(pre, "pre_route"),
-                        curve,
-                        baseline,
+                        post_owner,
+                        route_plugins.clone(),
+                        &curve,
+                        false,
                         fs,
                         dir,
                     )?;
-                    let curve =
-                        apply(result, input, route_plugins.clone(), &curve, false, fs, dir)?;
                     let mut curve = apply(
                         result,
                         post_owner,
@@ -499,23 +1318,41 @@ fn replay(
         }
         outputs.sort();
         outputs.dedup();
-        return Ok((sum_branches(&branches, config.optimizer.min_freq, config.optimizer.max_freq)?, outputs));
+        return Ok((
+            // Keep the configured observation band visible. `sum_branches`
+            // requires an explicit acoustic bound for any branch that does
+            // not cover it; capping at the common measured endpoint would
+            // silently turn missing evidence into a better-looking score.
+            sum_branches(
+                &branches,
+                config.optimizer.min_freq,
+                config.optimizer.max_freq,
+            )?,
+            outputs,
+        ));
     }
-    let chain = result
-        .channels
-        .get(input)
-        .ok_or_else(|| invalid("missing channel for final seat replay"))?;
+    let chain = result.channels.get(input).ok_or_else(|| {
+        invalid(format!(
+            "missing channel '{input}' for final seat replay (available: {:?})",
+            result
+                .channels
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>()
+        ))
+    })?;
     if let Some(drivers) = &chain.drivers {
         let mut branches = Vec::new();
         let mut outputs = Vec::new();
         for driver in drivers {
+            let raw = measured(physical, &driver.name, seat)?;
             branches.push(process_branch(
                 &driver.name,
-                measured(physical, &driver.name, seat)?,
+                raw,
                 &config.optimizer.upper_band_acoustic_bounds,
                 partition,
                 seat,
                 &grid,
+                None,
                 |curve| {
                     let curve = apply(
                         result,
@@ -539,7 +1376,11 @@ fn replay(
             )?);
             outputs.push(driver.name.clone());
         }
-        return Ok((sum_branches(&branches, config.optimizer.min_freq, config.optimizer.max_freq)?, outputs));
+        let max_hz = standalone_summation_max_hz(config, input, &branches);
+        return Ok((
+            sum_branches(&branches, config.optimizer.min_freq, max_hz)?,
+            outputs,
+        ));
     }
     Ok((
         Summed {
@@ -558,6 +1399,7 @@ fn replay(
     ))
 }
 
+#[cfg(test)]
 pub(super) fn validate_final_seats(
     result: &mut RoomOptimizationResult,
     captures: &[Capture],
@@ -566,8 +1408,589 @@ pub(super) fn validate_final_seats(
     fs: f64,
     dir: &Path,
 ) -> Result<()> {
+    validate_final_seats_impl(
+        result,
+        captures,
+        held_out,
+        config,
+        fs,
+        dir,
+        FinalSeatReplayContext {
+            baseline: None,
+            trace: None,
+        },
+    )
+}
+
+/// Final selection also checks single-seat systems: a single capture is not an
+/// exemption from delivered gain or useful-output limits.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn validate_candidate_final_seats(
+    result: &mut RoomOptimizationResult,
+    baseline: &RoomOptimizationResult,
+    captures: &[Capture],
+    held_out: &HashMap<String, Vec<Curve>>,
+    config: &RoomConfig,
+    fs: f64,
+    dir: &Path,
+) -> Result<()> {
+    validate_final_seats_impl(
+        result,
+        captures,
+        held_out,
+        config,
+        fs,
+        dir,
+        FinalSeatReplayContext {
+            baseline: Some(baseline),
+            trace: None,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn validate_candidate_final_seats_with_diagnostic_trace(
+    result: &mut RoomOptimizationResult,
+    baseline: &RoomOptimizationResult,
+    captures: &[Capture],
+    held_out: &HashMap<String, Vec<Curve>>,
+    config: &RoomConfig,
+    fs: f64,
+    dir: &Path,
+    replay_trace: &mut Vec<UsefulOutputReplayCapture>,
+) -> Result<()> {
+    validate_final_seats_impl(
+        result,
+        captures,
+        held_out,
+        config,
+        fs,
+        dir,
+        FinalSeatReplayContext {
+            baseline: Some(baseline),
+            trace: Some(replay_trace),
+        },
+    )
+}
+
+/// Return the lowest frequency at which a deliberately configured excursion
+/// high-pass is expected to preserve useful output.  Frequencies below this
+/// point remain visible as `unassessed_bands_hz` rather than being counted as
+/// an unexplained level loss.  Auto-detected F3 is intentionally not guessed
+/// here; it must be carried as explicit evidence by a later measurement
+/// contract instead of silently shrinking the score band.
+fn excursion_supported_min_frequency(config: &RoomConfig) -> Option<f64> {
+    let protection = config.optimizer.excursion_protection.as_ref()?;
+    if !protection.enabled {
+        return None;
+    }
+    let f3 = protection.manual_f3_hz?;
+    if !f3.is_finite() || f3 <= 0.0 || !protection.margin_octaves.is_finite() {
+        return None;
+    }
+    Some(f3 * 2.0_f64.powf(-protection.margin_octaves))
+}
+
+/// Separate physical-main SPL evidence from the combined source's bass quality.
+fn physical_main_quality(
+    result: &RoomOptimizationResult,
+    baseline: &RoomOptimizationResult,
+    physical: &BTreeMap<String, Vec<Curve>>,
+    input: &str,
+    seat: usize,
+    context: &ReplayContext<'_>,
+    replay_context: PhysicalMainReplayContext<'_>,
+) -> Result<Option<roomeq_model::AcousticQualityScorecard>> {
+    let PhysicalMainReplayContext {
+        target,
+        trace: replay_trace,
+    } = replay_context;
+    let main = baseline
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+        .and_then(|graph| {
+            graph.routes.iter().find(|route| {
+                route.source_channel == input
+                    && (route.high_pass_hz.is_some() || route.destination == input)
+            })
+        });
+    let Some(main) = main else {
+        return Ok(None);
+    };
+    let raw = measured(physical, &main.destination, seat)?;
+    let (passband, _) = roomeq_engine::analysis::response_metrics::detect_passband_and_mean(raw);
+    let (low, high) = passband.ok_or_else(|| invalid("physical main has no measured passband"))?;
+    // Freeze the supported band from the measurement and structural baseline;
+    // a candidate may not hide damage by changing its own cutoff or response.
+    let low = low
+        .max(main.high_pass_hz.unwrap_or(low))
+        .max(excursion_supported_min_frequency(context.config).unwrap_or(0.0));
+    if low >= high {
+        return Err(invalid("physical main has no supported playback band"));
+    }
+    let mut observation = context.config.clone();
+    observation.optimizer.min_freq = low;
+    observation.optimizer.max_freq = high;
+    let main_context = ReplayContext {
+        config: &observation,
+        ..*context
+    };
+    let matched_baseline;
+    let baseline_for_pre = if std::ptr::eq(baseline, result) {
+        baseline
+    } else {
+        matched_baseline = transplant_trial_safety(baseline, result);
+        &matched_baseline
+    };
+    let (pre, baseline_outputs) = replay_output(
+        baseline_for_pre,
+        physical,
+        input,
+        seat,
+        true,
+        &main_context,
+        Some(&main.destination),
+    )?;
+    let (post, delivered_outputs) = replay_output(
+        result,
+        physical,
+        input,
+        seat,
+        false,
+        &main_context,
+        Some(&main.destination),
+    )?;
+    let owning_target = if let Some(carrier) = result
+        .channels
+        .get(input)
+        .and_then(|chain| chain.physical_correction_target.as_ref())
+    {
+        carrier.validate().map_err(invalid)?;
+        let graph = baseline
+            .metadata
+            .bass_management
+            .as_ref()
+            .and_then(|bass| bass.routing_graph.as_ref())
+            .ok_or_else(|| invalid("owning Main target requires fixed baseline routes"))?;
+        let main_routes: Vec<_> = graph
+            .routes
+            .iter()
+            .filter(|route| {
+                route.source_channel == input
+                    && (route.high_pass_hz.is_some() || route.destination == input)
+            })
+            .collect();
+        if main_routes.len() != 1
+            || graph
+                .routes
+                .iter()
+                .filter(|route| {
+                    route.source_channel == input && route.destination == main.destination
+                })
+                .count()
+                != 1
+        {
+            return Err(invalid(
+                "owning Main target requires one unambiguous isolated route",
+            ));
+        }
+        let supporting = super::room_optimization_result::supporting_source_output_names(baseline);
+        for (owner, stage_name) in [
+            (input, "pre_route"),
+            (main.destination.as_str(), "post_route"),
+        ] {
+            let chain = baseline
+                .channels
+                .get(owner)
+                .ok_or_else(|| invalid("missing owning Main target DSP owner"))?;
+            let mut plugins = stage(chain, stage_name);
+            if stage_name == "post_route"
+                && let Some(driver) = chain.drivers.as_ref().and_then(|drivers| {
+                    drivers
+                        .iter()
+                        .find(|driver| driver.name == main.destination)
+                })
+            {
+                plugins.extend(driver.plugins.clone());
+            }
+            for plugin in &plugins {
+                if correction(plugin) {
+                    if supporting.contains(owner) {
+                        return Err(invalid(
+                            "owning Main target cannot retain supporting-output correction",
+                        ));
+                    }
+                    continue;
+                }
+                if !matches!(plugin.plugin_type.as_str(), "gain" | "delay" | "crossover")
+                    && !(plugin.plugin_type == "eq"
+                        && plugin.parameters["label"] == "excursion_protection")
+                {
+                    return Err(invalid(
+                        "owning Main target has unverified nonstructural baseline transfer",
+                    ));
+                }
+            }
+        }
+        // Target is magnitude evidence, not an acoustic phase observation.
+        // Keep its phase absence and exactly the existing native grid/support.
+        let desired: Curve = carrier.curve.clone().into();
+        if desired.freq[0] > raw.freq[0] || desired.freq.last().unwrap() < raw.freq.last().unwrap()
+        {
+            return Err(invalid(
+                "owning Main target does not cover measured native support",
+            ));
+        }
+        let mut raw_target = autoeq_core::interpolate_log_space(&raw.freq, &desired);
+        raw_target
+            .spl
+            .mapv_inplace(|level| level - carrier.measurement_alignment_gain_db);
+        let mut target_physical = physical.clone();
+        target_physical
+            .get_mut(&main.destination)
+            .ok_or_else(|| invalid("missing owning Main target capture"))?[seat] = raw_target;
+        let (forward_target, target_outputs) = replay_output(
+            baseline,
+            &target_physical,
+            input,
+            seat,
+            true,
+            &main_context,
+            Some(&main.destination),
+        )?;
+        if target_outputs != vec![main.destination.clone()] {
+            return Err(invalid(
+                "owning Main target replay included another physical destination",
+            ));
+        }
+        Some(forward_target.curve)
+    } else {
+        None
+    };
+    let normalize_level = owning_target.is_none();
+    let target = owning_target.as_ref().or(target);
+    let permitted_gain_db = observation
+        .optimizer
+        .permitted_output_gain_db
+        .get(input)
+        .copied()
+        .unwrap_or(0.0);
+    let schroeder_hz = roomeq_model::auto_tune::resolved_schroeder_hz(&observation.optimizer);
+    let scorecard = roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
+        std::slice::from_ref(&pre.curve),
+        std::slice::from_ref(&post.curve),
+        &[],
+        &[],
+        target,
+        roomeq_engine::quality::QualityEvaluationConfig {
+            min_freq_hz: low,
+            max_freq_hz: high,
+            schroeder_hz,
+            normalize_level,
+        },
+        replay_scorecard_temporal(
+            result,
+            input,
+            &pre.curve,
+            &post.curve,
+            context.fs,
+            context.config.optimizer.processing_mode.clone(),
+        ),
+        permitted_gain_db,
+    )
+    .map_err(invalid)?;
+    if let Some(replay_trace) = replay_trace {
+        replay_trace.push(UsefulOutputReplayCapture {
+            logical_input: input.to_string(),
+            partition: context.partition.to_string(),
+            seat_index: seat,
+            sample_rate_hz: context.fs,
+            baseline_kind: "pre_finalization_optimized_graph_without_eq_correction".into(),
+            replayed_serialized_dsp_graph_projection_sha256: None,
+            replayed_playback_graph_sha256: None,
+            baseline_measurement_contributors: capture_measurement_contributors(
+                physical,
+                &baseline_outputs,
+                seat,
+            )?,
+            delivered_measurement_contributors: capture_measurement_contributors(
+                physical,
+                &delivered_outputs,
+                seat,
+            )?,
+            baseline_curve: pre.curve.clone(),
+            delivered_curve: post.curve.clone(),
+            target_curve: target.cloned(),
+            min_freq_hz: low,
+            max_freq_hz: high,
+            schroeder_hz,
+            normalize_level,
+            permitted_gain_db,
+            scorecard: scorecard.clone(),
+        });
+    }
+    Ok(Some(scorecard))
+}
+
+/// Validate shared support per input without inventing overlap between independent inputs.
+fn final_seat_overlap(seats: &[FinalSeatEvaluation]) -> Result<Option<[f64; 2]>> {
+    let mut input_bands = BTreeMap::<&str, [f64; 2]>::new();
+    for seat in seats {
+        let band = seat.evaluated_band_hz;
+        if !band.iter().all(|edge| edge.is_finite()) || band[0] <= 0.0 || band[0] >= band[1] {
+            return Err(invalid(
+                "final-seat scorecard has invalid frequency support",
+            ));
+        }
+        let overlap = input_bands.entry(&seat.logical_input).or_insert(band);
+        overlap[0] = overlap[0].max(band[0]);
+        overlap[1] = overlap[1].min(band[1]);
+        if overlap[0] >= overlap[1] {
+            return Err(invalid(format!(
+                "final-seat input '{}' has no common supported frequency band",
+                seat.logical_input
+            )));
+        }
+    }
+    if input_bands.is_empty() {
+        return Err(invalid("final-seat scorecard has no frequency support"));
+    }
+    Ok(input_bands
+        .values()
+        .try_fold([0.0_f64, f64::INFINITY], |[low, high], band| {
+            let overlap = [low.max(band[0]), high.min(band[1])];
+            (overlap[0] < overlap[1]).then_some(overlap)
+        }))
+}
+
+fn independent_input_channels(
+    captures: &[Capture],
+    result: &RoomOptimizationResult,
+) -> Result<Vec<String>> {
+    captures
+        .iter()
+        .map(|capture| {
+            let owners: Vec<_> = result
+                .channels
+                .iter()
+                .filter_map(|(name, chain)| {
+                    (name == &capture.channel
+                        || chain.drivers.as_ref().is_some_and(|drivers| {
+                            drivers.iter().any(|driver| driver.name == capture.channel)
+                        }))
+                    .then_some(name)
+                })
+                .collect();
+            match owners.as_slice() {
+                [owner] => Ok((*owner).clone()),
+                [] => Err(invalid(format!(
+                    "no DSP owner for final-seat capture '{}'",
+                    capture.channel
+                ))),
+                _ => Err(invalid(format!(
+                    "ambiguous DSP owners for final-seat capture '{}'",
+                    capture.channel
+                ))),
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Routed crossover frequency for one logical input, when the graph states it.
+///
+/// Mirrors the splice assessment lookup: the redirected-bass low-pass first,
+/// then the main high-pass fallback. Absent on unrouted graphs and inputs.
+fn routed_crossover_hz(result: &RoomOptimizationResult, input: &str) -> Option<f64> {
+    let graph = result
+        .metadata
+        .bass_management
+        .as_ref()?
+        .routing_graph
+        .as_ref()?;
+    graph
+        .routes
+        .iter()
+        .find(|route| {
+            route.source_channel == input && route.route_kind == "redirected_bass_lowpass_to_sub"
+        })
+        .and_then(|route| route.low_pass_hz)
+        .or_else(|| {
+            graph
+                .routes
+                .iter()
+                .find(|route| {
+                    route.source_channel == input && route.route_kind == "main_highpass_to_self"
+                })
+                .and_then(|route| route.high_pass_hz)
+        })
+        .filter(|hertz| hertz.is_finite() && *hertz > 0.0)
+}
+
+/// Per-band raw improvements for one seat over modal bass, crossover
+/// overlap, and the remaining upper band.
+///
+/// Re-evaluates the same pre/post/target evidence over each sub-band with
+/// the shared quality evaluator. Bands with fewer than two supported bins
+/// stay absent, as does the crossover band without a routed crossover
+/// frequency. Without a configured Schroeder split the conventional 200 Hz
+/// bass edge applies; the used value is recorded, never silent.
+#[allow(clippy::too_many_arguments)]
+fn band_improvements(
+    pre: &Curve,
+    post: &Curve,
+    target: Option<&Curve>,
+    lo: f64,
+    hi: f64,
+    schroeder_hz: Option<f64>,
+    crossover_hz: Option<f64>,
+    permitted_gain_db: f64,
+) -> roomeq_model::BandImprovement {
+    let split = schroeder_hz
+        .filter(|hertz| hertz.is_finite() && *hertz > 0.0)
+        .unwrap_or(200.0);
+    let eval = |band_lo: f64, band_hi: f64| -> Option<f64> {
+        // Degenerate, unordered, or NaN bands carry no evidence; refuse them.
+        if band_lo.partial_cmp(&band_hi) != Some(std::cmp::Ordering::Less) {
+            return None;
+        }
+        roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
+            std::slice::from_ref(pre),
+            std::slice::from_ref(post),
+            &[],
+            &[],
+            target,
+            roomeq_engine::quality::QualityEvaluationConfig {
+                min_freq_hz: band_lo,
+                max_freq_hz: band_hi,
+                schroeder_hz: Some(split),
+                normalize_level: true,
+            },
+            Default::default(),
+            permitted_gain_db,
+        )
+        .ok()
+        .map(|score| score.training.worst_position_improvement_db)
+        .filter(|value| value.is_finite())
+    };
+    let bass_band = [lo, split.min(hi)];
+    let upper_band = [split.max(lo), hi];
+    let crossover_band = crossover_hz
+        .filter(|hertz| hertz.is_finite() && *hertz > 0.0)
+        .map(|hertz| [(hertz / 2.0).max(lo), (hertz * 2.0).min(hi)])
+        .filter(|band| band[0] < band[1]);
+    roomeq_model::BandImprovement {
+        schroeder_hz: split,
+        bass_band_hz: bass_band,
+        bass_improvement_db: eval(bass_band[0], bass_band[1]),
+        crossover_band_hz: crossover_band,
+        crossover_improvement_db: crossover_band.and_then(|band| eval(band[0], band[1])),
+        upper_band_hz: upper_band,
+        upper_improvement_db: eval(upper_band[0], upper_band[1]),
+    }
+}
+
+fn validate_final_seats_impl(
+    result: &mut RoomOptimizationResult,
+    captures: &[Capture],
+    held_out: &HashMap<String, Vec<Curve>>,
+    config: &RoomConfig,
+    fs: f64,
+    dir: &Path,
+    replay_context: FinalSeatReplayContext<'_>,
+) -> Result<()> {
+    for (channel, chain) in &result.channels {
+        if let Some(target) = &chain.physical_correction_target
+            && let Err(reason) = target.validate()
+        {
+            let message = format!("insufficient physical target evidence for {channel}: {reason}");
+            super::validation_scorecard::defer_native_routed_acceptance(result);
+            return Err(roomeq_model::AutoeqError::InvalidMeasurement { message });
+        }
+    }
+    let routed = super::validation_scorecard::needs_native_routed_acceptance(result)
+        && result
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .is_some_and(|report| {
+                report
+                    .observations
+                    .iter()
+                    .any(|observation| observation == "native_routed_acceptance_pending")
+            });
+    if routed {
+        super::validation_scorecard::defer_native_routed_acceptance(result);
+        if captures.is_empty() {
+            return Err(invalid(
+                "native routed acceptance requires training captures",
+            ));
+        }
+        super::finalization::refresh_configured_native_acceptance(result, config, fs, dir)?;
+    }
+    if let Some(report) = result.metadata.correction_acceptance.as_mut() {
+        report
+            .observations
+            .retain(|observation| observation != "native_routed_acceptance_rejected");
+    }
+    let outcome =
+        validate_final_seats_body(result, captures, held_out, config, fs, dir, replay_context);
+    if routed && outcome.is_err() {
+        let completed_rejection = matches!(&outcome, Err(AutoeqError::OptimizationFailed { .. }))
+            && result
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .is_some_and(|report| {
+                    report.decision == roomeq_model::CorrectionDecision::Rejected
+                        && report
+                            .acoustic_quality
+                            .as_ref()
+                            .is_some_and(|score| !score.final_seats.is_empty())
+                });
+        if completed_rejection {
+            // A completed native refusal is evidence, not a missing replay.
+            // Preserve its scorecard so trial diagnostics retain actual gates.
+            if let Some(report) = result.metadata.correction_acceptance.as_mut() {
+                report.accepted = false;
+                report
+                    .observations
+                    .retain(|observation| observation != "native_routed_acceptance_pending");
+                report
+                    .observations
+                    .push("native_routed_acceptance_rejected".into());
+                report.observations.sort();
+                report.observations.dedup();
+                report.refresh_outcome();
+            }
+        } else {
+            super::validation_scorecard::defer_native_routed_acceptance(result);
+        }
+    }
+    outcome
+}
+
+fn validate_final_seats_body(
+    result: &mut RoomOptimizationResult,
+    captures: &[Capture],
+    held_out: &HashMap<String, Vec<Curve>>,
+    config: &RoomConfig,
+    fs: f64,
+    dir: &Path,
+    replay_context: FinalSeatReplayContext<'_>,
+) -> Result<()> {
+    let FinalSeatReplayContext {
+        baseline,
+        trace: mut replay_trace,
+    } = replay_context;
     crate::export::validate_final_routed_stage_ownership(result)?;
-    if !captures.iter().any(|c| c.curves.len() > 1) && held_out.is_empty() {
+    if !super::validation_scorecard::needs_native_routed_acceptance(result)
+        && baseline.is_none()
+        && !captures.iter().any(|c| c.curves.len() > 1)
+        && held_out.is_empty()
+    {
         return Ok(());
     }
     if captures.iter().any(|capture| {
@@ -576,7 +1999,8 @@ pub(super) fn validate_final_seats(
             .as_ref()
             .and_then(|system| system.speakers.get(&capture.channel))
             .unwrap_or(&capture.channel);
-        matches!(config.speakers.get(key), Some(SpeakerConfig::Group(_)))
+        capture.curves.len() > 1
+            && matches!(config.speakers.get(key), Some(SpeakerConfig::Group(_)))
     }) {
         return Err(invalid(
             "final-seat replay of legacy driver groups requires explicit topology IDs",
@@ -593,6 +2017,10 @@ pub(super) fn validate_final_seats(
         .map(|(name, curves)| (name.clone(), curves.clone()))
         .collect();
     let mut evidence = Vec::new();
+    // A power-averaged display curve intentionally has no phase. Establish
+    // phase availability from every original capture and its delivered replay,
+    // rather than rejecting measured multi-seat FIRs on that display omission.
+    let mut phase_evidence_available = true;
     let mut training_scores = Vec::new();
     let mut held_scores = Vec::new();
     let mut inputs: Vec<_> = if let Some(graph) = result
@@ -603,14 +2031,65 @@ pub(super) fn validate_final_seats(
     {
         graph.input_channels.clone()
     } else {
-        captures.iter().map(|c| c.channel.clone()).collect()
+        // A non-routed group can own several declared physical outputs under
+        // its first output's logical channel. Replay the complete owning chain,
+        // while retaining each physical capture and its original seat identity.
+        independent_input_channels(captures, result)?
     };
     inputs.sort();
     inputs.dedup();
+    // Some routing layouts retain a silent logical slot (e.g. an unused LFE
+    // input). It has no acoustic branches in either graph. Do not confuse it
+    // with a lost branch in a previously active input.
+    if let Some(graph) = result
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+    {
+        let baseline_graph = baseline
+            .and_then(|before| before.metadata.bass_management.as_ref())
+            .and_then(|bass| bass.routing_graph.as_ref());
+        let silent: Vec<_> = inputs
+            .iter()
+            .filter(|input| {
+                !graph
+                    .routes
+                    .iter()
+                    .any(|route| &route.source_channel == *input)
+                    && baseline_graph.is_none_or(|before| {
+                        !before
+                            .routes
+                            .iter()
+                            .any(|route| &route.source_channel == *input)
+                    })
+            })
+            .cloned()
+            .collect();
+        inputs.retain(|input| !silent.contains(input));
+        for input in silent {
+            result
+                .metadata
+                .stage_outcomes
+                .push(roomeq_model::StageOutcome {
+                    stage: "final_acoustic_silent_input".into(),
+                    status: roomeq_model::StageStatus::Skipped,
+                    advisories: vec![format!(
+                        "logical_input={input}; no_routes_in_baseline_or_delivered_graph"
+                    )],
+                    checks: Vec::new(),
+                });
+        }
+    }
     for (partition, physical) in [("training", &training), ("held_out", &held)] {
         if physical.is_empty() {
             continue;
         }
+        phase_evidence_available &= physical.values().flatten().all(|curve| {
+            curve.phase.as_ref().is_some_and(|phase| {
+                phase.len() == curve.freq.len() && phase.iter().all(|value| value.is_finite())
+            })
+        });
         for curves in physical.values() {
             for curve in curves {
                 curve.validate("final-seat replay")?;
@@ -667,44 +2146,126 @@ pub(super) fn validate_final_seats(
                 return Err(invalid(format!("no final-seat evidence for '{input}'")));
             }
             for seat in 0..seats {
+                // Filter placement and playback validation have different
+                // domains. Bass-only optimization must still catch an upper-
+                // passband gain or filter regression on the delivered graph.
+                let correction_band = config
+                    .optimizer
+                    .correction_band
+                    .map(|policy| [policy.min_hz, policy.max_hz])
+                    .unwrap_or([config.optimizer.min_freq, config.optimizer.max_freq]);
+                let observation =
+                    passband_observation_config(config, result, physical, input, seat)?;
+                let config = &observation;
                 let context = ReplayContext {
                     config,
                     partition,
                     fs,
                     dir,
                 };
-                let (pre, outputs) = replay(result, physical, input, seat, true, &context)?;
-                let (post, _) = replay(result, physical, input, seat, false, &context)?;
+                let baseline_source = baseline.unwrap_or(result);
+                // Self-baseline replays already share deployment; cross-graph
+                // trials need the trial's safety matched onto the baseline.
+                let matched_baseline;
+                let baseline_for_pre = if std::ptr::eq(baseline_source, result) {
+                    baseline_source
+                } else {
+                    matched_baseline = transplant_trial_safety(baseline_source, result);
+                    &matched_baseline
+                };
+                let (pre, outputs) =
+                    replay(baseline_for_pre, physical, input, seat, true, &context)?;
+                let (post, delivered_outputs) =
+                    replay(result, physical, input, seat, false, &context)?;
                 let uncertainty_db = pre.uncertainty_db() + post.uncertainty_db();
                 let pre_support = pre.support;
                 let post_support = post.support;
                 let pre = pre.curve;
-                let post = post.curve;
+                let mut post = post.curve;
+                phase_evidence_available &= [&pre, &post].iter().all(|curve| {
+                    curve.phase.as_ref().is_some_and(|phase| {
+                        phase.len() == curve.freq.len()
+                            && phase.iter().all(|value| value.is_finite())
+                    })
+                });
                 let target = result
                     .channels
                     .get(input)
                     .and_then(|c| c.target_curve.clone())
                     .map(Curve::from);
-                let lo = config.optimizer.min_freq.max(pre.freq[0]).max(post.freq[0]);
+                // A physical carrier authenticates the coherent target's
+                // calibrated level; relative targets use the frozen pre offset.
+                let normalize_level = target.is_none()
+                    || result
+                        .channels
+                        .get(input)
+                        .is_none_or(|chain| chain.physical_correction_target.is_none());
+                let schroeder_hz =
+                    roomeq_model::auto_tune::resolved_schroeder_hz(&config.optimizer);
+                let lo = config
+                    .optimizer
+                    .min_freq
+                    .max(pre.freq[0])
+                    .max(post.freq[0])
+                    .max(excursion_supported_min_frequency(config).unwrap_or(0.0));
                 let hi = config
                     .optimizer
                     .max_freq
                     .min(*pre.freq.last().unwrap())
                     .min(*post.freq.last().unwrap());
+                // With a relative target level, a common level shift is
+                // not seat regression: match the candidate's broadband
+                // level to the baseline over the scored band before
+                // evaluating, but only when a correction is actually
+                // being judged (fallback verification against a frozen
+                // pre-alignment baseline must keep the alignment shift
+                // visible). Absolute (physical) targets keep the
+                // unshifted candidate; broadband loss remains gated by
+                // useful-output evidence from the unshifted report.
+                let mut post_unshifted: Option<Curve> = None;
+                if normalize_level && correction_differs(result, baseline_source, input) {
+                    let aligned_post = autoeq_core::interpolate_log_space(&pre.freq, &post);
+                    let (mut sum, mut count) = (0.0_f64, 0usize);
+                    for ((freq, pre_level), post_level) in pre
+                        .freq
+                        .iter()
+                        .zip(pre.spl.iter())
+                        .zip(aligned_post.spl.iter())
+                    {
+                        if *freq >= lo && *freq <= hi {
+                            sum += pre_level - post_level;
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        let shift = sum / count as f64;
+                        if shift.is_finite() && shift.abs() > 1e-9 {
+                            post_unshifted = Some(post.clone());
+                            post.spl.mapv_inplace(|level| level + shift);
+                        }
+                    }
+                }
                 let mut score =
                     roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
-                        &[pre],
-                        &[post],
+                        std::slice::from_ref(&pre),
+                        std::slice::from_ref(&post),
                         &[],
                         &[],
                         target.as_ref(),
                         roomeq_engine::quality::QualityEvaluationConfig {
                             min_freq_hz: lo,
                             max_freq_hz: hi,
-                            schroeder_hz: None,
-                            normalize_level: true,
+                            schroeder_hz,
+                            normalize_level,
                         },
-                        Default::default(),
+                        replay_scorecard_temporal(
+                            result,
+                            input,
+                            &pre,
+                            &post,
+                            fs,
+                            config.optimizer.processing_mode.clone(),
+                        ),
                         config
                             .optimizer
                             .permitted_output_gain_db
@@ -713,6 +2274,108 @@ pub(super) fn validate_final_seats(
                             .unwrap_or(0.0),
                     )
                     .map_err(invalid)?;
+                if let Some(unshifted) = &post_unshifted {
+                    // The level match above is a shape-scoring device only:
+                    // useful-output evidence must describe the delivered
+                    // (unshifted) playback, or a correction could hide an
+                    // arbitrary broadband loss behind the match. Recompute
+                    // just that evidence from the unshifted candidate.
+                    let unshifted_score =
+                        roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
+                            std::slice::from_ref(&pre),
+                            std::slice::from_ref(unshifted),
+                            &[],
+                            &[],
+                            target.as_ref(),
+                            roomeq_engine::quality::QualityEvaluationConfig {
+                                min_freq_hz: lo,
+                                max_freq_hz: hi,
+                                schroeder_hz,
+                                normalize_level,
+                            },
+                            replay_scorecard_temporal(
+                                result,
+                                input,
+                                &pre,
+                                unshifted,
+                                fs,
+                                config.optimizer.processing_mode.clone(),
+                            ),
+                            config
+                                .optimizer
+                                .permitted_output_gain_db
+                                .get(input)
+                                .copied()
+                                .unwrap_or(0.0),
+                        )
+                        .map_err(invalid)?;
+                    score.useful_output = unshifted_score.useful_output;
+                }
+                // Captured scorer output is reproducible from its numeric
+                // inputs alone. Attach the workflow owner only to the report.
+                let scorecard_for_replay = score.clone();
+                for reference in &mut score.training.frozen_grid_residual {
+                    reference.logical_input = Some(input.clone());
+                }
+                score.correction_band_hz = Some(correction_band);
+                let replay_count_before = replay_trace.as_ref().map_or(0, |trace| trace.len());
+                if let Some(main_score) = physical_main_quality(
+                    result,
+                    baseline.unwrap_or(result),
+                    physical,
+                    input,
+                    seat,
+                    &context,
+                    PhysicalMainReplayContext {
+                        target: target.as_ref(),
+                        trace: replay_trace.as_deref_mut(),
+                    },
+                )? {
+                    // Only replace the SPL-loss evidence. Combined-source
+                    // shape, uncertainty, and crossover quality stay intact.
+                    score.useful_output = main_score.useful_output;
+                }
+                // A logical output without a routed physical-main branch is
+                // scored directly from these same pre/post curves. Retain
+                // those inputs too; otherwise an opt-in diagnostic could
+                // claim the replay was visited while losing its actual score
+                // basis merely because this graph has no bass route.
+                if let Some(replay_trace) = replay_trace.as_deref_mut()
+                    && replay_trace.len() == replay_count_before
+                {
+                    replay_trace.push(UsefulOutputReplayCapture {
+                        logical_input: input.clone(),
+                        partition: partition.into(),
+                        seat_index: seat,
+                        sample_rate_hz: fs,
+                        baseline_kind: "pre_finalization_optimized_graph_without_eq_correction"
+                            .into(),
+                        replayed_serialized_dsp_graph_projection_sha256: None,
+                        replayed_playback_graph_sha256: None,
+                        baseline_measurement_contributors: capture_measurement_contributors(
+                            physical, &outputs, seat,
+                        )?,
+                        delivered_measurement_contributors: capture_measurement_contributors(
+                            physical,
+                            &delivered_outputs,
+                            seat,
+                        )?,
+                        baseline_curve: pre.clone(),
+                        delivered_curve: post.clone(),
+                        target_curve: target.clone(),
+                        min_freq_hz: lo,
+                        max_freq_hz: hi,
+                        schroeder_hz,
+                        normalize_level,
+                        permitted_gain_db: config
+                            .optimizer
+                            .permitted_output_gain_db
+                            .get(input)
+                            .copied()
+                            .unwrap_or(0.0),
+                        scorecard: scorecard_for_replay,
+                    });
+                }
                 // Each evaluator invocation contains one seat, so its local index
                 // is zero. Restore physical capture identity before aggregation.
                 for output in &mut score.useful_output {
@@ -748,6 +2411,21 @@ pub(super) fn validate_final_seats(
                     improvement_db: score.training.worst_position_improvement_db,
                     improvement_lower_bound_db: score.training.worst_position_improvement_db
                         - uncertainty_db,
+                    band_improvement_db: Some(band_improvements(
+                        &pre,
+                        &post,
+                        target.as_ref(),
+                        lo,
+                        hi,
+                        schroeder_hz,
+                        routed_crossover_hz(result, input),
+                        config
+                            .optimizer
+                            .permitted_output_gain_db
+                            .get(input)
+                            .copied()
+                            .unwrap_or(0.0),
+                    )),
                 });
                 if partition == "training" {
                     training_scores.push(score);
@@ -757,9 +2435,10 @@ pub(super) fn validate_final_seats(
             }
         }
     }
+    let temporal = aggregate_replay_temporal(&training_scores, &held_scores);
     let mut score = super::room_optimization_result::aggregate_runtime_quality(
         &training_scores,
-        Default::default(),
+        temporal,
         config.optimizer.min_freq,
         config.optimizer.max_freq,
     )
@@ -789,40 +2468,77 @@ pub(super) fn validate_final_seats(
             .map(|s| s.evaluated_band_hz[1])
             .fold(0.0_f64, f64::max),
     ];
-    score.measurement_overlap_hz = [
-        score
-            .final_seats
-            .iter()
-            .map(|s| s.evaluated_band_hz[0])
-            .fold(0.0_f64, f64::max),
-        score
-            .final_seats
-            .iter()
-            .map(|s| s.evaluated_band_hz[1])
-            .fold(f64::INFINITY, f64::min),
-    ];
-    if score.measurement_overlap_hz[0] >= score.measurement_overlap_hz[1] {
-        return Err(invalid(
-            "final-seat scorecard has no common supported frequency band",
-        ));
-    }
+    score.measurement_overlap_hz = final_seat_overlap(&score.final_seats)?;
     let report = result
         .metadata
         .correction_acceptance
         .as_mut()
         .ok_or_else(|| invalid("final-seat acceptance report unavailable"))?;
     if let Some(previous) = &report.acoustic_quality {
-        score.temporal = previous.temporal;
+        score.temporal = previous.temporal.clone();
+    }
+    score.temporal.phase_evidence_available =
+        phase_evidence_available && !score.final_seats.is_empty();
+    // Presence is not verification: upgrade the scorecard verdict from the
+    // evaluated inputs' declared provenance. Advisory-only: acceptance still
+    // keys on phase presence; coherent claims must consult this verdict.
+    score.temporal.coherent_timing =
+        match crate::evidence_intake::shared_timing_reference(config, &inputs) {
+            Ok(reference_id) => CoherentTimingEvidence::Verified { reference_id },
+            Err(reason) => CoherentTimingEvidence::Refused { reason },
+        };
+    // Electrical upper bound: the gain backstop's checked quantity.
+    // Enforcement compares this bound (see acceptance); the acoustic
+    // ratio stays reported alongside for the near-null explanation.
+    score.max_electrical_boost_db = crate::delay_compile::electrical_boost_bound_db(
+        &result.channels,
+        result
+            .metadata
+            .bass_management
+            .as_ref()
+            .and_then(|bass| bass.routing_graph.as_ref())
+            .map(|graph| graph.routes.as_slice()),
+    );
+    if score.temporal.phase_evidence_available {
+        let only_phase_missing = report.violations.as_slice() == ["phase_evidence_missing"];
+        report
+            .violations
+            .retain(|violation| violation != "phase_evidence_missing");
+        if only_phase_missing {
+            report.accepted = true;
+            report.decision = roomeq_model::CorrectionDecision::Accepted;
+        }
+        report.refresh_outcome();
+    } else if report.runtime_policy.as_ref().is_some_and(|policy| {
+        matches!(
+            policy.output_class,
+            roomeq_model::RuntimeOutputClass::Fir | roomeq_model::RuntimeOutputClass::Hybrid
+        )
+    }) {
+        if !report
+            .violations
+            .iter()
+            .any(|violation| violation == "phase_evidence_missing")
+        {
+            report
+                .violations
+                .push(String::from("phase_evidence_missing"));
+        }
+        report.accepted = false;
+        if report.decision == roomeq_model::CorrectionDecision::Accepted {
+            report.decision = roomeq_model::CorrectionDecision::IdentityFallback;
+        }
+        report.refresh_outcome();
     }
     let budget = report
         .runtime_policy
         .as_ref()
         .ok_or_else(|| invalid("final-seat runtime budget unavailable"))?
         .max_worst_position_regression_db;
-    let failed = score
+    let failed: Vec<_> = score
         .final_seats
         .iter()
-        .find(|s| {
+        .filter(|s| {
             !s.improvement_lower_bound_db.is_finite() || s.improvement_lower_bound_db < -budget
         })
         .map(|s| {
@@ -830,43 +2546,987 @@ pub(super) fn validate_final_seats(
                 "{} '{}' seat {} regressed {:.3} dB beyond {:.3} dB budget",
                 s.partition, s.logical_input, s.seat_index, -s.improvement_lower_bound_db, budget
             )
-        });
-    let output_budget =
-        roomeq_engine::quality::QualityGatePolicy::default().max_unexplained_output_loss_db;
-    let output_failed = score.useful_output.iter().find_map(|output| {
+        })
+        .collect();
+    let output_budget = config.optimizer.finalization.max_useful_output_loss_db;
+    let output_failed: Vec<_> = score.useful_output.iter().filter_map(|output| {
+        // f64::max masks a NaN if its other operand is finite.
+        let finite = output.unexplained_loss_rms_db.is_finite()
+            && output.bass_unexplained_loss_rms_db.is_none_or(f64::is_finite)
+            && output.extension_loss_db.is_none_or(f64::is_finite)
+            && output.peak_demand_change_db.is_none_or(f64::is_finite);
         let loss = output.unexplained_loss_rms_db
             .max(output.bass_unexplained_loss_rms_db.unwrap_or(0.0));
-        (!loss.is_finite() || loss > output_budget).then(|| {
+        // Subwoofer peak cuts are not constrained by the main-speaker SPL
+        // allowance. Keep their evidence and finite checks; electrical safety
+        // and response-shape/crossover acceptance remain independent gates.
+        let subwoofer = output.logical_input.as_deref().is_some_and(|input| {
+            let key = config.system.as_ref()
+                .and_then(|system| system.speakers.get(input))
+                .map(String::as_str).unwrap_or(input);
+            super::misc::is_subwoofer_channel(config, input)
+                || matches!(config.speakers.get(key),
+                    Some(SpeakerConfig::MultiSub(_) | SpeakerConfig::Dba(_) | SpeakerConfig::Cardioid(_)))
+        });
+        (!finite || !loss.is_finite() || (!subwoofer && loss > output_budget)).then(|| {
             format!(
                 "{} '{}' seat {} lost {:.3} dB useful output beyond {:.3} dB budget (permitted gain {:.3} dB)",
                 output.partition, output.logical_input.as_deref().unwrap_or("unknown"),
                 output.seat_index, loss, output_budget, output.permitted_gain_db
             )
         })
-    });
+    }).collect();
     report.acoustic_quality = Some(score);
-    if output_failed.is_some() {
+    if !output_failed.is_empty() {
         report
             .violations
             .push("unexplained_useful_output_loss".into());
     }
-    if failed.is_some() {
+    if !failed.is_empty() {
         report.violations.push("worst_position_regressed".into());
     }
-    let failures: Vec<_> = failed.into_iter().chain(output_failed).collect();
+    // WP3 final boundary: the replayed score replaces the evidence the
+    // safety gate enforced, so reevaluate the runtime policy against what
+    // is now attached. Without this, the report can show a limit, an
+    // exceeding replayed value, and an accepted outcome that was computed
+    // from different evidence. New violations fail closed like the seat
+    // and output regressions above.
+    let mut boundary_failures = Vec::new();
+    if report.policy == roomeq_model::CorrectionAcceptancePolicy::RuntimeSafety
+        && let Some(attached) = report.acoustic_quality.clone()
+        && let Some(policy) = report.runtime_policy.clone()
+    {
+        if let Some(realization) = report.realization_quality.clone() {
+            let before = report.violations.clone();
+            roomeq_quality::enforce_runtime_acceptance_evidence(
+                report,
+                attached.clone(),
+                realization,
+                policy.clone(),
+            )
+            .map_err(|reason| invalid(format!("replayed evidence refused: {reason}")))?;
+            let fresh: Vec<String> = report
+                .violations
+                .iter()
+                .filter(|violation| !before.contains(violation))
+                .cloned()
+                .collect();
+            for violation in &fresh {
+                // The boost backstop carries two quantities; name the
+                // values so a rejection names its evidence, not just the
+                // limit. The applier re-pushes the same violation string,
+                // deduplicated below.
+                if violation == "max_boost_limit_exceeded"
+                    && let Some(detail) = roomeq_quality::apply_boost_limit_agreement(
+                        report,
+                        attached.max_boost_db,
+                        attached.max_electrical_boost_db,
+                        &policy,
+                    )
+                {
+                    boundary_failures.push(format!(
+                        "replayed evidence violates max_boost_limit_exceeded ({detail})"
+                    ));
+                    continue;
+                }
+                boundary_failures.push(format!("replayed evidence violates {violation}"));
+            }
+            report.violations.sort();
+            report.violations.dedup();
+        } else if let Some(message) = roomeq_quality::apply_boost_limit_agreement(
+            report,
+            attached.max_boost_db,
+            attached.max_electrical_boost_db,
+            &policy,
+        ) {
+            boundary_failures.push(message);
+        }
+    }
+    let failures: Vec<_> = failed
+        .into_iter()
+        .chain(output_failed)
+        .chain(boundary_failures)
+        .collect();
     if !failures.is_empty() {
         report.accepted = false;
         report.decision = roomeq_model::CorrectionDecision::Rejected;
         report.violations.sort();
         report.violations.dedup();
-        return Err(AutoeqError::OptimizationFailed { message: failures.join("; ") });
+        report.refresh_outcome();
+        return Err(AutoeqError::OptimizationFailed {
+            message: failures.join("; "),
+        });
     }
+    let concealment = band_concealment_findings(
+        &report
+            .acoustic_quality
+            .as_ref()
+            .map(|score| score.final_seats.clone())
+            .unwrap_or_default(),
+        config.optimizer.finalization.min_improvement_lower_bound_db,
+        budget,
+    );
+    result
+        .metadata
+        .stage_outcomes
+        .push(concealment_stage(concealment));
     Ok(())
+}
+
+/// Training seats whose broadband gain conceals a band regression.
+///
+/// A seat conceals when its uncertainty-adjusted broadband improvement
+/// clears the benefit floor while any assessed band's raw improvement
+/// falls beyond the regression budget. Advisory findings; enforcement
+/// waits on matrix evidence that no accepted correction trips it.
+fn band_concealment_findings(
+    final_seats: &[FinalSeatEvaluation],
+    benefit_floor_db: f64,
+    regression_budget_db: f64,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for seat in final_seats
+        .iter()
+        .filter(|seat| seat.partition == "training")
+    {
+        // NaN lower bounds fail closed: only a strict improvement counts.
+        if seat
+            .improvement_lower_bound_db
+            .partial_cmp(&benefit_floor_db)
+            != Some(std::cmp::Ordering::Greater)
+        {
+            continue;
+        }
+        let Some(bands) = seat.band_improvement_db.as_ref() else {
+            continue;
+        };
+        for (name, value) in [
+            ("bass", bands.bass_improvement_db),
+            ("crossover", bands.crossover_improvement_db),
+            ("upper", bands.upper_improvement_db),
+        ] {
+            if let Some(db) = value
+                && db < -regression_budget_db
+            {
+                findings.push(format!(
+                    "band_concealment:{}:{}:{}:band_improvement_db={:.3}:broadband_lb_db={:.3}:budget_db={:.3}",
+                    seat.logical_input,
+                    seat.seat_index,
+                    name,
+                    db,
+                    seat.improvement_lower_bound_db,
+                    regression_budget_db,
+                ));
+            }
+        }
+    }
+    findings.sort();
+    findings
+}
+
+/// Advisory stage carrying band-concealment findings, if any.
+fn concealment_stage(findings: Vec<String>) -> roomeq_model::StageOutcome {
+    roomeq_model::StageOutcome {
+        stage: "final_band_concealment".into(),
+        status: roomeq_model::StageStatus::Applied,
+        advisories: if findings.is_empty() {
+            vec!["no_band_concealment_detected".to_string()]
+        } else {
+            findings
+        },
+        checks: Vec::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transplant_matches_post_route_safety_but_not_common_input_safety() {
+        fn safety_gain(gain_db: f64, stage: &str) -> PluginConfigWrapper {
+            let mut plugin = roomeq_engine::output::create_gain_plugin(gain_db);
+            plugin.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+            plugin.parameters["room_eq_stage"] = serde_json::json!(stage);
+            plugin
+        }
+        let mut baseline = crate::test_fixtures::single_channel_room_result("L");
+        baseline
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-2.0, "post_route"));
+        let mut trial = baseline.clone();
+        // Trial preparation strips stale safety, then installs recomputed
+        // post-route safety plus blunt common input safety.
+        trial.channels.get_mut("L").unwrap().plugins.clear();
+        trial
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-5.0, "post_route"));
+        trial
+            .channels
+            .get_mut("L")
+            .unwrap()
+            .plugins
+            .push(safety_gain(-5.5, "pre_route"));
+        let matched = super::transplant_trial_safety(&baseline, &trial);
+        let gains: Vec<f64> = matched.channels["L"]
+            .plugins
+            .iter()
+            .filter_map(|plugin| plugin.parameters["gain_db"].as_f64())
+            .collect();
+        // Baseline's stale -2.0 replaced by trial's -5.0; pre-route -5.5 refused.
+        assert_eq!(gains, vec![-5.0]);
+        // Trial itself untouched.
+        assert_eq!(trial.channels["L"].plugins.len(), 2);
+    }
+
+    #[test]
+    fn replay_scorecard_temporal_carries_branch_fir_latency_prior() {
+        let mut result = crate::test_fixtures::single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().fir_temporal_masking =
+            Some(roomeq_model::TemporalIrMaskingMetrics {
+                main_index: 2048,
+                main_time_ms: 42.666666666666664,
+                pre_ringing_peak_db: -30.0,
+                post_ringing_peak_db: -30.0,
+                pre_ringing_audible_db: -32.0,
+                post_ringing_audible_db: -40.0,
+                pre_energy_ratio_db: -31.0,
+                penalty: 0.0,
+                taps: 4096,
+                sample_rate_hz: 48_000.0,
+                masking_profile: "mixed".to_string(),
+                pre_mask_ms: 2.0,
+                post_mask_ms: 20.0,
+                audibility_threshold_db: -20.0,
+            });
+        result.channel_results.get_mut("L").unwrap().fir_coeffs = Some(vec![0.0; 4096]);
+        let curve = crate::test_fixtures::flat_curve();
+        let temporal = super::replay_scorecard_temporal(
+            &result,
+            "L",
+            &curve,
+            &curve,
+            48_000.0,
+            roomeq_model::ProcessingMode::Hybrid,
+        );
+        // The induced-GD unwrap prior must see the realized 4096-tap delay,
+        // not a zero prior that reads ~10 ms of spurious dispersion.
+        assert_eq!(temporal.latency_ms, Some(42.666666666666664));
+        assert!(temporal.temporal_evidence_available);
+        // Inputs without optimizer evidence keep the zero prior.
+        let missing = super::replay_scorecard_temporal(
+            &result,
+            "Sub1",
+            &curve,
+            &curve,
+            48_000.0,
+            roomeq_model::ProcessingMode::Hybrid,
+        );
+        assert_eq!(missing, roomeq_model::TemporalQualityEvidence::default());
+    }
+
+    #[test]
+    fn transplant_matches_driver_safety_by_driver_name() {
+        let mut safety = roomeq_engine::output::create_gain_plugin(-4.3);
+        safety.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+        let mut baseline = crate::test_fixtures::single_channel_room_result("Sub1");
+        baseline.channels.get_mut("Sub1").unwrap().drivers =
+            Some(vec![roomeq_model::DriverDspChain {
+                measured_acoustics: None,
+                name: "Sub1".into(),
+                index: 0,
+                initial_curve: None,
+                measured_band_hz: None,
+                plugins: Vec::new(),
+            }]);
+        for stage in [None, Some("post_route"), Some("pre_route")] {
+            let mut gain = safety.clone();
+            if let Some(stage) = stage {
+                gain.parameters["room_eq_stage"] = serde_json::json!(stage);
+            }
+            let mut trial = baseline.clone();
+            // The same untagged gain on a shared logical input is not a
+            // physical-output safety control and must remain judged.
+            trial
+                .channels
+                .get_mut("Sub1")
+                .unwrap()
+                .plugins
+                .push(gain.clone());
+            trial
+                .channels
+                .get_mut("Sub1")
+                .unwrap()
+                .drivers
+                .as_mut()
+                .unwrap()[0]
+                .plugins
+                .push(gain);
+            let matched = super::transplant_trial_safety(&baseline, &trial);
+            let driver = &matched.channels["Sub1"].drivers.as_ref().unwrap()[0];
+            let gains: Vec<f64> = driver
+                .plugins
+                .iter()
+                .filter_map(|plugin| plugin.parameters["gain_db"].as_f64())
+                .collect();
+            assert_eq!(
+                gains,
+                if stage == Some("pre_route") {
+                    vec![]
+                } else {
+                    vec![-4.3]
+                }
+            );
+            assert_eq!(
+                matched.channels["Sub1"].plugins.len(),
+                usize::from(stage == Some("post_route"))
+            );
+        }
+    }
+
+    #[test]
+    fn native_routed_acceptance_recomputes_identity_and_refuses_in_band_damage() {
+        let mut baseline = crate::test_fixtures::single_channel_room_result("left");
+        let initial = baseline.channel_results["left"].initial_curve.clone();
+        let chain = baseline.channels.get_mut("left").unwrap();
+        chain.target_curve = Some((&initial).into());
+        chain
+            .plugins
+            .push(roomeq_engine::topology::mark_route_owned_plugin(
+                roomeq_engine::output::create_crossover_plugin("LR24", 80.0, "high"),
+            ));
+        let routed = super::super::room_optimization_result::apply_logical_channel_chain(
+            chain,
+            &initial,
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap();
+        baseline
+            .channel_results
+            .get_mut("left")
+            .unwrap()
+            .final_curve = routed;
+        let captures = vec![Capture {
+            channel: "left".into(),
+            driver: None,
+            curves: vec![initial.clone()],
+            seat_labels: None,
+        }];
+        let mut config = RoomConfig::default();
+        config.optimizer.min_freq = 60.0;
+        config.optimizer.max_freq = 500.0;
+        let mut identity = baseline.clone();
+        super::super::room_optimization_result::apply_final_correction_safety_gate(
+            &mut identity,
+            48_000.0,
+            config.optimizer.smooth_n,
+            (60.0, 500.0),
+            Path::new("."),
+            config.optimizer.processing_mode.clone(),
+            None,
+        );
+        identity
+            .metadata
+            .correction_acceptance
+            .as_mut()
+            .unwrap()
+            .violations
+            .push("audibility_regression_reverted".into());
+        super::super::validation_scorecard::attach_validation_scorecard(
+            &mut identity,
+            &HashMap::from([("left".into(), vec![initial])]),
+            48_000.0,
+            None,
+            config.optimizer.processing_mode.clone(),
+        )
+        .unwrap();
+        assert!(
+            !identity
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .unwrap()
+                .accepted
+        );
+        validate_candidate_final_seats(
+            &mut identity,
+            &baseline,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap();
+        let report = identity.metadata.correction_acceptance.as_ref().unwrap();
+        assert!(report.accepted, "{:?}", report.violations);
+        assert!(report.metrics.improvement_db.abs() < 1e-10);
+        assert!(identity.metadata.stage_outcomes.iter().any(|stage| {
+            stage.stage == "previous_graph_acceptance_history"
+                && stage
+                    .advisories
+                    .iter()
+                    .any(|reason| reason == "audibility_regression_reverted")
+        }));
+        let mut strict = identity.clone();
+        strict
+            .metadata
+            .correction_acceptance
+            .as_mut()
+            .unwrap()
+            .runtime_policy
+            .as_mut()
+            .unwrap()
+            .min_available_headroom_db = 1.0;
+        super::super::validation_scorecard::defer_native_routed_acceptance(&mut strict);
+        super::super::finalization::refresh_configured_native_acceptance(
+            &mut strict,
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap();
+        let strict_report = strict.metadata.correction_acceptance.as_ref().unwrap();
+        assert!(
+            !strict_report.accepted,
+            "preserved stricter policy must be evaluated"
+        );
+        assert!(
+            strict_report
+                .violations
+                .iter()
+                .any(|reason| reason == "headroom_limit_exceeded")
+        );
+        assert_eq!(
+            strict_report
+                .runtime_policy
+                .as_ref()
+                .unwrap()
+                .min_available_headroom_db,
+            1.0
+        );
+        let mut damaged = identity.clone();
+        damaged.channels.get_mut("left").unwrap().plugins.push(
+            roomeq_engine::output::create_eq_plugin(&[math_audio_iir_fir::Biquad::new(
+                math_audio_iir_fir::BiquadFilterType::Peak,
+                200.0,
+                48_000.0,
+                0.7,
+                -6.0,
+            )]),
+        );
+        super::super::validation_scorecard::defer_native_routed_acceptance(&mut damaged);
+        let error = validate_candidate_final_seats(
+            &mut damaged,
+            &baseline,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fresh configured acceptance would change the candidate graph"),
+            "{error}"
+        );
+        if let Some(report) = &damaged.metadata.correction_acceptance {
+            assert!(!report.accepted);
+        }
+    }
+
+    #[test]
+    fn physical_and_native_target_consumers_preserve_nonzero_calibration_planes() {
+        use roomeq_engine::topology::{mark_plugin_stage, mark_route_owned_plugin};
+        let fs = 48_000.0;
+        let dir = Path::new(".");
+        let mut desired = crate::test_fixtures::flat_curve();
+        desired.spl = desired
+            .freq
+            .mapv(|frequency| 80.0 - 2.0 * (frequency / 200.0).log2());
+        desired.phase = Some(
+            desired
+                .freq
+                .mapv(|frequency| 17.0 - 360.0 * frequency * 0.0007),
+        );
+        let peak = |gain| {
+            roomeq_engine::output::create_eq_plugin(&[math_audio_iir_fir::Biquad::new(
+                math_audio_iir_fir::BiquadFilterType::Peak,
+                220.0,
+                fs,
+                0.9,
+                gain,
+            )])
+        };
+        let mut measurement_chain =
+            crate::test_fixtures::single_channel_room_result("left").channels["left"].clone();
+        measurement_chain.plugins = vec![peak(4.0)];
+        let measured = super::super::room_optimization_result::apply_logical_channel_chain(
+            &measurement_chain,
+            &desired,
+            fs,
+            dir,
+        )
+        .unwrap();
+        let captures = vec![Capture {
+            channel: "left".into(),
+            driver: None,
+            curves: vec![measured.clone()],
+            seat_labels: None,
+        }];
+        let mut config = RoomConfig::default();
+        config.optimizer.min_freq = 100.0;
+        config.optimizer.max_freq = 500.0;
+        for alignment in [-3.0, 3.0] {
+            let mut baseline = crate::test_fixtures::single_channel_room_result("left");
+            let chain = baseline.channels.get_mut("left").unwrap();
+            chain.plugins = vec![
+                mark_route_owned_plugin(roomeq_engine::output::create_gain_plugin(alignment)),
+                mark_route_owned_plugin(roomeq_engine::output::create_delay_plugin(1.7)),
+                mark_route_owned_plugin(roomeq_engine::output::create_crossover_plugin(
+                    "LR24", 60.0, "high",
+                )),
+            ];
+            let coherent_target =
+                super::super::room_optimization_result::apply_logical_channel_chain(
+                    chain, &desired, fs, dir,
+                )
+                .unwrap();
+            chain.target_curve = Some((&coherent_target).into());
+            let mut calibrated_target = desired.clone();
+            calibrated_target
+                .spl
+                .mapv_inplace(|level| level + alignment);
+            chain.physical_correction_target = Some(roomeq_model::PhysicalCorrectionTarget {
+                curve: (&calibrated_target).into(),
+                measurement_alignment_gain_db: alignment,
+            });
+            let routed = super::super::room_optimization_result::apply_logical_channel_chain(
+                chain, &measured, fs, dir,
+            )
+            .unwrap();
+            chain.initial_curve = Some((&measured).into());
+            chain.final_curve = Some((&routed).into());
+            let channel = baseline.channel_results.get_mut("left").unwrap();
+            channel.initial_curve = measured.clone();
+            channel.final_curve = routed;
+            for (gain, good) in [(-4.0, true), (4.0, false)] {
+                let mut candidate = baseline.clone();
+                let chain = candidate.channels.get_mut("left").unwrap();
+                chain
+                    .plugins
+                    .push(mark_plugin_stage(peak(gain), "post_route"));
+                let realized = super::super::room_optimization_result::apply_logical_channel_chain(
+                    chain, &measured, fs, dir,
+                )
+                .unwrap();
+                chain.final_curve = Some((&realized).into());
+                candidate
+                    .channel_results
+                    .get_mut("left")
+                    .unwrap()
+                    .final_curve = realized;
+                let original_plugins = serde_json::to_value(&chain.plugins).unwrap();
+                super::super::room_optimization_result::apply_final_correction_safety_gate(
+                    &mut candidate,
+                    fs,
+                    config.optimizer.smooth_n,
+                    (100.0, 500.0),
+                    dir,
+                    config.optimizer.processing_mode.clone(),
+                    None,
+                );
+                let physical = candidate.metadata.correction_acceptance.as_ref().unwrap();
+                if good {
+                    assert!(
+                        physical.metrics.post_target_weighted_rms_db
+                            < physical.metrics.pre_target_weighted_rms_db,
+                        "alignment={alignment}, physical={physical:?}"
+                    );
+                    assert_eq!(
+                        serde_json::to_value(&candidate.channels["left"].plugins).unwrap(),
+                        original_plugins
+                    );
+                    // Coherent target remains in its original full-routed plane.
+                    assert_eq!(
+                        serde_json::to_value(&candidate.channels["left"].target_curve).unwrap(),
+                        serde_json::to_value(&baseline.channels["left"].target_curve).unwrap()
+                    );
+                    super::super::validation_scorecard::defer_native_routed_acceptance(
+                        &mut candidate,
+                    );
+                    validate_candidate_final_seats(
+                        &mut candidate,
+                        &baseline,
+                        &captures,
+                        &HashMap::new(),
+                        &config,
+                        fs,
+                        dir,
+                    )
+                    .unwrap();
+                    let native = candidate.metadata.correction_acceptance.as_ref().unwrap();
+                    assert!(native.accepted, "alignment={alignment}, native={native:?}");
+                    assert!(
+                        native.metrics.post_target_weighted_rms_db
+                            < native.metrics.pre_target_weighted_rms_db
+                    );
+                    for invalid_grid in [false, true] {
+                        let mut invalid = candidate.clone();
+                        let carrier = invalid
+                            .channels
+                            .get_mut("left")
+                            .unwrap()
+                            .physical_correction_target
+                            .as_mut()
+                            .unwrap();
+                        if invalid_grid {
+                            carrier.curve.freq[1] = carrier.curve.freq[0];
+                        } else {
+                            carrier.measurement_alignment_gain_db = f64::NAN;
+                        }
+                        let error = validate_candidate_final_seats(
+                            &mut invalid,
+                            &baseline,
+                            &captures,
+                            &HashMap::new(),
+                            &config,
+                            fs,
+                            dir,
+                        )
+                        .unwrap_err();
+                        assert!(
+                            error
+                                .to_string()
+                                .contains("insufficient physical target evidence")
+                        );
+                        assert!(
+                            !invalid
+                                .metadata
+                                .correction_acceptance
+                                .as_ref()
+                                .unwrap()
+                                .accepted
+                        );
+                    }
+                } else {
+                    assert_ne!(
+                        serde_json::to_value(&candidate.channels["left"].plugins).unwrap(),
+                        original_plugins,
+                        "actual physical gate must reject worsening correction at alignment={alignment}"
+                    );
+                    let mut bad_native = baseline.clone();
+                    bad_native
+                        .channels
+                        .get_mut("left")
+                        .unwrap()
+                        .plugins
+                        .push(mark_plugin_stage(peak(gain), "post_route"));
+                    super::super::validation_scorecard::defer_native_routed_acceptance(
+                        &mut bad_native,
+                    );
+                    assert!(
+                        validate_candidate_final_seats(
+                            &mut bad_native,
+                            &baseline,
+                            &captures,
+                            &HashMap::new(),
+                            &config,
+                            fs,
+                            dir
+                        )
+                        .is_err()
+                    );
+                }
+            }
+        }
+    }
+
+    fn phased_curve(level_db: f64, phase_deg: f64) -> Curve {
+        let mut curve = crate::test_fixtures::flat_curve();
+        curve.spl.fill(level_db);
+        curve.phase = Some(ndarray::Array1::from_elem(curve.freq.len(), phase_deg));
+        curve
+    }
+
+    fn concealment_seat(
+        partition: &str,
+        lower_bound_db: f64,
+        bands: Option<roomeq_model::BandImprovement>,
+    ) -> FinalSeatEvaluation {
+        FinalSeatEvaluation {
+            partition: partition.into(),
+            logical_input: "L".into(),
+            seat_index: 0,
+            seat_label: None,
+            physical_outputs: vec!["L".into()],
+            pre_summation_support: Vec::new(),
+            post_summation_support: Vec::new(),
+            unassessed_bands_hz: Vec::new(),
+            evaluated_band_hz: [20.0, 20_000.0],
+            pre_weighted_rms_db: 5.0,
+            post_weighted_rms_db: 4.0,
+            improvement_db: 1.0,
+            improvement_lower_bound_db: lower_bound_db,
+            band_improvement_db: bands,
+        }
+    }
+
+    fn bands(
+        bass: Option<f64>,
+        crossover: Option<f64>,
+        upper: Option<f64>,
+    ) -> roomeq_model::BandImprovement {
+        roomeq_model::BandImprovement {
+            schroeder_hz: 200.0,
+            bass_band_hz: [20.0, 200.0],
+            bass_improvement_db: bass,
+            crossover_band_hz: Some([40.0, 160.0]),
+            crossover_improvement_db: crossover,
+            upper_band_hz: [200.0, 20_000.0],
+            upper_improvement_db: upper,
+        }
+    }
+
+    #[test]
+    fn band_concealment_flags_only_passing_broadband_with_regressed_band() {
+        // Broadband gain with a regressed upper band: concealed.
+        let seats = vec![concealment_seat(
+            "training",
+            1.0,
+            Some(bands(Some(2.0), Some(0.5), Some(-0.5))),
+        )];
+        let findings = super::band_concealment_findings(&seats, 0.0, 0.25);
+        assert_eq!(findings.len(), 1);
+        assert!(
+            findings[0].contains("band_concealment:L:0:upper")
+                && findings[0].contains("band_improvement_db=-0.500"),
+            "unexpected finding: {}",
+            findings[0]
+        );
+        // Broadband itself failing benefit: no concealment question.
+        let seats = vec![concealment_seat(
+            "training",
+            -0.1,
+            Some(bands(Some(2.0), Some(0.5), Some(-0.5))),
+        )];
+        assert!(super::band_concealment_findings(&seats, 0.0, 0.25).is_empty());
+        // Clean bands, held-out partition, and absent bands: silent.
+        let seats = vec![
+            concealment_seat(
+                "training",
+                1.0,
+                Some(bands(Some(2.0), Some(0.5), Some(0.1))),
+            ),
+            concealment_seat(
+                "held_out",
+                1.0,
+                Some(bands(Some(2.0), Some(0.5), Some(-5.0))),
+            ),
+            concealment_seat("training", 1.0, None),
+        ];
+        assert!(super::band_concealment_findings(&seats, 0.0, 0.25).is_empty());
+    }
+
+    #[test]
+    fn mono_bass_sums_report_coherent_buildup_and_refuse_without_phase() {
+        // Identical in-phase inputs: coherent +6.02 dB, buildup +3.01 dB
+        // over the incoherent power sum at every mono bin.
+        let pair = vec![phased_curve(80.0, 0.0), phased_curve(80.0, 0.0)];
+        let assessed = super::assess_mono_bass_sums(&pair, 300.0).unwrap();
+        assert_eq!(assessed.inputs, 2);
+        assert!((assessed.peak_coherent_db - 86.0206).abs() < 1e-3);
+        assert!((assessed.max_buildup_db - 3.0103).abs() < 1e-3);
+        assert!(assessed.band_hz[0] <= 20.0 + 1e-6 && assessed.band_hz[1] <= 300.0);
+        // Opposite phase cancels instead of building up; the ratio stays
+        // finite and deeply negative rather than NaN.
+        let opposed = vec![phased_curve(80.0, 0.0), phased_curve(80.0, 180.0)];
+        let assessed = super::assess_mono_bass_sums(&opposed, 300.0).unwrap();
+        assert!(assessed.max_buildup_db < -100.0);
+        // Missing phase refuses rather than invents a coherent sum.
+        let mut phaseless = pair.clone();
+        phaseless[1].phase = None;
+        assert!(
+            super::assess_mono_bass_sums(&phaseless, 300.0)
+                .unwrap_err()
+                .contains("no measured phase")
+        );
+        // Grid mismatch and single inputs refuse likewise.
+        let mut shifted = pair.clone();
+        shifted[1].freq[0] += 1.0;
+        assert!(
+            super::assess_mono_bass_sums(&shifted, 300.0)
+                .unwrap_err()
+                .contains("common grid")
+        );
+        assert!(super::assess_mono_bass_sums(&pair[..1], 300.0).is_err());
+    }
+
+    #[test]
+    fn grouped_physical_output_captures_keep_declared_branch_order() {
+        let source = |level| {
+            let mut curve = crate::test_fixtures::flat_curve();
+            curve.spl.fill(level);
+            MeasurementSource::InMemory(curve)
+        };
+        let groups = [
+            SpeakerConfig::MultiSub(roomeq_model::MultiSubGroup {
+                name: String::from("subs"),
+                speaker_name: None,
+                subwoofers: vec![source(70.0), source(80.0)],
+                allpass_optimization: false,
+                joint_optimization: false,
+            }),
+            SpeakerConfig::Cardioid(Box::new(roomeq_model::CardioidConfig {
+                name: String::from("subs"),
+                speaker_name: None,
+                front: source(70.0),
+                rear: source(80.0),
+                separation_meters: 1.0,
+            })),
+            SpeakerConfig::Dba(roomeq_model::DBAConfig {
+                name: String::from("subs"),
+                speaker_name: None,
+                front: vec![source(70.0)],
+                rear: vec![source(80.0)],
+            }),
+        ];
+        for group in groups {
+            let mut config = RoomConfig::default();
+            config.speakers.insert(String::from("subs"), group);
+            config.system = Some(roomeq_model::SystemConfig {
+                subwoofers: Some(roomeq_model::SubwooferSystemConfig {
+                    config: Default::default(),
+                    crossover: None,
+                    routing: Default::default(),
+                    // Reverse lexical order: mapping follows declaration order.
+                    outputs: ["Sub2", "Sub1"]
+                        .into_iter()
+                        .map(|id| roomeq_model::SubwooferOutput {
+                            id: String::from(id),
+                            speaker: String::from("subs"),
+                        })
+                        .collect(),
+                }),
+                ..Default::default()
+            });
+            let captures = capture_training(&config).unwrap();
+            assert_eq!(captures.len(), 2);
+            // Only the common first-output channel exists. The second output
+            // is a physical branch, not another logical driver-group owner.
+            let result = crate::test_fixtures::single_channel_room_result("Sub2");
+            let physical = physical_captures(&captures, &result).unwrap();
+            assert_eq!(physical.len(), 2);
+            assert!(physical["Sub2"][0].spl.iter().all(|value| *value == 70.0));
+            assert!(physical["Sub1"][0].spl.iter().all(|value| *value == 80.0));
+            config
+                .system
+                .as_mut()
+                .unwrap()
+                .subwoofers
+                .as_mut()
+                .unwrap()
+                .outputs
+                .push(roomeq_model::SubwooferOutput {
+                    id: String::from("Sub3"),
+                    speaker: String::from("subs"),
+                });
+            assert!(capture_training(&config).is_err());
+        }
+    }
+
+    #[test]
+    fn standalone_subwoofer_replay_uses_measured_band_not_full_range_limit() {
+        let input = "Two subs";
+        let mut result = crate::test_fixtures::single_channel_room_result(input);
+        let chain = result.channels.get_mut(input).unwrap();
+        chain.plugins.clear();
+        chain.drivers = Some(
+            (0..2)
+                .map(|index| roomeq_model::DriverDspChain {
+                    measured_acoustics: None,
+                    name: format!("Two subs_{}", index + 1),
+                    index,
+                    plugins: vec![],
+                    initial_curve: None,
+                    measured_band_hz: None,
+                })
+                .collect(),
+        );
+        let physical = (0..2)
+            .map(|index| {
+                let high = if index == 0 { 199.951172 } else { 200.0 };
+                let curve = Curve {
+                    freq: ndarray::Array1::from_vec(vec![20.0, 40.0, 80.0, 120.0, high]),
+                    spl: ndarray::Array1::from_elem(5, 70.0),
+                    phase: Some(ndarray::Array1::zeros(5)),
+                    ..Default::default()
+                };
+                (format!("Two subs_{}", index + 1), vec![curve])
+            })
+            .collect();
+        let mut config = RoomConfig::default();
+        config.optimizer.min_freq = 20.0;
+        config.optimizer.max_freq = 16_000.0;
+        config.speakers.insert(
+            input.into(),
+            SpeakerConfig::MultiSub(roomeq_model::MultiSubGroup {
+                name: input.into(),
+                speaker_name: None,
+                subwoofers: vec![],
+                allpass_optimization: false,
+                joint_optimization: false,
+            }),
+        );
+        let playback = replay_final_physical_seat(
+            &result,
+            &physical,
+            input,
+            0,
+            &config,
+            48_000.0,
+            Path::new("."),
+            "training",
+        )
+        .expect("a standalone subwoofer needs evidence only in its measured band");
+        assert_eq!(*playback.baseline.freq.last().unwrap(), 199.951172);
+        assert_eq!(playback.baseline.freq, playback.delivered.freq);
+        assert!(
+            playback
+                .baseline
+                .spl
+                .iter()
+                .all(|spl| (*spl - 76.0206).abs() < 0.001)
+        );
+
+        // The same short captures must not silently narrow a full-range sum.
+        config.speakers.clear();
+        let error = replay_final_physical_seat(
+            &result,
+            &physical,
+            input,
+            0,
+            &config,
+            48_000.0,
+            Path::new("."),
+            "training",
+        )
+        .expect_err("full-range driver sums still require full-band evidence");
+        assert!(
+            error
+                .to_string()
+                .contains("insufficient summation evidence")
+        );
+    }
     #[test]
     fn training_labels_follow_source_and_original_index_without_inference() {
         let captures = vec![
@@ -954,7 +3614,10 @@ mod tests {
         let report = result.metadata.correction_acceptance.as_ref().unwrap();
         assert!(!report.accepted);
         assert_eq!(report.decision, roomeq_model::CorrectionDecision::Rejected);
-        assert_eq!(serde_json::to_value(report).unwrap()["decision"], "rejected");
+        assert_eq!(
+            serde_json::to_value(report).unwrap()["decision"],
+            "rejected"
+        );
         let seats = &report.acoustic_quality.as_ref().unwrap().final_seats;
         assert_eq!(seats.len(), 2);
         assert_eq!(seats[1].physical_outputs, vec!["left"]);
@@ -962,23 +3625,346 @@ mod tests {
     }
 
     #[test]
+    fn completed_routed_rejection_retains_native_gate_evidence() {
+        let (mut result, mut peak, flat) = fixture();
+        let filter = math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            120.0,
+            48_000.0,
+            1.0,
+            -6.0,
+        );
+        let transfer =
+            roomeq_engine::response::compute_peq_complex_response(&[filter], &peak.freq, 48_000.0);
+        peak.spl = ndarray::Array1::from_iter(
+            flat.spl
+                .iter()
+                .zip(transfer.iter())
+                .map(|(level, value)| level - 20.0 * value.norm().log10()),
+        );
+        result
+            .channel_results
+            .get_mut("left")
+            .unwrap()
+            .initial_curve = peak.clone();
+        result.channels.get_mut("left").unwrap().initial_curve = Some((&peak).into());
+        result.channels.get_mut("left").unwrap().target_curve = Some((&flat).into());
+        result.channels.get_mut("left").unwrap().plugins.push(
+            roomeq_engine::topology::mark_route_owned_plugin(
+                roomeq_engine::output::create_crossover_plugin("LR24", 5.0, "high"),
+            ),
+        );
+        super::super::validation_scorecard::defer_native_routed_acceptance(&mut result);
+        let captures = vec![Capture {
+            channel: "left".into(),
+            driver: None,
+            seat_labels: None,
+            curves: vec![peak, flat],
+        }];
+        let error = validate_final_seats(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("seat 1"), "{error}");
+        let report = result.metadata.correction_acceptance.as_ref().unwrap();
+        assert!(!report.accepted);
+        assert_eq!(report.outcome, roomeq_model::RoomEqOutcome::Rejected);
+        assert!(
+            report
+                .observations
+                .contains(&"native_routed_acceptance_rejected".into())
+        );
+        assert!(
+            !report
+                .observations
+                .contains(&"native_routed_acceptance_pending".into())
+        );
+        assert_eq!(
+            report.acoustic_quality.as_ref().unwrap().final_seats.len(),
+            2
+        );
+        let checks = roomeq_quality::runtime_acceptance_failure_checks(report);
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.id == "worst_position_regressed"
+                    && check.observed.is_some()
+                    && check.limit == Some(-0.25))
+        );
+        restore_structural_baseline(&mut result);
+        super::super::validation_scorecard::defer_native_routed_acceptance(&mut result);
+        validate_final_seats(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap();
+        assert!(
+            !result
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .unwrap()
+                .observations
+                .contains(&"native_routed_acceptance_rejected".into())
+        );
+    }
+
+    #[test]
+    fn independent_group_replays_declared_physical_outputs_under_their_owner() {
+        let (mut result, _, mut flat) = fixture();
+        flat.phase = Some(ndarray::Array1::zeros(flat.freq.len()));
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.plugins.clear();
+        chain.drivers = Some(
+            ["Sub1", "Sub2"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| roomeq_model::DriverDspChain {
+                    measured_acoustics: None,
+                    name: name.into(),
+                    index,
+                    plugins: vec![],
+                    initial_curve: None,
+                    measured_band_hz: None,
+                })
+                .collect(),
+        );
+        let captures: Vec<_> = ["Sub1", "Sub2"]
+            .into_iter()
+            .map(|name| Capture {
+                channel: name.into(),
+                driver: None,
+                seat_labels: None,
+                curves: vec![flat.clone(), flat.clone()],
+            })
+            .collect();
+        let baseline = result.clone();
+        validate_final_seats_impl(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+            FinalSeatReplayContext {
+                baseline: Some(&baseline),
+                trace: None,
+            },
+        )
+        .unwrap();
+        let seats = &result
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .unwrap()
+            .acoustic_quality
+            .as_ref()
+            .unwrap()
+            .final_seats;
+        assert_eq!(seats.len(), 2);
+        for seat in seats {
+            assert_eq!(seat.physical_outputs, vec!["Sub1", "Sub2"]);
+            assert!(seat.improvement_db.abs() < 1e-8);
+        }
+
+        let mut incomplete = captures;
+        incomplete[1].curves.pop();
+        let error = validate_final_seats_impl(
+            &mut result,
+            &incomplete,
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+            FinalSeatReplayContext {
+                baseline: Some(&baseline),
+                trace: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("singleton captures are not broadcast")
+        );
+
+        let duplicate = result.channels["left"].clone();
+        result.channels.insert("duplicate".into(), duplicate);
+        assert!(
+            independent_input_channels(&incomplete, &result)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous DSP owners")
+        );
+        result.channels.clear();
+        assert!(
+            independent_input_channels(&incomplete, &result)
+                .unwrap_err()
+                .to_string()
+                .contains("no DSP owner")
+        );
+    }
+
+    #[test]
+    fn final_seat_overlap_preserves_per_input_support_and_reports_disjoint_inputs() {
+        let seat = |input: &str, index, band| FinalSeatEvaluation {
+            partition: "training".into(),
+            logical_input: input.into(),
+            seat_index: index,
+            seat_label: None,
+            physical_outputs: vec![input.into()],
+            pre_summation_support: vec![],
+            post_summation_support: vec![],
+            unassessed_bands_hz: vec![],
+            evaluated_band_hz: band,
+            pre_weighted_rms_db: 0.0,
+            post_weighted_rms_db: 0.0,
+            improvement_db: 0.0,
+            improvement_lower_bound_db: 0.0,
+            band_improvement_db: None,
+        };
+        let mut seats = vec![
+            seat("sub", 0, [20.0, 150.0]),
+            seat("sub", 1, [25.0, 140.0]),
+            seat("main", 0, [200.0, 20000.0]),
+            seat("main", 1, [250.0, 18000.0]),
+        ];
+        assert_eq!(final_seat_overlap(&seats).unwrap(), None);
+        assert_eq!(
+            final_seat_overlap(&seats[..2]).unwrap(),
+            Some([25.0, 140.0])
+        );
+
+        // A held-out seat of the SAME input still needs common support.
+        seats[1].partition = "held_out".into();
+        seats[1].evaluated_band_hz = [160.0, 200.0];
+        assert!(
+            final_seat_overlap(&seats)
+                .unwrap_err()
+                .to_string()
+                .contains("input 'sub' has no common supported frequency band")
+        );
+        seats[1].evaluated_band_hz = [f64::NAN, 200.0];
+        assert!(final_seat_overlap(&seats).is_err());
+        assert!(final_seat_overlap(&[]).is_err());
+
+        let (mut result, _, flat) = fixture();
+        result.channels.get_mut("left").unwrap().plugins.clear();
+        let baseline = result.clone();
+        validate_final_seats_impl(
+            &mut result,
+            &[Capture {
+                channel: "left".into(),
+                driver: None,
+                seat_labels: None,
+                curves: vec![flat.clone(), flat],
+            }],
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+            FinalSeatReplayContext {
+                baseline: Some(&baseline),
+                trace: None,
+            },
+        )
+        .unwrap();
+        let mut sub = result
+            .metadata
+            .correction_acceptance
+            .unwrap()
+            .acoustic_quality
+            .unwrap();
+        sub.measurement_overlap_hz = Some([20.0, 150.0]);
+        let mut main = sub.clone();
+        main.measurement_overlap_hz = Some([200.0, 20000.0]);
+        let aggregate = super::super::room_optimization_result::aggregate_runtime_quality(
+            &[sub.clone(), main],
+            Default::default(),
+            20.0,
+            20000.0,
+        )
+        .unwrap();
+        assert_eq!(aggregate.measurement_overlap_hz, None);
+        assert_eq!(aggregate.training.frozen_grid_residual.len(), 4);
+        assert_eq!(aggregate.training.curve_count, 4);
+        assert_eq!(
+            aggregate
+                .training
+                .frozen_grid_residual
+                .iter()
+                .map(|receipt| receipt.curve_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(
+            aggregate
+                .training
+                .frozen_grid_residual
+                .iter()
+                .all(|receipt| receipt.logical_input.as_deref() == Some("left"))
+        );
+        let json = serde_json::to_value(&aggregate).unwrap();
+        assert!(json.get("measurement_overlap_hz").is_none());
+        let decoded: roomeq_model::AcousticQualityScorecard = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.measurement_overlap_hz, None);
+        let legacy = serde_json::to_value(&sub).unwrap();
+        assert_eq!(
+            legacy["measurement_overlap_hz"],
+            serde_json::json!([20.0, 150.0])
+        );
+        let decoded: roomeq_model::AcousticQualityScorecard =
+            serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.measurement_overlap_hz, Some([20.0, 150.0]));
+    }
+
+    #[test]
     fn final_seat_rejection_retains_both_shape_and_output_failures() {
         let (mut result, _, flat) = fixture();
         result.channels.get_mut("left").unwrap().plugins = vec![
             roomeq_engine::output::create_eq_plugin(&[math_audio_iir_fir::Biquad::new(
-                math_audio_iir_fir::BiquadFilterType::Peak, 120.0, 48_000.0, 0.5, -30.0,
+                math_audio_iir_fir::BiquadFilterType::Peak,
+                120.0,
+                48_000.0,
+                0.5,
+                -30.0,
             )]),
         ];
-        let captures = vec![Capture { channel: "left".into(), driver: None,
-            seat_labels: None, curves: vec![flat.clone(), flat] }];
-        let error = validate_final_seats(&mut result, &captures, &HashMap::new(),
-            &RoomConfig::default(), 48_000.0, Path::new(".")).unwrap_err();
+        let captures = vec![Capture {
+            channel: "left".into(),
+            driver: None,
+            seat_labels: None,
+            curves: vec![flat.clone(), flat],
+        }];
+        let error = validate_final_seats(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &RoomConfig::default(),
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap_err();
         let report = result.metadata.correction_acceptance.as_ref().unwrap();
         for reason in ["worst_position_regressed", "unexplained_useful_output_loss"] {
-            assert!(report.violations.iter().any(|v| v == reason), "missing {reason}: {report:?}");
+            assert!(
+                report.violations.iter().any(|v| v == reason),
+                "missing {reason}: {report:?}"
+            );
         }
         assert!(error.to_string().contains("regressed"));
         assert!(error.to_string().contains("useful output"));
+        assert!(error.to_string().contains("seat 0"));
+        assert!(error.to_string().contains("seat 1"));
         assert_eq!(report.decision, roomeq_model::CorrectionDecision::Rejected);
     }
 
@@ -986,25 +3972,60 @@ mod tests {
     fn final_seat_replay_rejects_sidecar_conflicting_with_retained_fir() {
         let directory = tempfile::tempdir().unwrap();
         let (mut result, _, flat) = fixture();
-        let plugins = vec![roomeq_engine::output::create_convolution_plugin("retained.wav")];
+        let plugins = vec![roomeq_engine::output::create_convolution_plugin(
+            "retained.wav",
+        )];
         result.channels.get_mut("left").unwrap().plugins = plugins.clone();
         let tap = 0.123456789_f64;
         result.channel_results.get_mut("left").unwrap().fir_coeffs = Some(vec![tap]);
         let write = |value: f32| {
-            let mut writer = hound::WavWriter::create(directory.path().join("retained.wav"), hound::WavSpec {
-                channels: 1, sample_rate: 48000, bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            }).unwrap();
+            let mut writer = hound::WavWriter::create(
+                directory.path().join("retained.wav"),
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate: 48000,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                },
+            )
+            .unwrap();
             writer.write_sample(value).unwrap();
             writer.finalize().unwrap();
         };
         write(tap as f32);
-        assert!(super::apply(&result, "left", plugins.clone(), &flat, false, 48000.0, directory.path()).is_ok(),
-            "normal float32 serialization rounding must remain valid");
+        assert!(
+            super::apply(
+                &result,
+                "left",
+                plugins.clone(),
+                &flat,
+                false,
+                48000.0,
+                directory.path()
+            )
+            .is_ok(),
+            "normal float32 serialization rounding must remain valid"
+        );
         write(0.5);
-        let outcome = super::apply(&result, "left", plugins, &flat, false, 48000.0, directory.path());
-        assert!(outcome.is_err(), "stale sidecar silently replaced retained FIR evidence");
-        assert!(outcome.unwrap_err().to_string().contains("retained FIR coefficients"));
+        let outcome = super::apply(
+            &result,
+            "left",
+            plugins,
+            &flat,
+            false,
+            48000.0,
+            directory.path(),
+        );
+        assert!(
+            outcome.is_err(),
+            "stale sidecar silently replaced retained FIR evidence"
+        );
+        assert!(
+            outcome
+                .unwrap_err()
+                .to_string()
+                .contains("retained FIR coefficients")
+        );
     }
 
     #[test]
@@ -1057,10 +4078,13 @@ mod tests {
                             < 1e-8
                     );
                 }
-            if !authorized {
-                assert!(!report.accepted);
-                assert_eq!(report.decision, roomeq_model::CorrectionDecision::Rejected);
-                assert_eq!(serde_json::to_value(report).unwrap()["decision"], "rejected");
+                if !authorized {
+                    assert!(!report.accepted);
+                    assert_eq!(report.decision, roomeq_model::CorrectionDecision::Rejected);
+                    assert_eq!(
+                        serde_json::to_value(report).unwrap()["decision"],
+                        "rejected"
+                    );
                     assert!(
                         report
                             .violations
@@ -1069,6 +4093,153 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn useful_output_budget_does_not_waive_residual_regression() {
+        for budget in [3.0, 5.0] {
+            let (mut result, _, flat) = fixture();
+            result.channels.get_mut("left").unwrap().plugins =
+                vec![roomeq_engine::output::create_convolution_plugin(
+                    "output-budget.wav",
+                )];
+            result.channel_results.get_mut("left").unwrap().fir_coeffs =
+                Some(vec![10.0_f64.powf(-4.0 / 20.0)]);
+            let captures = vec![Capture {
+                channel: "left".into(),
+                driver: None,
+                seat_labels: None,
+                curves: vec![flat.clone(), flat],
+            }];
+            let mut config = RoomConfig::default();
+            config.optimizer.finalization.max_useful_output_loss_db = budget;
+            let outcome = validate_final_seats(
+                &mut result,
+                &captures,
+                &HashMap::new(),
+                &config,
+                48_000.0,
+                Path::new("."),
+            );
+            assert!(outcome.is_err(), "budget={budget}: {outcome:?}");
+            let report = result.metadata.correction_acceptance.as_ref().unwrap();
+            assert!(
+                report
+                    .violations
+                    .contains(&"worst_position_regressed".into())
+            );
+            assert_eq!(
+                report
+                    .violations
+                    .contains(&"unexplained_useful_output_loss".into()),
+                budget < 4.0,
+            );
+            assert_eq!(config.optimizer.finalization.default_input_peak, 1.0);
+        }
+    }
+
+    #[test]
+    fn subwoofer_useful_output_exemption_does_not_waive_residual_regression() {
+        for name in ["LFE", "Sub1", "L", "R", "SL", "TFL"] {
+            let (mut result, _, flat) = fixture();
+            let mut channel = result.channels.remove("left").unwrap();
+            channel.channel = name.into();
+            channel.plugins = vec![roomeq_engine::output::create_convolution_plugin("loss.wav")];
+            result.channels.insert(name.into(), channel);
+            let mut channel_result = result.channel_results.remove("left").unwrap();
+            channel_result.name = name.into();
+            channel_result.fir_coeffs = Some(vec![10.0_f64.powf(-10.0 / 20.0)]);
+            result.channel_results.insert(name.into(), channel_result);
+            let captures = vec![Capture {
+                channel: name.into(),
+                driver: None,
+                seat_labels: None,
+                curves: vec![flat.clone(), flat],
+            }];
+            let outcome = validate_final_seats(
+                &mut result,
+                &captures,
+                &HashMap::new(),
+                &RoomConfig::default(),
+                48_000.0,
+                Path::new("."),
+            );
+            assert!(outcome.is_err(), "{name}: {outcome:?}");
+            let report = result.metadata.correction_acceptance.as_ref().unwrap();
+            assert!(
+                report
+                    .violations
+                    .contains(&"worst_position_regressed".into())
+            );
+            assert_eq!(
+                report
+                    .violations
+                    .contains(&"unexplained_useful_output_loss".into()),
+                !matches!(name, "LFE" | "Sub1"),
+            );
+            let evidence = result
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .unwrap()
+                .acoustic_quality
+                .as_ref()
+                .unwrap();
+            assert_eq!(evidence.useful_output.len(), 2);
+            assert!(
+                evidence
+                    .useful_output
+                    .iter()
+                    .all(|seat| (seat.unexplained_loss_rms_db - 10.0).abs() < 1e-5)
+            );
+        }
+    }
+
+    #[test]
+    fn independent_bass_only_correction_still_checks_the_speaker_passband() {
+        let (mut result, _, flat) = fixture();
+        let mut config = RoomConfig::default();
+        config.optimizer.min_freq = 40.0;
+        config.optimizer.max_freq = 200.0;
+        let cut = math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Highshelf,
+            1_000.0,
+            48_000.0,
+            0.7,
+            -12.0,
+        );
+        result.channels.get_mut("left").unwrap().plugins =
+            vec![roomeq_engine::output::create_eq_plugin(&[cut])];
+        let captures = vec![Capture {
+            channel: "left".into(),
+            driver: None,
+            seat_labels: None,
+            curves: vec![flat.clone(), flat],
+        }];
+        validate_final_seats(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .expect_err("a bass-only request must not hide treble loss");
+        let report = result.metadata.correction_acceptance.as_ref().unwrap();
+        let quality = report.acoustic_quality.as_ref().unwrap();
+        assert!(
+            quality
+                .final_seats
+                .iter()
+                .all(|seat| seat.evaluated_band_hz[1] > 1_000.0)
+        );
+        assert_eq!(quality.correction_band_hz, Some([40.0, 200.0]));
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v == "unexplained_useful_output_loss")
+        );
     }
 
     #[test]
@@ -1109,6 +4280,49 @@ mod tests {
             score.useful_output[1].logical_input.as_deref(),
             Some("left")
         );
+    }
+
+    #[test]
+    fn native_capture_preserves_distinct_grids_and_auxiliary_evidence() {
+        let first = Curve {
+            freq: vec![40.0, 80.0, 120.0].into(),
+            spl: vec![80.0; 3].into(),
+            ..Default::default()
+        };
+        let second = Curve {
+            freq: vec![20.0, 40.0, 79.0, 80.0, 81.0, 120.0, 200.0].into(),
+            spl: vec![80.0, 80.0, 80.0, 95.0, 80.0, 80.0, 80.0].into(),
+            phase: Some(vec![0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0].into()),
+            coherence: Some(vec![0.9; 7].into()),
+            noise_floor_db: Some(vec![20.0; 7].into()),
+            ..Default::default()
+        };
+        let originals = vec![first, second];
+        let config = RoomConfig {
+            speakers: HashMap::from([(
+                "left".into(),
+                SpeakerConfig::Single(MeasurementSource::InMemoryMultiple(originals.clone())),
+            )]),
+            ..Default::default()
+        };
+        let (captured, receipt) = capture_with_receipt(&config, &HashMap::new()).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(receipt.checks[0].diagnostic.as_ref().unwrap()).unwrap();
+        for (index, original) in originals.iter().enumerate() {
+            assert_eq!(
+                payload["takes"][index]["curve"],
+                serde_json::to_value(original).unwrap()
+            );
+        }
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].curves.len(), originals.len());
+        for (actual, original) in captured[0].curves.iter().zip(&originals) {
+            assert_eq!(actual.freq, original.freq);
+            assert_eq!(actual.spl, original.spl);
+            assert_eq!(actual.phase, original.phase);
+            assert_eq!(actual.coherence, original.coherence);
+            assert_eq!(actual.noise_floor_db, original.noise_floor_db);
+        }
     }
 
     #[test]
@@ -1167,6 +4381,32 @@ mod tests {
     }
 
     #[test]
+    fn routed_single_position_captures_do_not_compare_measurement_names() {
+        // Regression (measured 2.1_sigberg2): single-seat file captures are
+        // labeled with their measurement names ("Left" vs "Sub"), which are
+        // not seat orders. Routed replay must accept them.
+        let (result, _, flat) = routed_fixture();
+        let captures = vec![
+            Capture {
+                channel: "left".into(),
+                driver: None,
+                curves: vec![flat.clone()],
+                seat_labels: Some(vec!["Left".into()]),
+            },
+            Capture {
+                channel: "sub".into(),
+                driver: None,
+                curves: vec![flat],
+                seat_labels: Some(vec!["Sub".into()]),
+            },
+        ];
+        let physical = physical_captures(&captures, &result)
+            .expect("single-position routed captures must replay");
+        assert!(physical.contains_key("left"));
+        assert!(physical.contains_key("sub"));
+    }
+
+    #[test]
     fn branch_sum_preserves_each_native_grid_and_rejects_unknown_phase() {
         let (_, _, mut flat) = fixture();
         flat.phase = Some(ndarray::Array1::zeros(flat.freq.len()));
@@ -1207,7 +4447,8 @@ mod tests {
                 subwoofers: Some(roomeq_model::SubwooferSystemConfig {
                     config: Default::default(),
                     crossover: None,
-                    mapping: HashMap::new(),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                 }),
                 bass_management: Some(roomeq_model::BassManagementConfig {
                     enabled: true,
@@ -1244,11 +4485,14 @@ mod tests {
         };
         report.routing_graph = Some(BassManagementRoutingGraph {
             physical_sub_output: "sub".into(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
             input_channels: vec!["left".into()],
             output_channels: vec!["left".into(), "sub".into()],
             routes: vec![route("left", 0.0, 0.0), route("sub", -6.0, 2.0)],
             matrix: None,
             input_trim_db: HashMap::new(),
+            post_dsp_main_alignment_band_hz: None,
             advisories: Vec::new(),
         });
         result.metadata.bass_management = Some(report);
@@ -1256,23 +4500,803 @@ mod tests {
     }
 
     #[test]
+    fn native_main_target_isolated_from_shared_sub_and_preserves_calibration() {
+        use num_complex::Complex64;
+        use roomeq_engine::topology::{mark_plugin_stage, mark_route_owned_plugin};
+        fn refresh_fixture(result: &mut RoomOptimizationResult, fs: f64, dir: &Path) {
+            // Populate the same raw named-chain and full routed response planes
+            // production refresh_responses freezes before native acceptance.
+            for (name, channel) in &mut result.channel_results {
+                let chain = result.channels.get_mut(name).unwrap();
+                channel.final_curve =
+                    super::super::room_optimization_result::apply_logical_channel_chain(
+                        chain,
+                        &channel.initial_curve,
+                        fs,
+                        dir,
+                    )
+                    .unwrap();
+                chain.initial_curve = Some((&channel.initial_curve).into());
+                chain.final_curve = Some((&channel.final_curve).into());
+                chain.eq_response = None;
+            }
+            let bass = result.metadata.bass_management.as_ref().unwrap();
+            result.deployed_source_curves =
+                crate::topology::reconstruct_deployed_source_curves_unenforced(
+                    &result.channels,
+                    &HashMap::new(),
+                    bass.routing_graph.as_ref().unwrap(),
+                    bass.optimization.as_ref(),
+                    fs,
+                    dir,
+                )
+                .unwrap();
+        }
+        let fs = 48_000.0;
+        let dir = Path::new(".");
+        let mut desired = crate::test_fixtures::flat_curve();
+        let mut frequencies = desired.freq.to_vec();
+        frequencies.extend([100.0, 500.0]);
+        frequencies.sort_by(f64::total_cmp);
+        frequencies.dedup();
+        desired.freq = frequencies.into();
+        desired.spl = desired.freq.mapv(|f| 80.0 - 2.0 * (f / 200.0).log2());
+        desired.phase = Some(desired.freq.mapv(|f| 17.0 - 360.0 * f * 0.0007));
+        let mut sub = desired.clone();
+        sub.spl.mapv_inplace(|level| level - 1.0);
+        sub.phase = Some(sub.freq.mapv(|f| -31.0 - 360.0 * f * 0.0011));
+        let peak = |gain| {
+            roomeq_engine::output::create_eq_plugin(&[math_audio_iir_fir::Biquad::new(
+                math_audio_iir_fir::BiquadFilterType::Peak,
+                220.0,
+                fs,
+                0.9,
+                gain,
+            )])
+        };
+        let mut measurement_chain =
+            crate::test_fixtures::single_channel_room_result("left").channels["left"].clone();
+        measurement_chain.plugins = vec![peak(4.0)];
+        let measured = super::super::room_optimization_result::apply_logical_channel_chain(
+            &measurement_chain,
+            &desired,
+            fs,
+            dir,
+        )
+        .unwrap();
+        let delay = |f: f64, ms: f64| {
+            Complex64::from_polar(1.0, -2.0 * std::f64::consts::PI * f * ms / 1_000.0)
+        };
+        // Independent LR24 coefficients: two Butterworth biquads, no route or
+        // production crossover response helper contributes to this target.
+        let crossover = |f: f64, high: bool| {
+            let omega = 2.0 * std::f64::consts::PI * 60.0 / fs;
+            let c = omega.cos();
+            let a = omega.sin() / std::f64::consts::SQRT_2;
+            let b = if high {
+                [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0]
+            } else {
+                [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0]
+            };
+            let z = Complex64::from_polar(1.0, -2.0 * std::f64::consts::PI * f / fs);
+            let one =
+                (b[0] + b[1] * z + b[2] * z * z) / (1.0 + a - 2.0 * c * z + (1.0 - a) * z * z);
+            one * one
+        };
+        for alignment in [-3.0, 3.0] {
+            let (mut baseline, mut config, _) = routed_fixture();
+            config.optimizer.min_freq = 100.0;
+            config.optimizer.max_freq = 500.0;
+            let graph = baseline
+                .metadata
+                .bass_management
+                .as_mut()
+                .unwrap()
+                .routing_graph
+                .as_mut()
+                .unwrap();
+            graph.routes[0].gain_db = alignment - 6.0;
+            graph.routes[0].gain_linear = 10.0_f64.powf((alignment - 6.0) / 20.0);
+            graph.routes[0].matrix_gain = graph.routes[0].gain_linear;
+            graph.routes[0].delay_ms = 0.65;
+            graph.routes[0].high_pass_hz = Some(60.0);
+            graph.routes[1].gain_db = alignment - 12.0;
+            graph.routes[1].gain_linear = 10.0_f64.powf((alignment - 12.0) / 20.0);
+            graph.routes[1].matrix_gain = graph.routes[1].gain_linear;
+            graph.routes[1].delay_ms = 1.7;
+            graph.routes[1].low_pass_hz = Some(60.0);
+            graph.routes[1].polarity_inverted = true;
+            let mut coherent_target = desired.clone();
+            coherent_target.phase = None;
+            for (i, f) in desired.freq.iter().copied().enumerate() {
+                let main_pressure = Complex64::from_polar(
+                    10.0_f64.powf(desired.spl[i] / 20.0),
+                    desired.phase.as_ref().unwrap()[i].to_radians(),
+                );
+                let sub_pressure = Complex64::from_polar(
+                    10.0_f64.powf(sub.spl[i] / 20.0),
+                    sub.phase.as_ref().unwrap()[i].to_radians(),
+                );
+                let routed = delay(f, 0.9)
+                    * (main_pressure
+                        * crossover(f, true)
+                        * delay(f, 0.65)
+                        * 10.0_f64.powf((alignment - 6.0) / 20.0)
+                        - sub_pressure
+                            * crossover(f, false)
+                            * delay(f, 2.1)
+                            * 10.0_f64.powf((alignment - 12.0) / 20.0));
+                coherent_target.spl[i] = 20.0 * routed.norm().log10();
+            }
+            let main_chain = baseline.channels.get_mut("left").unwrap();
+            main_chain.plugins = vec![
+                mark_plugin_stage(roomeq_engine::output::create_delay_plugin(0.9), "pre_route"),
+                mark_route_owned_plugin(roomeq_engine::output::create_gain_plugin(alignment)),
+                mark_route_owned_plugin(roomeq_engine::output::create_gain_plugin(-6.0)),
+                mark_route_owned_plugin(roomeq_engine::output::create_delay_plugin(0.65)),
+                mark_route_owned_plugin(roomeq_engine::output::create_crossover_plugin(
+                    "LR24", 60.0, "high",
+                )),
+            ];
+            let mut calibrated = desired.clone();
+            calibrated.phase = None;
+            calibrated.spl.mapv_inplace(|level| level + alignment);
+            main_chain.physical_correction_target = Some(roomeq_model::PhysicalCorrectionTarget {
+                curve: (&calibrated).into(),
+                measurement_alignment_gain_db: alignment,
+            });
+            main_chain.target_curve = Some((&coherent_target).into());
+            baseline.channels.get_mut("sub").unwrap().plugins = vec![mark_plugin_stage(
+                roomeq_engine::output::create_delay_plugin(0.4),
+                "post_route",
+            )];
+            for (name, curve) in [("left", measured.clone()), ("sub", sub.clone())] {
+                let channel = baseline.channel_results.get_mut(name).unwrap();
+                channel.initial_curve = curve.clone();
+                channel.final_curve = curve.clone();
+                let chain = baseline.channels.get_mut(name).unwrap();
+                chain.initial_curve = Some((&curve).into());
+                channel.final_curve =
+                    super::super::room_optimization_result::apply_logical_channel_chain(
+                        chain, &curve, fs, dir,
+                    )
+                    .unwrap();
+                chain.final_curve = Some((&channel.final_curve).into());
+            }
+            refresh_fixture(&mut baseline, fs, dir);
+            let physical = BTreeMap::from([
+                ("left".into(), vec![measured.clone()]),
+                ("sub".into(), vec![sub.clone()]),
+            ]);
+            let captures = vec![
+                Capture {
+                    channel: "left".into(),
+                    driver: None,
+                    curves: vec![measured.clone()],
+                    seat_labels: None,
+                },
+                Capture {
+                    channel: "sub".into(),
+                    driver: None,
+                    curves: vec![sub.clone()],
+                    seat_labels: None,
+                },
+            ];
+            let context = ReplayContext {
+                config: &config,
+                partition: "training",
+                fs,
+                dir,
+            };
+            for (gain, good) in [(-4.0, true), (4.0, false)] {
+                let mut candidate = baseline.clone();
+                candidate
+                    .channels
+                    .get_mut("left")
+                    .unwrap()
+                    .plugins
+                    .push(mark_plugin_stage(peak(gain), "post_route"));
+                refresh_fixture(&mut candidate, fs, dir);
+                let mut trace = Vec::new();
+                let score = physical_main_quality(
+                    &candidate,
+                    &baseline,
+                    &physical,
+                    "left",
+                    0,
+                    &context,
+                    PhysicalMainReplayContext {
+                        target: Some(&coherent_target),
+                        trace: Some(&mut trace),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(trace[0].baseline_measurement_contributors.len(), 1);
+                let target = trace[0].target_curve.as_ref().unwrap();
+                assert!(
+                    target.phase.is_none(),
+                    "magnitude target cannot manufacture phase"
+                );
+                for (i, f) in target.freq.iter().copied().enumerate() {
+                    let expected = 80.0 - 2.0 * (f / 200.0).log2() + alignment - 6.0
+                        + 20.0 * crossover(f, true).norm().log10();
+                    assert!(
+                        (target.spl[i] - expected).abs() < 1e-7,
+                        "isolated target includes wrong transfer at {f}: {} vs {expected}",
+                        target.spl[i]
+                    );
+                }
+                assert_eq!(
+                    score.training.post_weighted_rms_median_db
+                        < score.training.pre_weighted_rms_median_db,
+                    good
+                );
+                let mut louder_sub = physical.clone();
+                louder_sub.get_mut("sub").unwrap()[0]
+                    .spl
+                    .mapv_inplace(|level| level + 20.0);
+                let mut isolated_trace = Vec::new();
+                physical_main_quality(
+                    &candidate,
+                    &baseline,
+                    &louder_sub,
+                    "left",
+                    0,
+                    &context,
+                    PhysicalMainReplayContext {
+                        target: Some(&coherent_target),
+                        trace: Some(&mut isolated_trace),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&isolated_trace[0].target_curve).unwrap(),
+                    serde_json::to_value(&trace[0].target_curve).unwrap()
+                );
+                let observation =
+                    passband_observation_config(&config, &baseline, &physical, "left", 0).unwrap();
+                let native_context = ReplayContext {
+                    config: &observation,
+                    ..context
+                };
+                let (native_pre, _) =
+                    replay(&baseline, &physical, "left", 0, true, &native_context).unwrap();
+                let (native_post, _) =
+                    replay(&candidate, &physical, "left", 0, false, &native_context).unwrap();
+                let native_score =
+                    roomeq_engine::quality::evaluate_acoustic_quality_with_permitted_gain(
+                        std::slice::from_ref(&native_pre.curve),
+                        std::slice::from_ref(&native_post.curve),
+                        &[],
+                        &[],
+                        Some(&coherent_target),
+                        roomeq_engine::quality::QualityEvaluationConfig {
+                            min_freq_hz: observation
+                                .optimizer
+                                .min_freq
+                                .max(native_pre.curve.freq[0])
+                                .max(native_post.curve.freq[0])
+                                .max(
+                                    excursion_supported_min_frequency(&observation).unwrap_or(0.0),
+                                ),
+                            max_freq_hz: observation
+                                .optimizer
+                                .max_freq
+                                .min(*native_pre.curve.freq.last().unwrap())
+                                .min(*native_post.curve.freq.last().unwrap()),
+                            schroeder_hz: roomeq_model::auto_tune::resolved_schroeder_hz(
+                                &observation.optimizer,
+                            ),
+                            normalize_level: false,
+                        },
+                        Default::default(),
+                        observation
+                            .optimizer
+                            .permitted_output_gain_db
+                            .get("left")
+                            .copied()
+                            .unwrap_or(0.0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    native_score.training.post_weighted_rms_median_db
+                        < native_score.training.pre_weighted_rms_median_db,
+                    good,
+                    "full native coherent metrics must distinguish restoring/worsening filters at calibration={alignment}"
+                );
+                if good {
+                    // Verify real native coherent replay against the independent
+                    // Main+Sub target before running its unchanged acceptance gates.
+                    let (actual, outputs) =
+                        replay(&candidate, &physical, "left", 0, false, &context).unwrap();
+                    assert_eq!(outputs, vec!["left", "sub"]);
+                    let expected =
+                        autoeq_core::interpolate_log_space(&actual.curve.freq, &coherent_target);
+                    assert!(
+                        actual
+                            .curve
+                            .spl
+                            .iter()
+                            .zip(expected.spl)
+                            .all(|(a, b)| (a - b).abs() < 1e-7)
+                    );
+                    super::super::validation_scorecard::defer_native_routed_acceptance(
+                        &mut candidate,
+                    );
+                    validate_candidate_final_seats(
+                        &mut candidate,
+                        &baseline,
+                        &captures,
+                        &HashMap::new(),
+                        &config,
+                        fs,
+                        dir,
+                    )
+                    .unwrap();
+                    assert!(
+                        candidate
+                            .metadata
+                            .correction_acceptance
+                            .as_ref()
+                            .unwrap()
+                            .accepted
+                    );
+                } else {
+                    super::super::validation_scorecard::defer_native_routed_acceptance(
+                        &mut candidate,
+                    );
+                    assert!(
+                        validate_candidate_final_seats(
+                            &mut candidate,
+                            &baseline,
+                            &captures,
+                            &HashMap::new(),
+                            &config,
+                            fs,
+                            dir
+                        )
+                        .is_err()
+                    );
+                    assert!(
+                        !candidate
+                            .metadata
+                            .correction_acceptance
+                            .as_ref()
+                            .unwrap()
+                            .accepted
+                    );
+                }
+            }
+            let mut ambiguous = baseline.clone();
+            let graph = ambiguous
+                .metadata
+                .bass_management
+                .as_mut()
+                .unwrap()
+                .routing_graph
+                .as_mut()
+                .unwrap();
+            graph.routes.push(graph.routes[0].clone());
+            assert!(
+                physical_main_quality(
+                    &ambiguous,
+                    &ambiguous,
+                    &physical,
+                    "left",
+                    0,
+                    &context,
+                    PhysicalMainReplayContext {
+                        target: Some(&coherent_target),
+                        trace: None
+                    }
+                )
+                .is_err()
+            );
+            let mut truncated = baseline.clone();
+            let target = truncated
+                .channels
+                .get_mut("left")
+                .unwrap()
+                .physical_correction_target
+                .as_mut()
+                .unwrap();
+            target.curve.freq.remove(0);
+            target.curve.spl.remove(0);
+            assert!(
+                physical_main_quality(
+                    &truncated,
+                    &baseline,
+                    &physical,
+                    "left",
+                    0,
+                    &context,
+                    PhysicalMainReplayContext {
+                        target: Some(&coherent_target),
+                        trace: None
+                    }
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("does not cover measured native support")
+            );
+        }
+    }
+
+    fn lfe_to_sub_fixture(
+        add_second_sub: bool,
+    ) -> (RoomOptimizationResult, RoomConfig, Curve, Vec<Capture>) {
+        let (mut result, config, flat) = routed_fixture();
+        let sub_chain = result.channels.remove("sub").unwrap();
+        let sub_response = result.channel_results.remove("sub").unwrap();
+        result.channels.insert("Sub1".into(), sub_chain);
+        result.channel_results.insert("Sub1".into(), sub_response);
+        let mut config = config;
+        config
+            .system
+            .as_mut()
+            .unwrap()
+            .speakers
+            .insert("LFE".into(), "Sub1".into());
+        let graph = result
+            .metadata
+            .bass_management
+            .as_mut()
+            .unwrap()
+            .routing_graph
+            .as_mut()
+            .unwrap();
+        let mut lfe_route = graph.routes[1].clone();
+        lfe_route.source_channel = "LFE".into();
+        lfe_route.source_index = 0;
+        lfe_route.pre_chain_channel = None;
+        lfe_route.destination = "Sub1".into();
+        lfe_route.post_chain_channel = Some("Sub1".into());
+        lfe_route.route_kind = "lfe_lowpass_to_sub".into();
+        lfe_route.low_pass_hz = Some(120.0);
+        graph.input_channels = vec!["LFE".into()];
+        graph.routes = vec![lfe_route.clone()];
+        if add_second_sub {
+            let sub_result = crate::test_fixtures::single_channel_room_result("Sub2");
+            result
+                .channels
+                .insert("Sub2".into(), sub_result.channels["Sub2"].clone());
+            result
+                .channel_results
+                .insert("Sub2".into(), sub_result.channel_results["Sub2"].clone());
+            let mut second_route = lfe_route;
+            second_route.destination = "Sub2".into();
+            second_route.destination_index = 2;
+            second_route.post_chain_channel = Some("Sub2".into());
+            second_route.gain_db = 0.0;
+            second_route.gain_linear = 1.0;
+            second_route.matrix_gain = 1.0;
+            graph.routes.push(second_route);
+            graph.output_channels = vec!["Sub1".into(), "Sub2".into()];
+            graph.physical_sub_output = "Sub1".into();
+            graph.physical_sub_outputs = vec!["Sub1".into(), "Sub2".into()];
+        }
+        let outputs = if add_second_sub {
+            vec!["Sub1", "Sub2"]
+        } else {
+            vec!["Sub1"]
+        };
+        let captures = outputs
+            .into_iter()
+            .map(|channel| Capture {
+                channel: channel.into(),
+                driver: None,
+                curves: vec![if channel == "Sub2" {
+                    let mut curve = flat.clone();
+                    curve.spl.mapv_inplace(|level| level - 3.0);
+                    curve
+                        .phase
+                        .as_mut()
+                        .unwrap()
+                        .mapv_inplace(|phase| phase + 17.0);
+                    curve
+                } else {
+                    flat.clone()
+                }],
+                seat_labels: None,
+            })
+            .collect();
+        (result, config, flat, captures)
+    }
+
+    fn assert_trace_is_observational(
+        result: RoomOptimizationResult,
+        config: &RoomConfig,
+        captures: &[Capture],
+    ) -> (RoomOptimizationResult, Vec<UsefulOutputReplayCapture>) {
+        let baseline = result.clone();
+        let mut normal = result.clone();
+        let mut traced = result;
+        let normal_result = validate_candidate_final_seats(
+            &mut normal,
+            &baseline,
+            captures,
+            &HashMap::new(),
+            config,
+            48_000.0,
+            Path::new("."),
+        );
+        let mut trace = Vec::new();
+        let traced_result = validate_candidate_final_seats_with_diagnostic_trace(
+            &mut traced,
+            &baseline,
+            captures,
+            &HashMap::new(),
+            config,
+            48_000.0,
+            Path::new("."),
+            &mut trace,
+        );
+        assert_eq!(
+            normal_result.as_ref().map_err(ToString::to_string),
+            traced_result.as_ref().map_err(ToString::to_string),
+            "diagnostic tracing changed validation outcome"
+        );
+        let normal_report = normal.metadata.correction_acceptance.as_ref().unwrap();
+        let traced_report = traced.metadata.correction_acceptance.as_ref().unwrap();
+        assert_eq!(
+            serde_json::to_value(normal_report).unwrap(),
+            serde_json::to_value(traced_report).unwrap(),
+            "diagnostic tracing changed score or acceptance evidence"
+        );
+        (traced, trace)
+    }
+
+    #[test]
+    fn diagnostic_trace_uses_lfe_sub1_physical_capture_without_changing_validation() {
+        let (result, config, raw_sub, captures) = lfe_to_sub_fixture(false);
+        let (traced, trace) = assert_trace_is_observational(result, &config, &captures);
+        assert_eq!(trace.len(), 1);
+        let replay = &trace[0];
+        assert_eq!(replay.logical_input, "LFE");
+        assert_eq!(
+            replay
+                .baseline_measurement_contributors
+                .iter()
+                .map(|contributor| contributor.physical_output.as_str())
+                .collect::<Vec<_>>(),
+            ["Sub1"]
+        );
+        assert_eq!(
+            replay
+                .delivered_measurement_contributors
+                .iter()
+                .map(|contributor| contributor.physical_output.as_str())
+                .collect::<Vec<_>>(),
+            ["Sub1"]
+        );
+        for contributor in replay
+            .baseline_measurement_contributors
+            .iter()
+            .chain(&replay.delivered_measurement_contributors)
+        {
+            assert_eq!(contributor.measured_curve.freq, raw_sub.freq);
+            assert_eq!(contributor.measured_curve.spl, raw_sub.spl);
+        }
+        assert!(
+            traced
+                .metadata
+                .correction_acceptance
+                .as_ref()
+                .unwrap()
+                .acoustic_quality
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn diagnostic_trace_records_every_physical_contributor_to_a_logical_sum() {
+        let (result, config, _, captures) = lfe_to_sub_fixture(true);
+        let (_, trace) = assert_trace_is_observational(result, &config, &captures);
+        assert_eq!(trace.len(), 1);
+        let replay = &trace[0];
+        for contributors in [
+            &replay.baseline_measurement_contributors,
+            &replay.delivered_measurement_contributors,
+        ] {
+            assert_eq!(
+                contributors
+                    .iter()
+                    .map(|contributor| contributor.physical_output.as_str())
+                    .collect::<Vec<_>>(),
+                ["Sub1", "Sub2"]
+            );
+            for contributor in contributors {
+                let expected = captures
+                    .iter()
+                    .find(|capture| capture.channel == contributor.physical_output)
+                    .unwrap()
+                    .curves
+                    .first()
+                    .unwrap();
+                assert_eq!(contributor.measured_curve.freq, expected.freq);
+                assert_eq!(contributor.measured_curve.spl, expected.spl);
+                assert_eq!(contributor.measured_curve.phase, expected.phase);
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_trace_does_not_turn_missing_routed_capture_into_acceptance() {
+        let (result, config, flat, _) = lfe_to_sub_fixture(false);
+        let missing_sub_capture = [Capture {
+            channel: "left".into(),
+            driver: None,
+            curves: vec![flat],
+            seat_labels: None,
+        }];
+        let baseline = result.clone();
+        let mut normal = result.clone();
+        let mut traced = result;
+        let normal_error = validate_candidate_final_seats(
+            &mut normal,
+            &baseline,
+            &missing_sub_capture,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .unwrap_err()
+        .to_string();
+        let mut trace = Vec::new();
+        let traced_error = validate_candidate_final_seats_with_diagnostic_trace(
+            &mut traced,
+            &baseline,
+            &missing_sub_capture,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+            &mut trace,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(normal_error, traced_error);
+        assert!(
+            normal_error.contains("physical output 'Sub1'"),
+            "{normal_error}"
+        );
+        assert!(trace.is_empty());
+        assert_eq!(
+            serde_json::to_value(normal.metadata.correction_acceptance.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(traced.metadata.correction_acceptance.as_ref().unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn routed_spl_budget_measures_main_output_not_redirected_sub_loss() {
+        for main_loss in [0.0, 10.0] {
+            let (mut result, mut config, flat) = routed_fixture();
+            config.optimizer.min_freq = 40.0;
+            config.optimizer.max_freq = 200.0;
+            let graph = result
+                .metadata
+                .bass_management
+                .as_mut()
+                .unwrap()
+                .routing_graph
+                .as_mut()
+                .unwrap();
+            graph.routes[0].high_pass_hz = Some(80.0);
+            graph.routes[1].low_pass_hz = Some(80.0);
+            graph.routes[1].gain_db = 0.0;
+            graph.routes[1].gain_linear = 1.0;
+            graph.routes[1].matrix_gain = 1.0;
+            graph.routes[1].delay_ms = 0.0;
+            result.channels.get_mut("sub").unwrap().plugins.clear();
+            for (output, loss) in [("sub", 18.0), ("left", main_loss)] {
+                let mut gain = roomeq_engine::output::create_gain_plugin(-loss);
+                gain.parameters["room_eq_stage"] = serde_json::json!("post_route");
+                gain.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+                result.channels.get_mut(output).unwrap().plugins.push(gain);
+            }
+            let captures: Vec<_> = ["left", "sub"]
+                .into_iter()
+                .map(|channel| Capture {
+                    channel: channel.into(),
+                    driver: None,
+                    seat_labels: None,
+                    curves: vec![flat.clone(), flat.clone()],
+                })
+                .collect();
+            let error = validate_final_seats(
+                &mut result,
+                &captures,
+                &HashMap::new(),
+                &config,
+                48_000.0,
+                Path::new("."),
+            )
+            .unwrap_err();
+            let report = result.metadata.correction_acceptance.as_ref().unwrap();
+            let quality = report.acoustic_quality.as_ref().unwrap();
+            assert_eq!(quality.useful_output.len(), 2);
+            for output in &quality.useful_output {
+                assert_eq!(output.logical_input.as_deref(), Some("left"));
+                assert!(output.evaluated_band_hz[0] >= 80.0, "{output:?}");
+                assert!(output.evaluated_band_hz[1] > 1000.0);
+                assert!((output.unexplained_loss_rms_db - main_loss).abs() < 1e-6);
+            }
+            assert_eq!(
+                report
+                    .violations
+                    .iter()
+                    .any(|v| v == "unexplained_useful_output_loss"),
+                main_loss > 3.0,
+                "{error}"
+            );
+            // Exempting sub SPL loss must not authorize a damaged bass response.
+            assert!(
+                report
+                    .violations
+                    .iter()
+                    .any(|v| v == "worst_position_regressed"),
+                "{error}"
+            );
+            assert!(
+                quality
+                    .final_seats
+                    .iter()
+                    .all(|seat| seat.evaluated_band_hz[0] < 80.0)
+            );
+        }
+    }
+
+    #[test]
     fn routed_finalization_and_replay_reject_unowned_channel_stages() {
-        for tag in [None, Some(serde_json::json!(null)), Some(serde_json::json!(42)),
-            Some(serde_json::json!("post_rout"))] {
+        for tag in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!(42)),
+            Some(serde_json::json!("post_rout")),
+        ] {
             let (mut result, config, flat) = routed_fixture();
             let mut plugin = roomeq_engine::output::create_gain_plugin(-20.0);
-            if let Some(tag) = tag { plugin.parameters["room_eq_stage"] = tag; }
-            result.channels.get_mut("left").unwrap().plugins.push(plugin);
+            if let Some(tag) = tag {
+                plugin.parameters["room_eq_stage"] = tag;
+            }
+            result
+                .channels
+                .get_mut("left")
+                .unwrap()
+                .plugins
+                .push(plugin);
             let physical = BTreeMap::from([
-                ("left".into(), vec![flat.clone()]), ("sub".into(), vec![flat]),
+                ("left".into(), vec![flat.clone()]),
+                ("sub".into(), vec![flat]),
             ]);
-            assert!(replay_final_physical_seat(
-                &result, &physical, "left", 0, &config, 48_000.0, Path::new("."), "training",
-            ).is_err(), "unowned gain disappeared from routed playback evidence");
+            assert!(
+                replay_final_physical_seat(
+                    &result,
+                    &physical,
+                    "left",
+                    0,
+                    &config,
+                    48_000.0,
+                    Path::new("."),
+                    "training",
+                )
+                .is_err(),
+                "unowned gain disappeared from routed playback evidence"
+            );
             let store = autoeq_artifacts::MemoryArtifactStore::new();
-            assert!(crate::export::bind_final_convolution_artifacts(
-                &mut result, Path::new("."), &store, 48_000.0,
-            ).is_err(), "malformed routed graph was finalized");
+            assert!(
+                crate::export::bind_final_convolution_artifacts(
+                    &mut result,
+                    Path::new("."),
+                    &store,
+                    48_000.0,
+                )
+                .is_err(),
+                "malformed routed graph was finalized"
+            );
         }
     }
 
@@ -1280,26 +5304,267 @@ mod tests {
     fn channel_matching_is_applied_to_the_complete_routed_source() {
         let (mut result, config, flat) = routed_fixture();
         let physical = BTreeMap::from([
-            ("left".into(), vec![flat.clone()]), ("sub".into(), vec![flat]),
+            ("left".into(), vec![flat.clone()]),
+            ("sub".into(), vec![flat]),
         ]);
         let before = replay_final_physical_seat(
-            &result, &physical, "left", 0, &config, 48_000.0, Path::new("."), "training",
-        ).unwrap().delivered;
+            &result,
+            &physical,
+            "left",
+            0,
+            &config,
+            48_000.0,
+            Path::new("."),
+            "training",
+        )
+        .unwrap()
+        .delivered;
         let filters = vec![math_audio_iir_fir::Biquad::new(
-            math_audio_iir_fir::BiquadFilterType::Peak, 120.0, 48_000.0, 1.0, 3.0,
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            120.0,
+            48_000.0,
+            1.0,
+            3.0,
         )];
         let correction = roomeq_engine::spectral_align::ChannelMatchingResult {
-            channel_name: "left".into(), filters: filters.clone(),
+            channel_name: "left".into(),
+            filters: filters.clone(),
         };
-        super::super::reports::apply_channel_matching_correction(&mut result, &correction, 48_000.0);
+        super::super::reports::apply_channel_matching_correction(
+            &mut result,
+            &correction,
+            48_000.0,
+        );
         let after = replay_final_physical_seat(
-            &result, &physical, "left", 0, &config, 48_000.0, Path::new("."), "training",
-        ).unwrap().delivered;
-        let response = roomeq_engine::response::compute_peq_complex_response(&filters, &before.freq, 48_000.0);
+            &result,
+            &physical,
+            "left",
+            0,
+            &config,
+            48_000.0,
+            Path::new("."),
+            "training",
+        )
+        .unwrap()
+        .delivered;
+        let response =
+            roomeq_engine::response::compute_peq_complex_response(&filters, &before.freq, 48_000.0);
         let expected = roomeq_engine::response::apply_complex_response(&before, &response);
-        let maximum_error = after.spl.iter().zip(expected.spl.iter())
-            .map(|(actual, expected)| (actual - expected).abs()).fold(0.0_f64, f64::max);
-        assert!(maximum_error < 1e-8, "routed matching transfer differs by {maximum_error} dB");
+        let maximum_error = after
+            .spl
+            .iter()
+            .zip(expected.spl.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            maximum_error < 1e-8,
+            "routed matching transfer differs by {maximum_error} dB"
+        );
+    }
+
+    #[test]
+    fn routed_observation_respects_limited_main_and_lfe_passbands() {
+        let (mut result, mut config, _) = routed_fixture();
+        config.optimizer.min_freq = 40.0;
+        config.optimizer.max_freq = 200.0;
+        let mut main = Curve {
+            freq: ndarray::Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 192),
+            spl: ndarray::Array1::from_elem(192, 80.0),
+            ..Curve::default()
+        };
+        for (frequency, spl) in main.freq.iter().zip(main.spl.iter_mut()) {
+            if *frequency > 4_000.0 {
+                *spl -= 50.0;
+            }
+        }
+        let sub = Curve {
+            freq: ndarray::array![20.0, 40.0, 80.0, 160.0, 250.0],
+            spl: ndarray::Array1::from_elem(5, 80.0),
+            ..Curve::default()
+        };
+        let graph = result
+            .metadata
+            .bass_management
+            .as_mut()
+            .unwrap()
+            .routing_graph
+            .as_mut()
+            .unwrap();
+        graph.routes[1].low_pass_hz = Some(80.0);
+        let mut lfe = graph.routes[1].clone();
+        lfe.source_channel = "LFE".into();
+        graph.routes.push(lfe);
+        let physical = BTreeMap::from([("left".into(), vec![main]), ("sub".into(), vec![sub])]);
+        let observation =
+            passband_observation_config(&config, &result, &physical, "left", 0).unwrap();
+        assert!(observation.optimizer.max_freq > 2_000.0);
+        assert!(
+            observation.optimizer.max_freq < 10_000.0,
+            "a measured main stopband is not useful playback support"
+        );
+        let lfe = passband_observation_config(&config, &result, &physical, "LFE", 0).unwrap();
+        assert_eq!(lfe.optimizer.max_freq, 80.0);
+        assert_eq!(
+            config.optimizer.max_freq, 200.0,
+            "observation must not change correction bounds"
+        );
+    }
+
+    #[test]
+    fn bass_only_optimization_detects_out_of_band_damage_in_routed_playback() {
+        let (mut result, mut config, _) = routed_fixture();
+        config.optimizer.min_freq = 40.0;
+        config.optimizer.max_freq = 200.0;
+        let main = Curve {
+            freq: ndarray::Array1::logspace(10.0, 20.0_f64.log10(), 20_000.0_f64.log10(), 192),
+            spl: ndarray::Array1::from_elem(192, 80.0),
+            phase: Some(ndarray::Array1::zeros(192)),
+            ..Curve::default()
+        };
+        let sub = Curve {
+            freq: ndarray::array![20.0, 40.0, 80.0, 160.0, 250.0],
+            spl: ndarray::Array1::from_elem(5, 50.0),
+            phase: Some(ndarray::Array1::zeros(5)),
+            ..Curve::default()
+        };
+        result
+            .metadata
+            .bass_management
+            .as_mut()
+            .unwrap()
+            .routing_graph
+            .as_mut()
+            .unwrap()
+            .routes[1]
+            .low_pass_hz = Some(80.0);
+        let captures = vec![
+            Capture {
+                channel: "left".into(),
+                driver: None,
+                curves: vec![main.clone(), main],
+                seat_labels: None,
+            },
+            Capture {
+                channel: "sub".into(),
+                driver: None,
+                curves: vec![sub.clone(), sub],
+                seat_labels: None,
+            },
+        ];
+        let harmful = math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Highshelf,
+            1_000.0,
+            48_000.0,
+            0.7,
+            -12.0,
+        );
+        let mut plugin = roomeq_engine::output::create_eq_plugin(&[harmful]);
+        plugin.parameters["room_eq_stage"] = serde_json::json!("post_route");
+        result
+            .channels
+            .get_mut("left")
+            .unwrap()
+            .plugins
+            .push(plugin);
+
+        let error = validate_final_seats(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            Path::new("."),
+        )
+        .expect_err("a bass-only EQ request must not hide treble damage");
+        assert!(
+            error.to_string().contains("regressed") || error.to_string().contains("useful output"),
+            "{error}"
+        );
+        let score = result
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .unwrap()
+            .acoustic_quality
+            .as_ref()
+            .unwrap();
+        assert!(score.final_seats[0].evaluated_band_hz[1] > 10_000.0);
+        assert_eq!(score.correction_band_hz, Some([40.0, 200.0]));
+    }
+
+    #[test]
+    fn routed_subwoofer_stopband_replays_full_main_band_without_declaration() {
+        for per_driver in [false, true] {
+            let (mut result, mut config, _) = routed_fixture();
+            config.optimizer.min_freq = 20.0;
+            config.optimizer.max_freq = 16_000.0;
+            if per_driver {
+                let mut low_pass =
+                    roomeq_engine::output::create_crossover_plugin("LR24", 80.0, "low");
+                low_pass.parameters["room_eq_stage"] = serde_json::json!("post_route");
+                result.channels.get_mut("sub").unwrap().drivers =
+                    Some(vec![roomeq_model::DriverDspChain {
+                        measured_acoustics: None,
+                        name: "sub".into(),
+                        index: 0,
+                        initial_curve: None,
+                        measured_band_hz: None,
+                        plugins: vec![low_pass],
+                    }]);
+            } else {
+                result
+                    .metadata
+                    .bass_management
+                    .as_mut()
+                    .unwrap()
+                    .routing_graph
+                    .as_mut()
+                    .unwrap()
+                    .routes[1]
+                    .low_pass_hz = Some(80.0);
+            }
+            let curve = |frequencies: Vec<f64>, level| {
+                let len = frequencies.len();
+                Curve {
+                    freq: frequencies.into(),
+                    spl: ndarray::Array1::from_elem(len, level),
+                    phase: Some(ndarray::Array1::zeros(len)),
+                    ..Default::default()
+                }
+            };
+            let physical = BTreeMap::from([
+                (
+                    "left".into(),
+                    vec![curve(vec![20.0, 100.0, 250.0, 1000.0, 16_000.0], 80.0)],
+                ),
+                ("sub".into(), vec![curve(vec![20.0, 100.0, 250.0], 50.0)]),
+            ]);
+            for partition in ["training", "held_out"] {
+                for baseline in [false, true] {
+                    let (sum, _) = replay(
+                        &result,
+                        &physical,
+                        "left",
+                        0,
+                        baseline,
+                        &ReplayContext {
+                            config: &config,
+                            partition,
+                            fs: 48_000.0,
+                            dir: Path::new("."),
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(*sum.curve.freq.last().unwrap(), 16_000.0);
+                    assert_eq!(sum.support.len(), 1);
+                    assert!(
+                        serde_json::to_string(&sum.support)
+                            .unwrap()
+                            .contains("assumed_subwoofer_stopband_below_measured_tail")
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1341,12 +5606,18 @@ mod tests {
                     seat_index,
                     band_hz: [200.0, 20_000.0],
                     max_spl_db: 20.0,
+                    rolloff_db_per_oct: None,
                     evidence_id: format!("analytic-qualified-stopband-seat-{seat_index}"),
                 })
                 .collect(),
         );
         config.optimizer.min_freq = 20.0;
         config.optimizer.max_freq = 20_000.0;
+        config.optimizer.schroeder_split = Some(roomeq_model::SchroederSplitConfig {
+            enabled: true,
+            schroeder_freq: 200.0,
+            ..Default::default()
+        });
         validate_final_seats(
             &mut result,
             &captures,
@@ -1368,6 +5639,11 @@ mod tests {
         assert_eq!(score.useful_output.len(), 2);
         assert_eq!(score.useful_output[0].seat_index, 0);
         assert_eq!(score.useful_output[1].seat_index, 1);
+        assert!(
+            score.training.upper_pre_weighted_rms_db.is_some()
+                && score.training.upper_post_weighted_rms_db.is_some(),
+            "final-seat replay must preserve the configured Schroeder split"
+        );
         for seat in &score.final_seats {
             assert!((seat.evaluated_band_hz[0] - 20.0).abs() < 1e-9);
             assert_eq!(seat.evaluated_band_hz[1], 20_000.0);
@@ -1490,6 +5766,7 @@ mod tests {
                 seat_index: 0,
                 band_hz: [200.0, 20_000.0],
                 max_spl_db: 80.0,
+                rolloff_db_per_oct: None,
                 evidence_id: "analytic-energetic-tail".into(),
             }],
         );

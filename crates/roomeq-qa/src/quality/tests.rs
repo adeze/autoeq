@@ -7,7 +7,8 @@ use super::option::isolate_schroeder_split_from_multi_measurement;
 use super::option_override::OptionOverride;
 use super::parse_maxeval;
 use super::parse_seed_runs;
-use super::run::deployed_final_curve;
+use super::program_version_requested;
+use super::run::{compare_cross_mode_band, deployed_final_curve, expected_parity_main_channels};
 use super::types::TestResult;
 use super::validate::{
     TargetTiltValidationOptions, validate_option_effect, validate_phase_alignment,
@@ -18,6 +19,52 @@ use roomeq_model::{
     StageStatus,
 };
 use std::collections::HashMap;
+
+#[test]
+fn program_version_flag_does_not_consume_option_values_or_post_terminator_text() {
+    let argv = |items: &[&str]| {
+        items
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    assert!(program_version_requested(&argv(&[
+        "roomeq-qa-quality",
+        "--program-version"
+    ])));
+    assert!(program_version_requested(&argv(&[
+        "roomeq-qa-quality",
+        "-V"
+    ])));
+    assert!(!program_version_requested(&argv(&[
+        "roomeq-qa-quality",
+        "--case",
+        "--program-version",
+    ])));
+    assert!(!program_version_requested(&argv(&[
+        "roomeq-qa-quality",
+        "--",
+        "--program-version",
+    ])));
+    assert!(!program_version_requested(&argv(&[
+        "roomeq-qa-quality",
+        "--case=--program-version",
+    ])));
+}
+
+fn diagnostic_workspace_root() -> anyhow::Result<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+    anyhow::ensure!(root.join("Cargo.lock").is_file());
+    anyhow::ensure!(
+        root.join("data_tests/roomeq/measured/5.1.4_genelec/recordings.json")
+            .is_file(),
+        "workspace root is missing the measured Genelec IIR input"
+    );
+    Ok(root)
+}
 
 use roomeq_engine::room_result::{ChannelOptimizationResult, RoomOptimizationResult};
 
@@ -109,6 +156,7 @@ fn channel_chain_with_slopes(
     target_slope_db_per_octave: f64,
 ) -> ChannelDspChain {
     ChannelDspChain {
+        physical_correction_target: None,
         channel: "L".to_string(),
         plugins: Vec::new(),
         drivers: None,
@@ -120,6 +168,14 @@ fn channel_chain_with_slopes(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
     }
 }
 
@@ -131,6 +187,7 @@ fn result_with_channel_slopes(
     let initial_curve = curve_with_slope(initial_slope_db_per_octave);
     let final_curve = curve_with_slope(final_slope_db_per_octave);
     let channel = ChannelOptimizationResult {
+        measurement_conditioning: None,
         name: "L".to_string(),
         pre_score: 0.0,
         post_score: 0.0,
@@ -139,8 +196,11 @@ fn result_with_channel_slopes(
         biquads: Vec::new(),
         fir_coeffs: None,
         optimizer_evidence: Vec::new(),
+        audibility_veto: Vec::new(),
+        veto_adjudication: None,
     };
     RoomOptimizationResult {
+        finalized_decisions: None,
         channels: HashMap::from([(
             "L".to_string(),
             channel_chain_with_slopes(
@@ -178,10 +238,18 @@ fn result_with_channel_slopes(
             final_convolution_sha256: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: None,
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         },
     }
 }
@@ -197,7 +265,9 @@ fn empty_room_config() -> RoomConfig {
         provenance: Default::default(),
         recording_config: None,
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
+        measured_impulse_responses: Default::default(),
     }
 }
 
@@ -209,6 +279,7 @@ fn result_with_inter_channel_slope(channel_slope_db_per_octave: f64) -> RoomOpti
         (
             "C".to_string(),
             ChannelOptimizationResult {
+                measurement_conditioning: None,
                 name: "C".to_string(),
                 pre_score: 0.0,
                 post_score: 0.0,
@@ -217,11 +288,14 @@ fn result_with_inter_channel_slope(channel_slope_db_per_octave: f64) -> RoomOpti
                 biquads: Vec::new(),
                 fir_coeffs: None,
                 optimizer_evidence: Vec::new(),
+                audibility_veto: Vec::new(),
+                veto_adjudication: None,
             },
         ),
         (
             "L".to_string(),
             ChannelOptimizationResult {
+                measurement_conditioning: None,
                 name: "L".to_string(),
                 pre_score: 0.0,
                 post_score: 0.0,
@@ -230,6 +304,8 @@ fn result_with_inter_channel_slope(channel_slope_db_per_octave: f64) -> RoomOpti
                 biquads: Vec::new(),
                 fir_coeffs: None,
                 optimizer_evidence: Vec::new(),
+                audibility_veto: Vec::new(),
+                veto_adjudication: None,
             },
         ),
     ]);
@@ -374,6 +450,8 @@ fn electrical_qa_expands_canonical_global_bass_routes_once() {
     }
     let routing = roomeq_model::BassManagementRoutingGraph {
         physical_sub_output: "sub".into(),
+        physical_sub_outputs: Vec::new(),
+        stereo_routing: None,
         input_channels: vec!["L".into(), "R".into()],
         output_channels: vec!["sub".into()],
         routes: ["L", "R"]
@@ -405,23 +483,28 @@ fn electrical_qa_expands_canonical_global_bass_routes_once() {
             route_count: 2,
         }),
         input_trim_db: HashMap::new(),
+        post_dsp_main_alignment_band_hz: None,
         advisories: Vec::new(),
     };
     result.metadata.bass_management = Some(roomeq_model::BassManagementReport {
+        crossover_cancellation: Vec::new(),
+        routing_title: "Home-Cinema Bass Management Routing".to_string(),
         enabled: true,
         crossover_type: "LR24".into(),
         crossover_frequency_hz: None,
         redirected_bass_enabled: true,
-        lfe_channel: "LFE".into(),
-        lfe_playback_gain_db: 0.0,
-        lfe_low_pass_hz: 120.0,
-        lfe_gain_applied_to_chain: false,
+        lfe: Some(roomeq_model::LfeBassManagementReport {
+            input_channel: "LFE".into(),
+            playback_gain_db: 0.0,
+            low_pass_hz: 120.0,
+            gain_applied_to_chain: false,
+        }),
         sub_trim_db: 0.0,
         max_sub_boost_db: 12.0,
         headroom_margin_db: 0.0,
         applied_sub_gain_db: None,
         gain_limited: false,
-        physical_sub_output: "sub".into(),
+        physical_sub_outputs: vec!["sub".into()],
         redirected_bass_channel_count: 2,
         main_high_pass_hz: None,
         sub_low_pass_hz: None,
@@ -465,17 +548,21 @@ fn electrical_qa_keeps_same_named_driver_ports_separate() {
         chain.plugins = vec![roomeq_engine::output::create_gain_plugin(6.0)];
         chain.drivers = Some(vec![
             roomeq_model::DriverDspChain {
+                measured_acoustics: None,
                 name: "woofer".into(),
                 index: 0,
                 initial_curve: None,
+                measured_band_hz: None,
                 plugins: vec![roomeq_engine::output::create_gain_plugin_with_invert(
                     3.0, invert,
                 )],
             },
             roomeq_model::DriverDspChain {
+                measured_acoustics: None,
                 name: "tweeter".into(),
                 index: 1,
                 initial_curve: None,
+                measured_band_hz: None,
                 plugins: vec![roomeq_engine::output::create_gain_plugin(-12.0)],
             },
         ]);
@@ -1132,4 +1219,335 @@ fn quality_seed_runs_rejects_unsupported_values() {
     ] {
         assert!(parse_seed_runs(&args).is_err(), "accepted {args:?}");
     }
+}
+
+#[test]
+fn strict_cross_mode_parity_refuses_missing_modes_and_declared_channels() {
+    let modes = ["IIR", "FIR", "Hybrid", "MixedPhase"];
+    let curve = curve_with_slope(0.0);
+    let complete = vec![
+        ("L".to_string(), vec![Some(curve.clone()); 4]),
+        ("R".to_string(), vec![Some(curve.clone()); 4]),
+    ];
+    let comparison = compare_cross_mode_band(&complete, &modes, 100.0, 500.0);
+    assert_eq!(comparison.expected_comparisons, 12);
+    assert_eq!(comparison.available_comparisons, 12);
+    assert!(comparison.passes(0.0, Some(0.0)));
+
+    // The remaining zero-difference pairs used to pass after this missing
+    // mode was silently skipped.
+    let mut missing_mode = complete.clone();
+    missing_mode[1].1[2] = None;
+    let comparison = compare_cross_mode_band(&missing_mode, &modes, 100.0, 500.0);
+    assert_eq!(comparison.expected_comparisons, 12);
+    assert_eq!(comparison.available_comparisons, 9);
+    assert_eq!(comparison.median_rms, 0.0);
+    assert!(!comparison.passes(3.0, Some(4.25)));
+    assert!(
+        comparison
+            .unavailable
+            .iter()
+            .any(|reason| reason.contains("R IIR vs Hybrid"))
+    );
+
+    let mut missing_channel = complete;
+    missing_channel[1].1.clear();
+    let comparison = compare_cross_mode_band(&missing_channel, &modes, 100.0, 500.0);
+    assert_eq!(comparison.expected_comparisons, 12);
+    assert_eq!(comparison.available_comparisons, 6);
+    assert!(!comparison.passes(3.0, Some(4.25)));
+    assert!(!compare_cross_mode_band(&[], &modes, 100.0, 500.0).passes(3.0, None));
+    assert!(!compare_cross_mode_band(&missing_channel, &["IIR"], 100.0, 500.0).passes(3.0, None));
+}
+
+#[test]
+fn strict_cross_mode_parity_keeps_shape_limits_with_complete_coverage() {
+    let curves = vec![(
+        "L".to_string(),
+        vec![Some(curve_with_slope(0.0)), Some(curve_with_slope(12.0))],
+    )];
+    let comparison = compare_cross_mode_band(&curves, &["IIR", "FIR"], 100.0, 500.0);
+    assert_eq!(
+        comparison.available_comparisons,
+        comparison.expected_comparisons
+    );
+    assert!(comparison.unavailable.is_empty());
+    assert!(!comparison.passes(3.0, Some(4.25)));
+}
+
+#[test]
+fn cross_mode_rms_refuses_invalid_or_incomplete_evidence_without_panicking() {
+    let reference = curve_with_slope(0.0);
+    let mut invalid = Vec::new();
+    let mut curve = reference.clone();
+    curve.spl = ndarray::arr1(&[0.0]);
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.spl[1] = f64::NAN;
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.freq[1] = curve.freq[0];
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.freq[1] = f64::NAN;
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.freq = ndarray::arr1(&[200.0, 300.0, 400.0, 500.0]);
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.freq = ndarray::arr1(&[100.0, 200.0, 300.0, 400.0]);
+    invalid.push(curve);
+    let mut curve = reference.clone();
+    curve.freq = ndarray::arr1(&[100.0, 500.0]);
+    curve.spl = ndarray::arr1(&[0.0, 0.0]);
+    invalid.push(curve);
+    for curve in invalid {
+        assert!(level_matched_rms_curve_difference_db(&reference, &curve, 100.0, 500.0).is_none());
+        assert!(level_matched_rms_curve_difference_db(&curve, &reference, 100.0, 500.0).is_none());
+        let comparisons = compare_cross_mode_band(
+            &[("L".to_string(), vec![Some(reference.clone()), Some(curve)])],
+            &["IIR", "FIR"],
+            100.0,
+            500.0,
+        );
+        assert!(!comparisons.passes(3.0, Some(4.25)));
+    }
+    for (fmin, fmax) in [
+        (f64::NAN, 500.0),
+        (100.0, f64::INFINITY),
+        (-1.0, 500.0),
+        (500.0, 100.0),
+    ] {
+        assert!(
+            level_matched_rms_curve_difference_db(&reference, &reference, fmin, fmax).is_none()
+        );
+    }
+}
+
+#[test]
+fn cross_mode_rms_aligns_distinct_supported_grids() {
+    let reference = Curve {
+        freq: ndarray::arr1(&[100.0, 200.0, 300.0, 400.0, 500.0]),
+        spl: ndarray::arr1(&[1.0, 2.0, 3.0, 4.0, 5.0]),
+        ..Default::default()
+    };
+    let shifted = Curve {
+        freq: ndarray::arr1(&[50.0, 150.0, 250.0, 350.0, 450.0, 550.0]),
+        spl: ndarray::arr1(&[6.5, 7.5, 8.5, 9.5, 10.5, 11.5]),
+        ..Default::default()
+    };
+    assert!(
+        level_matched_rms_curve_difference_db(&reference, &shifted, 100.0, 500.0).unwrap() < 1e-12
+    );
+}
+
+#[test]
+fn cross_mode_expected_channels_use_declared_logical_topology_roles() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../data_tests/roomeq/measured/5.1.4_genelec/recordings.json");
+    let config: RoomConfig = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let expected = expected_parity_main_channels(&config);
+    assert_eq!(
+        expected,
+        ["C", "L", "R", "SL", "SR", "TBL", "TBR", "TFL", "TFR"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    assert!(!expected.contains("front_left_large"));
+    // Coverage still comes from configuration when an output is missing.
+    let channels = expected
+        .into_iter()
+        .map(|name| (name, vec![Some(curve_with_slope(0.0)); 4]))
+        .collect::<Vec<_>>();
+    let modes = ["IIR", "FIR", "Hybrid", "MixedPhase"];
+    let comparison = compare_cross_mode_band(&channels, &modes, 100.0, 500.0);
+    assert_eq!(comparison.expected_comparisons, 54);
+    assert!(comparison.passes(0.0, Some(0.0)));
+    let mut missing = channels;
+    missing
+        .iter_mut()
+        .find(|(name, _)| name == "L")
+        .unwrap()
+        .1
+        .clear();
+    assert!(!compare_cross_mode_band(&missing, &modes, 100.0, 500.0).passes(3.0, Some(4.25)));
+
+    let mut generic = config;
+    generic.system = None;
+    generic
+        .speakers
+        .retain(|name, _| name == "front_left_large");
+    assert_eq!(
+        expected_parity_main_channels(&generic),
+        ["front_left_large".to_string()].into_iter().collect()
+    );
+}
+
+#[test]
+#[ignore = "explicit one-mode measured diagnostic; run only after capture review"]
+fn a09_genelec_iir_finalization_diagnostic() {
+    let root = diagnostic_workspace_root().unwrap();
+    let evidence_parent = crate::qa_evidence_dir();
+    std::fs::create_dir_all(&evidence_parent).unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let diagnostic_root = evidence_parent.join(format!(
+        "a09-finalization-diagnostic-{}-{nonce}",
+        std::process::id()
+    ));
+
+    super::run::finalization_diagnostic::run_one_iir(&root, &diagnostic_root, 600_000).unwrap();
+}
+
+#[test]
+fn iir_diagnostic_root_resolves_from_workspace_manifest() {
+    let root = diagnostic_workspace_root().unwrap();
+    assert!(root.join("Cargo.toml").is_file());
+    assert!(root.join("Cargo.lock").is_file());
+    assert!(root.join("crates/roomeq-qa/Cargo.toml").is_file());
+    assert!(
+        root.join("data_tests/roomeq/measured/5.1.4_genelec/recordings.json")
+            .is_file()
+    );
+}
+
+fn accepted_cross_mode_result(plugin_types: &[&str]) -> RoomOptimizationResult {
+    use roomeq_model::{
+        CorrectionAcceptancePolicy, CorrectionAcceptanceReport, CorrectionDecision,
+        CorrectionMetricSummary, RoomEqOutcome,
+    };
+    let mut result = result_with_channel_slopes(0.0, 0.0, 0.0);
+    result.channels.get_mut("L").unwrap().plugins = plugin_types
+        .iter()
+        .map(|kind| {
+            serde_json::from_value(serde_json::json!({
+                "plugin_type": kind, "parameters": {}
+            }))
+            .unwrap()
+        })
+        .collect();
+    result.metadata.correction_acceptance = Some(CorrectionAcceptanceReport {
+        policy: CorrectionAcceptancePolicy::RuntimeSafety,
+        runtime_policy: None,
+        decision: CorrectionDecision::Accepted,
+        accepted: true,
+        outcome: RoomEqOutcome::Accepted,
+        metrics: CorrectionMetricSummary {
+            auditory_frequency_measure: "erb_rate".into(),
+            pre_target_weighted_rms_db: 1.0,
+            post_target_weighted_rms_db: 0.5,
+            improvement_db: 0.5,
+            improvement_ratio: 0.5,
+            post_p95_abs_residual_db: 0.5,
+            post_worst_abs_residual_db: 0.5,
+            correction_rms_db: 0.5,
+            max_abs_correction_db: 0.5,
+        },
+        violations: Vec::new(),
+        realized_processing: None,
+        processing_fallback: None,
+        observations: Vec::new(),
+        reverted_stages: Vec::new(),
+        acoustic_quality: None,
+        realization_quality: None,
+    });
+    result
+}
+
+#[test]
+fn strict_cross_mode_rejects_baselines_and_stale_acceptance() {
+    use super::run::strict_cross_mode_correction;
+    use roomeq_model::{CorrectionDecision, ProcessingMode, RoomEqOutcome};
+    let mut result = accepted_cross_mode_result(&["eq"]);
+    assert!(strict_cross_mode_correction(&result, &ProcessingMode::LowLatency).is_ok());
+    for decision in [
+        CorrectionDecision::IdentityFallback,
+        CorrectionDecision::Rejected,
+    ] {
+        let report = result.metadata.correction_acceptance.as_mut().unwrap();
+        report.decision = decision;
+        report.accepted = false;
+        report.outcome = RoomEqOutcome::Accepted; // Stale summary must not win.
+        assert!(strict_cross_mode_correction(&result, &ProcessingMode::LowLatency).is_err());
+    }
+    result.metadata.correction_acceptance = None;
+    assert!(
+        strict_cross_mode_correction(&result, &ProcessingMode::LowLatency)
+            .unwrap_err()
+            .contains("missing")
+    );
+}
+
+#[test]
+fn strict_cross_mode_checks_actual_family_and_acceptance_violations() {
+    use super::run::strict_cross_mode_correction;
+    use roomeq_model::{ProcessingMode, RealizedProcessing};
+    for (mode, kinds) in [
+        (ProcessingMode::LowLatency, vec!["eq"]),
+        (ProcessingMode::PhaseLinear, vec!["convolution"]),
+        (ProcessingMode::Hybrid, vec!["eq", "convolution"]),
+        (ProcessingMode::MixedPhase, vec!["eq", "convolution"]),
+    ] {
+        assert!(strict_cross_mode_correction(&accepted_cross_mode_result(&kinds), &mode).is_ok());
+    }
+    let mut result = accepted_cross_mode_result(&["eq"]);
+    result
+        .metadata
+        .correction_acceptance
+        .as_mut()
+        .unwrap()
+        .realized_processing = Some(RealizedProcessing::Hybrid);
+    assert!(
+        strict_cross_mode_correction(&result, &ProcessingMode::MixedPhase)
+            .unwrap_err()
+            .contains("iir_only_realized")
+    );
+    for violation in ["evidence_missing", "worst_position_regressed"] {
+        result
+            .metadata
+            .correction_acceptance
+            .as_mut()
+            .unwrap()
+            .violations = vec![violation.into()];
+        assert!(strict_cross_mode_correction(&result, &ProcessingMode::LowLatency).is_err());
+    }
+}
+
+#[test]
+fn strict_cross_mode_failure_survives_functional_safe_revert_policy() {
+    use roomeq_model::{CorrectionDecision, ProcessingMode};
+    let mut result = accepted_cross_mode_result(&["eq"]);
+    result
+        .metadata
+        .correction_acceptance
+        .as_mut()
+        .unwrap()
+        .decision = CorrectionDecision::IdentityFallback;
+    let reason =
+        super::run::strict_cross_mode_correction(&result, &ProcessingMode::LowLatency).unwrap_err();
+    let mut scorecard = super::metric_scorecard::placeholder_scorecard(0.0);
+    scorecard.correction_reverted = true;
+    let mut row = TestResult {
+        label: "mode correction".into(),
+        pre_score: 1.0,
+        scorecard,
+        pass: false,
+        reason,
+    };
+    super::enforce_registry_expectations(
+        "cross_mode/test",
+        &["functional_artifact".into()],
+        crate::registry::ScenarioExpect {
+            improvement_min_pct: 0.0,
+            max_post_score: 20.0,
+            max_boost_db: 12.0,
+            allow_safe_revert: true,
+            gate_purpose: crate::registry::QaGatePurpose::Safety,
+        },
+        std::slice::from_mut(&mut row),
+    );
+    assert!(!row.pass);
 }

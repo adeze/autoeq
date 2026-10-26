@@ -1,6 +1,6 @@
 [package]
 name = "autoeq-optim"
-version = "0.5.62"
+version = "0.5.63"
 edition = "2024"
 description = "AutoEQ objectives, constraints, and optimizer backends"
 license = "GPL-3.0-or-later"
@@ -29,6 +29,7 @@ num-complex = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+roomeq-model = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

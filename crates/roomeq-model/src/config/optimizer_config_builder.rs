@@ -58,6 +58,7 @@ impl OptimizerConfigBuilder {
     setter!(max_db, f64);
     setter!(min_freq, f64);
     setter!(max_freq, f64);
+    setter!(correction_band, Option<super::CorrectionBandPolicy>);
     setter!(max_iter, usize);
     setter!(population, usize);
     setter!(peq_model, String);
@@ -83,6 +84,7 @@ impl OptimizerConfigBuilder {
         high_frequency_correction,
         Option<super::HighFrequencyCorrectionConfig>
     );
+    setter!(tilt_stage, Option<super::TiltStageConfig>);
     setter!(
         early_late_correction,
         Option<super::EarlyLateCorrectionConfig>

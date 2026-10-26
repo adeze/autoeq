@@ -46,6 +46,7 @@ fn joint_room_eq_path_models_mixed_fir_iir_band_split() {
 #[test]
 fn joint_room_eq_path_models_driver_crossover_branches() {
     let low_driver = roomeq_model::DriverDspChain {
+        measured_acoustics: None,
         name: "woofer".to_string(),
         index: 0,
         plugins: vec![PluginConfigWrapper {
@@ -57,6 +58,7 @@ fn joint_room_eq_path_models_driver_crossover_branches() {
             }),
         }],
         initial_curve: None,
+        measured_band_hz: None,
     };
     let chain = test_channel_chain(Vec::new(), Some(vec![low_driver]));
     let mut cache = DspResponseCache::new(48_000);
@@ -109,6 +111,7 @@ pub(super) fn test_channel_chain(
     drivers: Option<Vec<roomeq_model::DriverDspChain>>,
 ) -> ChannelDspChain {
     ChannelDspChain {
+        physical_correction_target: None,
         channel: "left".to_string(),
         plugins,
         drivers,
@@ -119,6 +122,14 @@ pub(super) fn test_channel_chain(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }

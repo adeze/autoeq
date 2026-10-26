@@ -6,12 +6,13 @@ use math_audio_iir_fir::Biquad;
 use roomeq_model::ChannelDspChain;
 
 use crate::channel_target::TargetContext;
+pub use crate::segment_support::SegmentSupportReport;
 
 pub(crate) fn subtract_target_tilt(curve: &Curve, target: &TargetContext) -> Curve {
     if let Some(tilt_curve) = &target.target_tilt_curve {
         Curve {
             freq: curve.freq.clone(),
-            spl: &curve.spl - &tilt_curve.spl,
+            spl: &curve.spl - &autoeq_core::interpolate_log_space(&curve.freq, tilt_curve).spl,
             phase: curve.phase.clone(),
             ..Curve::default()
         }
@@ -66,12 +67,24 @@ pub struct ChannelProcessingResult {
     pub post_score: f64,
     pub raw_pre_eq_curve: Curve,
     pub raw_post_eq_curve: Curve,
+    /// PEQ parameter summaries, not a complete serialized playback transfer.
+    ///
+    /// Kautz mode leaves this empty: its linear bank weights live in `channel`
+    /// and cannot be represented as PEQ dB gains. Use the serialized topology
+    /// for section counts, gain constraints, response replay, and export.
     pub filters: Vec<Biquad>,
     pub mean_spl: f64,
     pub arrival_time_ms: Option<f64>,
     pub fir_coeffs: Option<Vec<f64>>,
     pub convolution_sidecar: Option<GeneratedConvolutionSidecar>,
     pub optimizer_evidence: Vec<OptimizerRunEvidence>,
+    /// Per-filter audibility decisions, retained through export/reporting.
+    pub audibility_veto: Vec<roomeq_model::FilterVetoVerdict>,
+    /// Frozen-chain adjudication summary, when the veto post-pass ran.
+    pub veto_adjudication: Option<roomeq_model::VetoAdjudicationReport>,
+    /// Multi-segment authorization report, present only when the channel
+    /// declares two or more usable bands. `None` preserves legacy behavior.
+    pub segment_support: Option<SegmentSupportReport>,
 }
 
 #[cfg(test)]

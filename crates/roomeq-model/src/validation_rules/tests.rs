@@ -94,7 +94,9 @@ fn test_validate_empty_speakers() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -111,6 +113,7 @@ fn test_validate_min_freq_greater_than_max() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from("test.csv")),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
 
@@ -127,7 +130,9 @@ fn test_validate_min_freq_greater_than_max() {
         optimizer,
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -144,6 +149,7 @@ fn test_validate_cea2034_score_mode_is_invalid_for_roomeq() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from("spinorama_left.csv")),
             speaker_name: Some("Example Speaker".to_string()),
+            provenance: Default::default(),
         })),
     );
 
@@ -165,7 +171,9 @@ fn test_validate_cea2034_score_mode_is_invalid_for_roomeq() {
         optimizer,
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -204,7 +212,9 @@ fn test_validate_warped_iir_mode_is_valid() {
         optimizer,
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -229,10 +239,12 @@ fn test_validate_crossover_reference() {
                 MeasurementSource::Single(MeasurementSingle {
                     measurement: MeasurementRef::Path(PathBuf::from("woofer.csv")),
                     speaker_name: None,
+                    provenance: Default::default(),
                 }),
                 MeasurementSource::Single(MeasurementSingle {
                     measurement: MeasurementRef::Path(PathBuf::from("tweeter.csv")),
                     speaker_name: None,
+                    provenance: Default::default(),
                 }),
             ],
             crossover: Some("nonexistent".to_string()),
@@ -248,7 +260,9 @@ fn test_validate_crossover_reference() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -274,10 +288,12 @@ fn test_validate_crossover_frequency_range_rejects_reversed_bounds() {
                 MeasurementSource::Single(MeasurementSingle {
                     measurement: MeasurementRef::Path(PathBuf::from("woofer.csv")),
                     speaker_name: None,
+                    provenance: Default::default(),
                 }),
                 MeasurementSource::Single(MeasurementSingle {
                     measurement: MeasurementRef::Path(PathBuf::from("tweeter.csv")),
                     speaker_name: None,
+                    provenance: Default::default(),
                 }),
             ],
             crossover: Some("xo".to_string()),
@@ -315,6 +331,7 @@ fn test_validate_speaker_name() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from("left.csv")),
             speaker_name: Some("Invalid @ Name".to_string()),
+            provenance: Default::default(),
         })),
     );
 
@@ -327,7 +344,9 @@ fn test_validate_speaker_name() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -349,6 +368,7 @@ fn validate_bass_management_rejects_negative_headroom_and_boost() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from("sub.csv")),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
     let config = RoomConfig {
@@ -358,8 +378,9 @@ fn validate_bass_management_rejects_negative_headroom_and_boost() {
             speakers: HashMap::from([("Sub".to_string(), "sub".to_string())]),
             subwoofers: Some(SubwooferSystemConfig {
                 config: SubwooferStrategy::Single,
+                routing: Default::default(),
+                outputs: Vec::new(),
                 crossover: Some("xo".into()),
-                mapping: HashMap::new(),
             }),
             bass_management: Some(BassManagementConfig {
                 max_sub_boost_db: -1.0,
@@ -382,7 +403,9 @@ fn validate_bass_management_rejects_negative_headroom_and_boost() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -405,6 +428,7 @@ fn validate_role_targets_rejects_invalid_bands_and_distances() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from("center.csv")),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
     let config = RoomConfig {
@@ -429,7 +453,9 @@ fn validate_role_targets_rejects_invalid_bands_and_distances() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -469,6 +495,7 @@ fn mso_two_sub_config(crossover: Option<SubwooferCrossoverRef>) -> RoomConfig {
         MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from(path)),
             speaker_name: None,
+            provenance: Default::default(),
         })
     }
     let mut speakers = HashMap::new();
@@ -481,6 +508,7 @@ fn mso_two_sub_config(crossover: Option<SubwooferCrossoverRef>) -> RoomConfig {
             speaker_name: None,
             subwoofers: vec![single("sub1.csv"), single("sub2.csv")],
             allpass_optimization: false,
+            joint_optimization: false,
         }),
     );
     let lr24_range = |minimum: f64, maximum: f64| CrossoverConfig {
@@ -496,12 +524,21 @@ fn mso_two_sub_config(crossover: Option<SubwooferCrossoverRef>) -> RoomConfig {
             speakers: HashMap::from([
                 ("L".to_string(), "L".to_string()),
                 ("R".to_string(), "R".to_string()),
-                ("LFE".to_string(), "subs".to_string()),
             ]),
             subwoofers: Some(SubwooferSystemConfig {
                 config: SubwooferStrategy::Mso,
+                routing: Default::default(),
+                outputs: vec![
+                    crate::SubwooferOutput {
+                        id: "Sub1".to_string(),
+                        speaker: "subs".to_string(),
+                    },
+                    crate::SubwooferOutput {
+                        id: "Sub2".to_string(),
+                        speaker: "subs".to_string(),
+                    },
+                ],
                 crossover,
-                mapping: HashMap::from([("subs".to_string(), "L".to_string())]),
             }),
             bass_management: None,
             supporting_source_outputs: None,
@@ -515,7 +552,9 @@ fn mso_two_sub_config(crossover: Option<SubwooferCrossoverRef>) -> RoomConfig {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }
@@ -535,16 +574,15 @@ fn subwoofer_crossover_list_matching_sub_count_is_valid() {
 }
 
 #[test]
-fn subwoofer_crossover_shared_and_single_entry_forms_stay_valid() {
+fn subwoofer_crossover_shared_and_single_entry_forms_are_rejected_in_v3() {
     for crossover in [
         SubwooferCrossoverRef::Shared("bass_xover1".to_string()),
         SubwooferCrossoverRef::PerSub(vec!["bass_xover1".to_string()]),
     ] {
         let result = validate_room_config(&mso_two_sub_config(Some(crossover.clone())));
         assert!(
-            result.is_valid,
-            "shared/single-entry crossover {crossover:?} must validate: {:?}",
-            result.errors
+            !result.is_valid,
+            "unexpected valid crossover: {crossover:?}"
         );
     }
 }
@@ -595,7 +633,7 @@ fn subwoofer_crossover_rejects_arity_mismatch() {
         result
             .errors
             .iter()
-            .any(|e| e.contains("has 3 entries") && e.contains("expected 1 or 2")),
+            .any(|e| e.contains("3 entries") && e.contains("expected 2")),
         "unexpected errors: {:?}",
         result.errors
     );

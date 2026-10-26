@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Introduce the breaking RoomEQ 3.0.0 configuration contract: derive logical
+  stereo inputs from `L`/`R`, add canonical implicit home-cinema `LFE`, and
+  describe measured subwoofers as ordered physical `subwoofers.outputs` with a
+  `strategy`. Reject legacy stereo `LFE` mappings, invalid output references,
+  duplicate output IDs, and crossover/output count mismatches.
+
 - Record the crossover-safety-restoration basis on accepted bass source routes (`BassManagementSourceReport.safety_restored`).
 
 - Add backward-compatible classified stage checks to RoomEQ stage outcomes and output metadata.
@@ -11,6 +17,10 @@
   and include inline CSV fallbacks in resolved-resource validation.
 - Inherited the workspace policy forbidding unsafe Rust code.
 - Documented crate ownership and verification expectations.
+
+## 0.5.14
+
+- Add backward-compatible serialized `speech_transmission` results for measured channel and physical-driver impulse responses, including full-STI modulation values, octave MTI and capture warnings.
 
 ## 0.4.51
 

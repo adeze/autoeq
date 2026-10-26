@@ -8,6 +8,58 @@ pub const MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB: f64 = 3.0;
 /// The objective still penalizes every amount above the nominal 3 dB limit.
 pub const CROSSOVER_UNDERFILL_ACCEPTANCE_TOLERANCE_DB: f64 = 0.05;
 
+/// Deepest crossover dip the route optimizers may chase, in dB.
+///
+/// Routing-level actuation (trim, delay, polarity) reshapes the splice but
+/// cannot create energy inside a true cancellation null. Penalizing dip depth
+/// without bound makes the DE rail every actuator for partial shaves of
+/// unfixable nulls (measured: +6 dB railed trims, 15 ms delays, polarity flips
+/// against 20+ dB nulls that persist regardless). Depths beyond this bound keep
+/// a plateaued penalty: complete fixes of deep splice cancellations are still
+/// strongly rewarded, but 25 dB and 20 dB residuals score identically, so the
+/// optimizer spends its actuators on the correctable remainder instead. The
+/// bound matches the default route-trim authority and doubles the 3 dB
+/// crossover acceptance target, keeping full gradient across the actionable
+/// zone. Reporting metrics keep true depth; only optimizer penalties hinge.
+pub const ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB: f64 = 6.0;
+
+/// Cap a dip depth at the correctable bound for optimizer penalties.
+///
+/// Non-finite depths pass through untouched so downstream fail-closed
+/// handling still sees them.
+pub fn correctable_dip_depth_db(depth_db: f64) -> f64 {
+    if depth_db.is_finite() {
+        depth_db.min(ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB)
+    } else {
+        depth_db
+    }
+}
+
+/// Minimum relative reduction in dB shortfall for a still-imperfect Post-EQ pass.
+///
+/// This product policy admits useful partial correction; it is not a loudness
+/// percentage or a demonstrated audibility threshold.
+pub const POST_EQ_MIN_UNDERFILL_REDUCTION: f64 = 0.20;
+/// Minimum absolute improvement required alongside the relative Post-EQ rule.
+///
+/// One dB prevents small numerical or already-negligible changes from passing
+/// solely because their percentage is large.
+pub const POST_EQ_MIN_UNDERFILL_IMPROVEMENT_DB: f64 = 1.0;
+
+/// Accept a good residual or a material improvement over the immediate input.
+///
+/// Both depths must be finite and nonnegative. Above the absolute quality
+/// target, require at least 20% and 1 dB reduction in the shortfall measured
+/// in dB. This stage policy does not replace final output or seat checks.
+pub fn post_eq_underfill_is_acceptable(before_db: f64, after_db: f64) -> bool {
+    if !before_db.is_finite() || !after_db.is_finite() || before_db < 0.0 || after_db < 0.0 {
+        return false;
+    }
+    bass_management_underfill_is_acceptable(after_db)
+        || (before_db - after_db >= POST_EQ_MIN_UNDERFILL_IMPROVEMENT_DB
+            && after_db <= before_db * (1.0 - POST_EQ_MIN_UNDERFILL_REDUCTION))
+}
+
 pub fn bass_management_underfill_is_acceptable(underfill_db: f64) -> bool {
     underfill_db
         <= MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB + CROSSOVER_UNDERFILL_ACCEPTANCE_TOLERANCE_DB
@@ -102,7 +154,7 @@ pub fn bass_management_objective_with_target(
         .into_iter()
         .fold(0.0_f64, |worst, error| worst.max((-error).max(0.0)));
 
-    Some(base_loss + 2.0 * deepest_underfill)
+    Some(base_loss + 2.0 * correctable_dip_depth_db(deepest_underfill))
 }
 
 /// Return the deepest target-relative dip across one octave centered on the
@@ -335,6 +387,35 @@ pub fn select_bass_management_crossover_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_eq_underfill_accepts_absolute_or_material_relative_improvement() {
+        for (before, after, accepted) in [
+            (3.05, 3.05, true),
+            (3.051, 3.051, false),
+            (5.0, 4.0, true),
+            (5.0, 4.000001, false),
+            (10.0, 8.0, true),
+            (10.0, 8.000001, false),
+            (4.0, 3.1, false),
+            (4.0, 3.2, false),
+            (0.0, 0.0, true),
+            (10.160898695740133, 3.950030168390911, true),
+            (20.113734419323308, 6.765109022500242, true),
+            (10.0, 10.0, false),
+            (10.0, 11.0, false),
+        ] {
+            assert_eq!(
+                post_eq_underfill_is_acceptable(before, after),
+                accepted,
+                "{before} -> {after}"
+            );
+        }
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(!post_eq_underfill_is_acceptable(invalid, 0.0));
+            assert!(!post_eq_underfill_is_acceptable(10.0, invalid));
+        }
+    }
     use ndarray::Array1;
 
     fn curve_with_levels(levels: impl Fn(f64) -> f64) -> Curve {
@@ -355,6 +436,61 @@ mod tests {
     }
 
     #[test]
+    fn correctable_dip_depth_hinges_finite_depths_only() {
+        assert_eq!(correctable_dip_depth_db(0.0), 0.0);
+        assert_eq!(correctable_dip_depth_db(2.0), 2.0);
+        assert_eq!(
+            correctable_dip_depth_db(ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB),
+            ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB
+        );
+        assert_eq!(
+            correctable_dip_depth_db(25.0),
+            ROUTE_OPTIMIZER_CORRECTABLE_DIP_DEPTH_DB
+        );
+        assert!(correctable_dip_depth_db(f64::NAN).is_nan());
+        assert_eq!(correctable_dip_depth_db(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn route_objective_stops_paying_for_partial_shaves_of_deep_nulls() {
+        // Narrow null inside the [40, 160] Hz crossover octave (xover 80 Hz),
+        // mirroring the measured 25 dB nulls the route DE used to chase.
+        let target = curve_with_levels(|_| 0.0);
+        let nulled = |depth: f64| {
+            curve_with_levels(|frequency| {
+                if (70.0..=90.0).contains(&frequency) {
+                    -depth
+                } else {
+                    0.0
+                }
+            })
+        };
+        let loss = |curve: &Curve| {
+            bass_management_objective_with_target(Some(curve), Some(&target), 80.0)
+                .expect("finite loss")
+        };
+        let deep = loss(&nulled(25.0));
+        let shaved = loss(&nulled(20.0));
+        let fixed = loss(&nulled(2.0));
+        let shave_reward = deep - shaved;
+        let fix_reward = shaved - fixed;
+        // The underfill term plateaus, so a 5 dB shave of a deep null earns
+        // only its small RMS change instead of the old uncapped depth price.
+        assert!(
+            shave_reward < 5.0,
+            "partial null shave over-rewarded: {shave_reward}"
+        );
+        assert!(
+            fix_reward > shave_reward,
+            "complete fix must beat a partial shave: fix={fix_reward} shave={shave_reward}"
+        );
+        assert!(
+            fix_reward > 8.0,
+            "complete fix lost its underfill-term reward: {fix_reward}"
+        );
+    }
+
+    #[test]
     fn crossover_underfill_is_anchored_to_main_only_band() {
         let target = curve_with_levels(|_| 0.0);
         let response = curve_with_levels(|frequency| {
@@ -369,6 +505,43 @@ mod tests {
                 .expect("reference band");
         assert!((underfill - 4.25).abs() <= 0.02);
         assert!(underfill > MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB);
+    }
+
+    #[test]
+    fn dominating_hot_bass_passes_underfill_that_balance_fails() {
+        // Phase 0 pathology record (measured unknown: +12 dB bass drowns the
+        // main and the route optimizer calls it optimal). Underfill is
+        // max(branch) - sum, so single-branch domination shrinks it: the raw
+        // metric stays truthful, but the route OBJECTIVE must add a
+        // domination penalty (Phase 3a) instead of rewarding this.
+        let main = curve_with_levels(|_| 0.0);
+        let bass = curve_with_levels(|_| 0.0);
+        let nulled = curve_with_levels(|frequency| {
+            if (40.0..=160.0).contains(&frequency) {
+                -40.0
+            } else {
+                6.0
+            }
+        });
+        let balanced =
+            bass_management_crossover_cancellation_underfill_db(&main, &bass, &nulled, 80.0)
+                .expect("shared grid");
+        let hot_bass = curve_with_levels(|_| 12.0);
+        let dominated = curve_with_levels(|frequency| {
+            if (40.0..=160.0).contains(&frequency) {
+                9.5
+            } else {
+                12.0
+            }
+        });
+        let drowning =
+            bass_management_crossover_cancellation_underfill_db(&main, &hot_bass, &dominated, 80.0)
+                .expect("shared grid");
+        assert!(balanced > 20.0, "balanced null must read huge: {balanced}");
+        assert!(
+            drowning < MAX_ACCEPTED_CROSSOVER_UNDERFILL_DB,
+            "drowning must pass the raw gate: {drowning}"
+        );
     }
 
     #[test]
@@ -419,9 +592,15 @@ mod tests {
         let main = curve_with_levels(|_| -6.0);
         let bass = main.clone();
         let combined = curve_with_levels(|frequency| if frequency == 117.0 { -18.0 } else { -6.0 });
-        assert_eq!(bass_management_crossover_cancellation_worst_bin(&main, &bass, &combined, 80.0), Some((117.0, 12.0)));
+        assert_eq!(
+            bass_management_crossover_cancellation_worst_bin(&main, &bass, &combined, 80.0),
+            Some((117.0, 12.0))
+        );
         let mut shifted = combined.clone();
         shifted.freq += 0.5;
-        assert_eq!(bass_management_crossover_cancellation_worst_bin(&main, &bass, &shifted, 80.0), None);
+        assert_eq!(
+            bass_management_crossover_cancellation_worst_bin(&main, &bass, &shifted, 80.0),
+            None
+        );
     }
 }

@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+
+import json
+import csv
+import struct
+import sys
+import tempfile
+import unittest
+from types import SimpleNamespace
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "utils"))
+
+import mdat2csv
+
+
+class Mdat2CsvTests(unittest.TestCase):
+    def test_export_cache_requires_complete_catalogue_and_preserves_user_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'capture.mdat'
+            source.write_bytes(b'capture snapshot')
+            outputs = [root / name for name in ('L.csv', 'L__ir.csv', 'recordings.json')]
+            for path in outputs:
+                path.write_text('exported')
+            digest = mdat2csv.capture_sha256(source)
+            mdat2csv.write_export_cache(root, digest, None, outputs)
+            self.assertTrue(mdat2csv.complete_export_cache(root, digest, None))
+            cache_path = root / mdat2csv.EXPORT_CACHE_NAME
+            catalogue = json.loads(cache_path.read_text())
+            catalogue['converter_sha256'] = 'older converter'
+            cache_path.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+            mdat2csv.write_export_cache(root, digest, None, outputs)
+            outputs[0].write_text('user-edited curve')
+            self.assertTrue(mdat2csv.complete_export_cache(root, digest, None))
+            self.assertEqual(outputs[0].read_text(), 'user-edited curve')
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, 'new reference'))
+            source.write_bytes(b'different capture')
+            self.assertFalse(mdat2csv.complete_export_cache(root, mdat2csv.capture_sha256(source), None))
+            outputs[1].unlink()
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+            (root / mdat2csv.EXPORT_CACHE_NAME).write_text('{}')
+            self.assertFalse(mdat2csv.complete_export_cache(root, digest, None))
+
+    def test_cache_cannot_escape_export_directory_or_skip_empty_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'recordings.json').write_text('{}')
+            (root / 'L.csv').write_text('')
+            catalogue = {'schema_version': 1, 'source_sha256': 'snapshot',
+                         'converter_sha256': mdat2csv.CONVERTER_SHA256,
+                         'timing_reference_id': None, 'outputs': ['recordings.json', 'L.csv']}
+            cache = root / mdat2csv.EXPORT_CACHE_NAME
+            cache.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, 'snapshot', None))
+            catalogue['outputs'] = ['recordings.json', '../other.csv']
+            cache.write_text(json.dumps(catalogue))
+            self.assertFalse(mdat2csv.complete_export_cache(root, 'snapshot', None))
+
+    def test_ir_export_preserves_timing_amplitude_and_config_binding(self):
+        measurement = {
+            'name': 'Left seat',
+            'ir': {'amplitude': (0.0000000123, -0.25, 0.125),
+                   'start_time_s': -0.0012345,
+                   'sample_interval_s': 1 / 48000,
+                   'sample_rate_hz': 48000},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = mdat2csv.export_ir_csv(measurement, directory)
+            with open(path) as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual([float(r['amplitude']) for r in rows],
+                             list(measurement['ir']['amplitude']))
+            self.assertAlmostEqual(float(rows[0]['time_ms']), -1.2345)
+            self.assertAlmostEqual(float(rows[1]['time_ms']) - float(rows[0]['time_ms']),
+                                   1000 / 48000)
+            csv_path = str(Path(directory) / 'Left_seat.csv')
+            config_path = mdat2csv.export_recordings_json(
+                [measurement], [csv_path], directory, ir_paths=[path])
+            self.assertNotIn('measured_impulse_responses', json.loads(Path(config_path).read_text()))
+            mdat2csv.export_recordings_json(
+                [measurement], [csv_path], directory, ir_paths=[path],
+                timing_reference_id='reference-L')
+            config = json.loads(Path(config_path).read_text())
+            self.assertEqual(config['measured_impulse_responses']['Left_seat'], {
+                'path': 'Left_seat__ir.csv', 'sample_rate_hz': 48000,
+                'timing_reference_id': 'reference-L',
+            })
+            Path(path).write_text('preserved')
+            mdat2csv.export_ir_csv(measurement, directory, overwrite=False)
+            self.assertEqual(Path(path).read_text(), 'preserved')
+
+    def test_ir_rejects_missing_derived_and_invalid_data(self):
+        def obj(name, **fields):
+            # Java fields are keyed by descriptors rather than strings.
+            class Field:
+                def __init__(self, name):
+                    self.name = name
+            return SimpleNamespace(classdesc=SimpleNamespace(name=name),
+                                   field_data={name: {Field(k): v for k, v in fields.items()}})
+
+        base = dict(data=[0.1, -0.3], n=2, T=1 / 48000, startTime=-0.5)
+        for change in ({'data': [0., 0.]}, {'data': [float('nan'), 1.]},
+                       {'T': 0}, {'startTime': float('inf')}, {'n': 3},
+                       {'unfilt': [0.1, 0.2]}):
+            sampled = obj('roomeqwizard.SampledData', **(base | change))
+            measurement = obj('roomeqwizard.MeasData', irData=obj('IRData', ir=sampled))
+            with self.subTest(change=change):
+                ir, warning = mdat2csv.extract_ir(measurement)
+                self.assertIsNone(ir)
+                self.assertTrue(warning)
+        ir, warning = mdat2csv.extract_ir(obj('MeasData', irData=obj('IRData', minPhase=True)))
+        self.assertIsNone(ir)
+        self.assertIn('minimum-phase', warning)
+
+    def test_no_clobber_preserves_existing_exports_and_creates_missing_csvs(self):
+        measurement = {
+            'name': 'seat', 'freq': [20., 80.],
+            'spl': [80., 81.], 'phase': [0., 10.],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            existing_csv = Path(directory) / 'seat.csv'
+            existing_csv.write_text('user measurement', encoding='utf-8')
+            existing_config = Path(directory) / 'recordings.json'
+            existing_config.write_text('user configuration', encoding='utf-8')
+            path = mdat2csv.export_csv(measurement, directory, overwrite=False)
+            mdat2csv.export_recordings_json([measurement], [path], directory, overwrite=False)
+            self.assertEqual(existing_csv.read_text(), 'user measurement')
+            self.assertEqual(existing_config.read_text(), 'user configuration')
+            measurement['name'] = 'missing_seat'
+            created = mdat2csv.export_csv(measurement, directory, overwrite=False)
+            text = Path(created).read_text()
+            self.assertIn('freq_hz,spl_db,phase_deg', text.splitlines())
+            self.assertIn('80.000000', text)
+
+    def test_csv_preserves_native_unequal_grids_and_narrow_null(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for index, frequencies in enumerate(([20., 79., 80., 81., 500.], [30., 80., 400.])):
+                levels = [40. if f == 80. else 80. for f in frequencies]
+                phases = [-0.36 * f for f in frequencies]
+                path = mdat2csv.export_csv({
+                    'name': f'seat_{index}', 'freq': frequencies,
+                    'spl': levels, 'phase': phases,
+                }, directory)
+                with open(path, newline='') as stream:
+                    # Consumers skip `#` provenance lines like the curve loaders do.
+                    records = [line for line in stream if not line.startswith('#')]
+                    rows = list(csv.DictReader(records))
+                self.assertEqual([float(r['freq_hz']) for r in rows], frequencies)
+                self.assertEqual([float(r['spl_db']) for r in rows], levels)
+                for row, expected in zip(rows, phases):
+                    self.assertAlmostEqual(float(row['phase_deg']), expected, delta=0.5e-6)
+
+    def test_invalid_csv_data_does_not_overwrite_existing_export(self):
+        invalid = [
+            {'spl': None}, {'spl': [80.]}, {'spl': [80., float('nan')]},
+            {'phase': [0.]}, {'phase': [0., float('inf')]},
+            {'freq': [20., 20.]}, {'freq': [80., 20.]},
+            {'freq': [0., 80.]}, {'freq': [20., float('nan')]},
+            {'freq': []},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'seat.csv'
+            destination.write_text('existing valid export', encoding='utf-8')
+            for change in invalid:
+                measurement = {'name': 'seat', 'freq': [20., 80.],
+                               'spl': [80., 40.], 'phase': None}
+                measurement.update(change)
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    mdat2csv.export_csv(measurement, directory)
+                self.assertEqual(destination.read_text(), 'existing valid export')
+
+    def test_measurements_can_have_different_point_counts(self):
+        fields = [('I', 'dataLength'), ('I', 'sampleRate')]
+        first = struct.pack('>ii', 1068, 48000)
+        reference = b'\x73\x71\x00\x7e\x00\x13'
+        data = first
+        expected = [0]
+        for length in (1068, 448, 448):
+            data += reference
+            expected.append(len(data))
+            data += struct.pack('>ii', length, 48000)
+        data += bytes(1068 * 4)
+        self.assertEqual(
+            mdat2csv.find_measurement_primitives(data, 0, fields), expected,
+        )
+
+    def test_real_mixed_length_mdat_exports_all_four_curves(self):
+        path = (Path(__file__).resolve().parents[1]
+                / 'data_tests/roomeq/measured/test/2.2.mdat')
+        if not path.exists():
+            self.skipTest('Local mixed-length REW fixture is unavailable')
+        measurements = mdat2csv.parse_mdat(path)
+        self.assertEqual([len(m['freq']) for m in measurements], [1068, 1068, 448, 448])
+        self.assertEqual([m['name'] for m in measurements], [
+            'L No EQ Sep 1', 'R No EQ Sep 1',
+            'L Sub No EQ Sep 1', 'R Sub No EQ Sep 1',
+        ])
+        for measurement in measurements:
+            self.assertEqual(len(measurement['spl']), len(measurement['freq']))
+            self.assertEqual(len(measurement['phase']), len(measurement['freq']))
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [mdat2csv.export_csv(m, directory) for m in measurements]
+            self.assertEqual(len(set(paths)), 4)
+            output = mdat2csv.export_recordings_json(measurements, paths, directory)
+            self.assertEqual(len(json.loads(Path(output).read_text())['speakers']), 4)
+
+    def test_sub_zero_spl_tails_are_not_rejected(self):
+        raw = (-24.0, 42.0, 68.0, 86.0)
+        calibrated = (-23.0, 43.0, 69.0, 87.0)
+        data = struct.pack('>4f4f', *(raw + calibrated))
+        arrays = [
+            (0, 4, 0, '[F'),
+            (16, 4, 16, '[F'),
+        ]
+
+        observed_raw, observed_calibrated = mdat2csv.identify_spl_array(arrays, data, 4)
+
+        self.assertEqual(observed_raw, raw)
+        self.assertEqual(observed_calibrated, calibrated)
+
+    def test_short_description_preserves_spaces_and_date(self):
+        def string(value):
+            encoded = value.encode('utf-8')
+            return b'\x74' + struct.pack('>H', len(encoded)) + encoded
+
+        data = (bytes(8) + string('SLOPE_24DB')
+                + string('Notes\nPrivate room details')
+                + string('L No EQ Sep 1') + string('-20 dBFS'))
+        names = mdat2csv.find_measurement_names(data, [(0, 1, 0, '[F')], [len(data)])
+        self.assertEqual(names, ['L No EQ Sep 1'])
+
+    def test_embedded_notes_are_reduced_to_the_channel_label(self):
+        private_note = (
+            'Front Left\n'
+            'Room dimensions and private equipment notes\n'
+            'Delay and clock details'
+        ).encode('utf-8')
+        prefix = bytes(8)
+        encoded_note = b'\x74' + struct.pack('>H', len(private_note)) + private_note
+        data = prefix + encoded_note
+        ir_arrays = [(0, 1, 0, '[F')]
+
+        names = mdat2csv.find_measurement_names(data, ir_arrays, [len(data)])
+
+        self.assertEqual(names, ['Front Left'])
+        self.assertNotIn('private', names[0])
+
+    def test_measurement_title_is_preferred_over_embedded_notes(self):
+        notes = (
+            'Front Left\n'
+            'CDSP Straight Through - REFERENCE\n'
+            'Kef R3M ported (part of 5.1 config)\n'
+            'Room dimensions and timing details'
+        ).encode('utf-8')
+        title = b'L r3m_ported_48k_FL_260706a_direct Jul 6 -20 dBFS'
+        data = (
+            bytes(8)
+            + b'\x74'
+            + struct.pack('>H', len(notes))
+            + notes
+            + b'\x74'
+            + struct.pack('>H', len(title))
+            + title
+        )
+        ir_arrays = [(0, 1, 0, '[F')]
+
+        names = mdat2csv.find_measurement_names(data, ir_arrays, [len(data)])
+
+        self.assertEqual(names, ['L r3m_ported_48k_FL_260706a_direct Jul 6 -20 dBFS'])
+
+    def test_real_mdat_uses_measurement_title(self):
+        path = (
+            Path(__file__).resolve().parents[1]
+            / 'data_tests/roomeq/measured/5.1_kef'
+            / '260706a_1800_cdsp_straightthru_baseline.mdat'
+        )
+
+        measurements = mdat2csv.parse_mdat(path)
+
+        self.assertEqual(
+            measurements[0]['name'],
+            'L r3m_ported_48k_FL_260706a_direct Jul 6 -20 dBFS',
+        )
+        self.assertEqual(len(measurements), 7)
+        for measurement in measurements:
+            self.assertIsNone(measurement['ir_warning'])
+            ir = measurement['ir']
+            self.assertEqual(len(ir['amplitude']), 131072)
+            self.assertEqual(ir['sample_rate_hz'], 48000)
+        left, right = [m['ir'] for m in measurements[:2]]
+        self.assertAlmostEqual(left['start_time_s'], -0.9999985662931742)
+        self.assertAlmostEqual(right['start_time_s'], -1.0008966158820811)
+        # Compare the exported samples to the fixture's serialized float bytes;
+        # REW's cached interpolated peak is slightly different from the samples.
+        data = path.read_bytes()
+        arrays = mdat2csv.resolve_array_types(mdat2csv.scan_float_arrays(data), data)
+        first_ir = next(a for a in arrays if a[1] == 131072 and a[3] == '[F')
+        self.assertEqual(left['amplitude'],
+                         mdat2csv.read_float_array(data, first_ir[2], first_ir[1]))
+
+    def test_html_descriptions_do_not_retain_raw_metadata(self):
+        html = b'<BODY>Jul 6<BR>18:00<BR>20 to 20000 Hz<BR>20 to 90 dB SPL</HTML>'
+
+        descriptions = mdat2csv.find_html_descriptions(html)
+
+        self.assertEqual(descriptions[0]['spl_range'], '20 to 90 dB SPL')
+        self.assertNotIn('raw', descriptions[0])
+
+    def test_recordings_export_contains_only_sanitized_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / 'Front_Left.csv'
+            csv_path.write_text('freq_hz,spl_db,phase_deg\n', encoding='utf-8')
+            output = mdat2csv.export_recordings_json(
+                [{'name': 'Front Left'}],
+                [str(csv_path)],
+                directory,
+            )
+            payload = json.loads(Path(output).read_text(encoding='utf-8'))
+
+        self.assertEqual(payload['version'], '2.1.0')
+        self.assertEqual(payload['speakers']['Front_Left']['name'], 'Front Left')
+
+    def test_identifier_collapses_punctuation_and_whitespace(self):
+        self.assertEqual(
+            mdat2csv.sanitize_identifier('Left &  Right together'),
+            'Left_Right_together',
+        )
+
+    def test_exported_csv_carries_provenance_headers(self):
+        measurement = {
+            'name': 'L No EQ Sep 1', 'freq': [20., 80.],
+            'spl': [80., 81.], 'phase': [0., 10.],
+            'params': {'ppo': 96, 'sampleRate': 48000},
+            'html': {'date': 'Sep 1, 2026', 'time': '6:36:56 AM',
+                     'freq_range': '10 to 21,924 Hz', 'spl_range': '26 to 85 dB SPL'},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = mdat2csv.export_csv(measurement, directory, source_label='2.2.mdat')
+            text = Path(path).read_text()
+        lines = text.splitlines()
+        self.assertEqual(lines[0], '# Measurement: L No EQ Sep 1')
+        self.assertIn('# Dated: Sep 1, 2026 6:36:56 AM', lines)
+        self.assertIn('# Frequency Step: 96 ppo', lines)
+        self.assertIn('# Converted from: 2.2.mdat via mdat2csv.py', lines)
+        # Unrecovered facts stay absent: no microphone, timing, or smoothing claims.
+        for line in lines:
+            lowered = line.lower()
+            self.assertNotIn('microphone', lowered)
+            self.assertNotIn('timing reference', lowered)
+            self.assertNotIn('smoothing', lowered)
+        self.assertIn('freq_hz,spl_db,phase_deg', lines)
+
+    def test_header_block_omits_missing_metadata(self):
+        lines = mdat2csv.header_block({'name': 'seat'})
+        self.assertEqual(lines, ['# Measurement: seat'])
+
+
+if __name__ == '__main__':
+    unittest.main()

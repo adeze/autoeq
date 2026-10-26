@@ -11,6 +11,10 @@ use std::process;
 #[derive(Parser, Debug, Clone)]
 #[command(author, about, long_about = None)]
 pub struct Args {
+    /// Print the installed program's package version and exit.
+    #[arg(short = 'V', long, default_value_t = false)]
+    pub program_version: bool,
+
     /// Number of IIR filters to use for optimization.
     #[arg(short = 'n', long, default_value_t = 7)]
     pub num_filters: usize,
@@ -24,6 +28,16 @@ pub struct Args {
     /// If not provided, a flat 0 dB target is assumed.
     #[arg(short, long)]
     pub target: Option<PathBuf>,
+
+    /// Product workflow JSON describing source, independent target support,
+    /// and an explicit playback device profile.
+    #[arg(long, value_name = "PATH")]
+    pub product_config: Option<PathBuf>,
+
+    /// Print the versioned product-renderer capability report as JSON and exit.
+    /// This query must be used alone; it does not load measurements or devices.
+    #[arg(long, default_value_t = false)]
+    pub product_renderer_capabilities: bool,
 
     /// The sample rate for the IIR filters.
     #[arg(short, long, default_value_t = 48000.0)]
@@ -85,6 +99,33 @@ pub struct Args {
     /// Maximum number of evaluations for the optimizer
     #[arg(long, default_value_t = 2_000)]
     pub maxeval: usize,
+
+    /// Load a checked warm-start candidate from this checkpoint file.
+    #[arg(long, value_name = "PATH")]
+    pub resume_state: Option<PathBuf>,
+
+    /// Atomically save a recoverable warm-start checkpoint to this file.
+    #[arg(long, value_name = "PATH")]
+    pub checkpoint_state: Option<PathBuf>,
+
+    /// Resume the complete seeded AutoEQ DE optimizer state from this file.
+    /// Exact continuation requires the same measurement, config, seed, executable,
+    /// and numeric runtime environment.
+    #[arg(long, value_name = "PATH")]
+    pub resume_exact: Option<PathBuf>,
+
+    /// Atomically save complete AutoEQ DE state after each safe generation barrier.
+    #[arg(long, value_name = "PATH")]
+    pub checkpoint_exact: Option<PathBuf>,
+
+    /// Record every seeded single-curve DE checkpoint and response to a new RRD file.
+    /// Requires a build with rerun-telemetry; existing files are refused.
+    #[arg(long, value_name = "PATH")]
+    pub rerun_recording: Option<PathBuf>,
+
+    /// Additionally stream telemetry to a Rerun viewer on 127.0.0.1 at this port.
+    #[arg(long, value_name = "PORT", requires = "rerun_recording", value_parser = clap::value_parser!(u16).range(1..))]
+    pub rerun_port: Option<u16>,
 
     /// Whether to run a local refinement after global optimization
     #[arg(long, default_value_t = false)]
@@ -205,8 +246,9 @@ pub struct Args {
     pub seed: Option<u64>,
 
     /// Quality assurance mode with optional threshold: suppress normal output, show summary line and analysis
-    /// If a threshold is provided (e.g., --qa 0.4), also perform QA analysis
-    #[arg(long, value_name = "THRESHOLD")]
+    /// Bare `--qa` requires strict improvement at threshold zero, convergence, and spacing.
+    /// A supplied threshold (e.g., `--qa 0.4`) keeps the same strict predicate.
+    #[arg(long, value_name = "THRESHOLD", num_args = 0..=1, default_missing_value = "0")]
     pub qa: Option<f64>,
 
     /// Path to first driver measurement CSV file (for multi-driver optimization with --loss drivers-flat)
@@ -301,7 +343,16 @@ impl Args {
             // File paths/flags default to None/false
             curve: None,
             target: None,
+            product_config: None,
+            product_renderer_capabilities: false,
+            program_version: false,
             output: None,
+            resume_state: None,
+            checkpoint_state: None,
+            resume_exact: None,
+            checkpoint_exact: None,
+            rerun_recording: None,
+            rerun_port: None,
             speaker: None,
             version: None,
             measurement: None,
@@ -436,10 +487,63 @@ mod tests {
     use super::super::peq_model::PeqModel;
     use super::Args;
     use crate::LossType;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     fn parsed_base() -> Args {
         Args::try_parse_from::<&[&str], _>(&["prog"]).unwrap()
+    }
+
+    #[test]
+    fn warm_start_paths_parse_and_default_to_none() {
+        let defaults = Args::speaker_defaults();
+        assert!(defaults.resume_state.is_none());
+        assert!(defaults.checkpoint_state.is_none());
+        assert!(defaults.resume_exact.is_none());
+        assert!(defaults.checkpoint_exact.is_none());
+        assert!(defaults.product_config.is_none());
+
+        let parsed = Args::try_parse_from([
+            "prog",
+            "--resume-state",
+            "prior.json",
+            "--checkpoint-state",
+            "next.json",
+        ])
+        .expect("warm-start paths should be parsed");
+        assert_eq!(parsed.resume_state, Some("prior.json".into()));
+        assert_eq!(parsed.checkpoint_state, Some("next.json".into()));
+
+        let parsed = Args::try_parse_from([
+            "prog",
+            "--resume-exact",
+            "exact-prior.json",
+            "--checkpoint-exact",
+            "exact-next.json",
+        ])
+        .expect("exact-state paths should be parsed");
+        assert_eq!(parsed.resume_exact, Some("exact-prior.json".into()));
+        assert_eq!(parsed.checkpoint_exact, Some("exact-next.json".into()));
+    }
+
+    #[test]
+    fn product_config_path_is_additive_and_optional() {
+        let parsed = Args::try_parse_from(["prog", "--product-config", "run.json"])
+            .expect("product workflow config should be accepted");
+        assert_eq!(parsed.product_config, Some("run.json".into()));
+        assert!(parsed.curve.is_none());
+        assert!(parsed.target.is_none());
+    }
+
+    #[test]
+    fn product_renderer_capability_query_is_additive_and_optional() {
+        let defaults = Args::speaker_defaults();
+        assert!(!defaults.product_renderer_capabilities);
+
+        let parsed = Args::try_parse_from(["prog", "--product-renderer-capabilities"])
+            .expect("renderer capability query should parse");
+        assert!(parsed.product_renderer_capabilities);
+        assert!(parsed.product_config.is_none());
+        assert!(parsed.curve.is_none());
     }
 
     #[test]
@@ -471,6 +575,27 @@ mod tests {
     #[test]
     fn parsed_cli_uses_canonical_cobyla_default() {
         assert_eq!(parsed_base().algo, "autoeq:cobyla");
+    }
+
+    #[test]
+    fn program_version_flag_preserves_api_data_version_argument() {
+        let program = Args::try_parse_from(["autoeq", "--program-version"])
+            .expect("program version flag should parse");
+        assert!(program.program_version);
+        assert_eq!(program.version, None);
+
+        let short = Args::try_parse_from(["autoeq", "-V"])
+            .expect("short program version flag should parse");
+        assert!(short.program_version);
+
+        let api = Args::try_parse_from(["autoeq", "--version", "spinorama-v1"])
+            .expect("existing API data version argument should remain unchanged");
+        assert!(!api.program_version);
+        assert_eq!(api.version.as_deref(), Some("spinorama-v1"));
+
+        let help = Args::command().render_help().to_string();
+        assert!(help.contains("-V, --program-version"));
+        assert!(help.contains("--version <VERSION>"));
     }
 
     #[test]

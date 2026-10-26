@@ -30,6 +30,67 @@ fn modal_curve() -> Curve {
     }
 }
 
+// Count actual emitted sections, not the optional PEQ parameter cache. A
+// Kautz bank is one serialized filter object but can contain several sections.
+fn emitted_eq_section_count(chain: &roomeq_model::ChannelDspChain) -> usize {
+    chain
+        .plugins
+        .iter()
+        .chain(
+            chain
+                .drivers
+                .iter()
+                .flatten()
+                .flat_map(|driver| &driver.plugins),
+        )
+        .filter(|plugin| plugin.plugin_type == "eq")
+        .flat_map(|plugin| {
+            plugin.parameters["filters"]
+                .as_array()
+                .expect("valid emitted EQ filters")
+        })
+        .map(
+            |filter| match filter.get("topology").and_then(serde_json::Value::as_str) {
+                Some("kautz_filter") => {
+                    assert!(
+                        !(filter.get("kautz_sections").is_some()
+                            && filter.get("sections").is_some())
+                    );
+                    filter
+                        .get("kautz_sections")
+                        .or_else(|| filter.get("sections"))
+                        .map(|sections| {
+                            sections
+                                .as_array()
+                                .expect("valid emitted Kautz sections")
+                                .len()
+                                .max(1)
+                        })
+                        .unwrap_or(1)
+                }
+                None | Some("biquad" | "warped_biquad") => 1,
+                Some(other) => panic!("unsupported emitted EQ topology: {other}"),
+            },
+        )
+        .sum()
+}
+
+#[test]
+fn kautz_section_count_uses_emitted_bank_including_zero_weights() {
+    let mut chain: roomeq_model::ChannelDspChain = serde_json::from_value(serde_json::json!({
+        "channel": "count", "plugins": [{"plugin_type": "eq", "parameters": {
+            "filters": [assemble::create_kautz_filter_config(&[(75.0, 8.0, 0.0), (135.0, 10.0, 0.018)])]
+        }}]
+    })).unwrap();
+    assert_eq!(emitted_eq_section_count(&chain), 2);
+    // The existing one-section canary budget must still detect this bank.
+    assert!(emitted_eq_section_count(&chain) > 1);
+    chain.plugins[0].parameters["filters"][0]["kautz_sections"] = serde_json::json!([]);
+    assert_eq!(emitted_eq_section_count(&chain), 1); // Legacy single-section fallback.
+    chain.plugins[0].parameters["filters"] = serde_json::json!([]);
+    assert_eq!(emitted_eq_section_count(&chain), 0);
+}
+
 #[test]
 #[ignore = "explicit matched-budget advanced-mode outcome experiment"]
 fn advanced_modes_matched_budget_multirate_outcomes() {
@@ -38,9 +99,21 @@ fn advanced_modes_matched_budget_multirate_outcomes() {
     let mut regressions = Vec::new();
     for rate in [44_100.0, 48_000.0, 96_000.0] {
         for (name, mode, processing) in [
-            ("peq", IirChannelMode::LowLatency, roomeq_model::ProcessingMode::LowLatency),
-            ("warped_iir", IirChannelMode::WarpedIir, roomeq_model::ProcessingMode::WarpedIir),
-            ("kautz_modal", IirChannelMode::KautzModal, roomeq_model::ProcessingMode::KautzModal),
+            (
+                "peq",
+                IirChannelMode::LowLatency,
+                roomeq_model::ProcessingMode::LowLatency,
+            ),
+            (
+                "warped_iir",
+                IirChannelMode::WarpedIir,
+                roomeq_model::ProcessingMode::WarpedIir,
+            ),
+            (
+                "kautz_modal",
+                IirChannelMode::KautzModal,
+                roomeq_model::ProcessingMode::KautzModal,
+            ),
         ] {
             let curve = modal_curve();
             let input = prepared(curve.clone());
@@ -60,12 +133,21 @@ fn advanced_modes_matched_budget_multirate_outcomes() {
             let features = preprocessed(&curve);
             let resources = EqResources::default();
             let result = process_iir_channel(IirChannelRequest {
-                mode, channel_name: "left", prepared: &input, room_config: &config,
-                sample_rate: rate, target: &target, preprocessed: &features,
-                optimizer: &config.optimizer, eq_resources: &resources, callback: None,
-            }).unwrap();
+                mode,
+                channel_name: "left",
+                prepared: &input,
+                room_config: &config,
+                sample_rate: rate,
+                target: &target,
+                preprocessed: &features,
+                optimizer: &config.optimizer,
+                eq_resources: &resources,
+                callback: None,
+            })
+            .unwrap();
             let serialized = serde_json::to_value(&result.channel).unwrap();
             let chain = serde_json::from_value(serialized.clone()).unwrap();
+            let delivered_filter_count = emitted_eq_section_count(&chain);
             let mut provider = NoConvolutionIr;
             let mut realized = RealizedDsp::new(&chain, rate, &mut provider).unwrap();
             for shift in [0.0, 3.0] {
@@ -88,11 +170,13 @@ fn advanced_modes_matched_budget_multirate_outcomes() {
                 let useful = post_rms < pre_rms;
                 evidence.push(serde_json::json!({"mode": name, "sample_rate_hz": rate,
                     "analytic_mode_shift_hz": shift, "pre_rms_db": pre_rms, "post_rms_db": post_rms,
-                    "useful": useful, "delivered_filter_count": result.filters.len(),
+                    "useful": useful, "delivered_filter_count": delivered_filter_count,
                     "maximum_sampled_gain_db": maximum_gain, "requested_optimizer": config.optimizer,
                     "serialized_channel": serialized}));
-                if !post_rms.is_finite() || result.filters.len() > 1
-                    || maximum_gain > config.optimizer.max_db + 0.01 {
+                if !post_rms.is_finite()
+                    || delivered_filter_count > 1
+                    || maximum_gain > config.optimizer.max_db + 0.01
+                {
                     regressions.push(format!("{name} at {rate}: nonfinite result or section/gain budget exceeded (gain {maximum_gain} dB)"));
                 }
             }
@@ -100,11 +184,15 @@ fn advanced_modes_matched_budget_multirate_outcomes() {
     }
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa");
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("advanced-mode-matched-budget.json"),
+    std::fs::write(
+        directory.join("advanced-mode-matched-budget.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "scope": "analytic_magnitude_challenge_not_physical_heldout_decay_or_listener_evidence",
             "outcomes": evidence, "contract_failures": regressions,
-        })).unwrap()).unwrap();
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     assert!(regressions.is_empty(), "{regressions:?}");
 }
 
@@ -143,6 +231,70 @@ fn plugin_label(plugin: &roomeq_model::PluginConfigWrapper) -> Option<&str> {
         .parameters
         .get("label")
         .and_then(|value| value.as_str())
+}
+
+#[test]
+fn limited_band_iir_report_preserves_prepared_target_shape_and_passband_level() {
+    let curve = flat_curve();
+    let target_curve = Curve {
+        freq: curve.freq.clone(),
+        spl: curve.freq.mapv(|f| if f < 200.0 { 6.0 } else { 0.0 }),
+        ..Curve::default()
+    };
+    let resources = EqResources {
+        target: Some(crate::eq::PreparedEqTarget::Curve(Box::new(target_curve))),
+        ..EqResources::default()
+    };
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(curve.clone(), vec![curve.clone()], false),
+        None,
+        PreparedCea2034::default(),
+        resources.clone(),
+    );
+    let mut config = RoomConfig::default();
+    config.optimizer.min_freq = 40.0;
+    config.optimizer.max_freq = 200.0;
+    let mut target = build_target_context("L", &config, &curve, None);
+    let features = crate::channel_preprocessing::preprocess_channel(
+        "L",
+        &prepared,
+        &config,
+        48_000.0,
+        None,
+        &mut target,
+    )
+    .unwrap();
+    let request = IirChannelRequest {
+        mode: IirChannelMode::LowLatency,
+        channel_name: "L",
+        prepared: &prepared,
+        room_config: &config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &config.optimizer,
+        eq_resources: &resources,
+        callback: None,
+    };
+    let result = super::assemble::assemble_iir_result(
+        &request,
+        IirOptimizerOutput::LowLatency {
+            eq_filters: Vec::new(),
+            preference_filters: Vec::new(),
+        },
+        Vec::new(),
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    let published = result.channel.target_curve.unwrap();
+    for (&f, &spl) in published.freq.iter().zip(&published.spl) {
+        if (40.0..150.0).contains(&f) {
+            assert!((spl - 86.0).abs() < 0.01, "bass target: {spl}");
+        } else if (500.0..2_000.0).contains(&f) {
+            assert!((spl - 80.0).abs() < 0.01, "passband reference: {spl}");
+        }
+    }
 }
 
 #[test]
@@ -194,6 +346,8 @@ fn low_latency_assembly_orders_passes_and_builds_report() {
             preference_filters: vec![preference],
         },
         Vec::new(),
+        Vec::new(),
+        None,
     )
     .unwrap();
 
@@ -293,6 +447,8 @@ fn warped_assembly_keeps_standard_hpf_and_marks_optimized_filters() {
             warped_lambda: 0.5,
         },
         Vec::new(),
+        Vec::new(),
+        None,
     )
     .unwrap();
 
@@ -413,14 +569,11 @@ fn kautz_processing_detects_modes_and_returns_path_free_chain() {
     })
     .unwrap();
 
-    assert!(!result.filters.is_empty());
     assert!(
-        result
-            .filters
-            .iter()
-            .all(|filter| filter.db_gain.abs() <= room_config.optimizer.max_db + 1e-9),
-        "Kautz gains must be referenced to response shape, not absolute SPL"
+        result.filters.is_empty(),
+        "linear Kautz weights must not masquerade as PEQ dB gains"
     );
+    assert_eq!(emitted_eq_section_count(&result.channel), 1);
     assert_eq!(
         plugin_label(
             result
@@ -432,4 +585,233 @@ fn kautz_processing_detects_modes_and_returns_path_free_chain() {
         ),
         Some("kautz_modal")
     );
+    let mut convolution = crate::dsp_realization::NoConvolutionIr;
+    let mut realized =
+        crate::dsp_realization::RealizedDsp::new(&result.channel, 48_000.0, &mut convolution)
+            .unwrap();
+    let exported = realized.apply_to_curve(&result.raw_pre_eq_curve).unwrap();
+    // Linear Kautz weights are not dB gains. Check the delivered transfer,
+    // rather than comparing coefficient metadata to a dB constraint.
+    for i in 0..=1024 {
+        let frequency = 20.0 * 1000.0_f64.powf(i as f64 / 1024.0);
+        let gain = 20.0 * realized.response_at(frequency).unwrap().norm().log10();
+        assert!(gain >= room_config.optimizer.min_db - 0.001);
+        assert!(gain <= room_config.optimizer.max_db + 0.001);
+    }
+    let max_error = exported
+        .spl
+        .iter()
+        .zip(&result.raw_post_eq_curve.spl)
+        .map(|(actual, reported)| (actual - reported).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_error < 1e-9,
+        "Kautz reported response differs from exported realization by {max_error} dB"
+    );
+}
+
+fn constrained_kautz_sections(optimizer: OptimizerConfig) -> Result<serde_json::Value> {
+    let freq = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 512);
+    let spl = freq.mapv(|f| {
+        80.0 + [(55.0, 6.0), (110.0, 10.0), (170.0, 8.0)]
+            .iter()
+            .map(|&(center, height)| height * (-((f - center) / 3.0).powi(2)).exp())
+            .sum::<f64>()
+    });
+    let curve = Curve {
+        freq,
+        spl,
+        ..Curve::default()
+    };
+    let input = prepared(curve.clone());
+    let config = RoomConfig {
+        optimizer,
+        ..RoomConfig::default()
+    };
+    let resources = EqResources::default();
+    let target = build_target_context("left", &config, &curve, None);
+    let features = preprocessed(&curve);
+    let result = process_iir_channel(IirChannelRequest {
+        mode: IirChannelMode::KautzModal,
+        channel_name: "left",
+        prepared: &input,
+        room_config: &config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &config.optimizer,
+        eq_resources: &resources,
+        callback: None,
+    })?;
+    let plugin = result
+        .channel
+        .plugins
+        .iter()
+        .find(|plugin| plugin_label(plugin) == Some("kautz_modal"))
+        .expect("successful Kautz processing must publish its sections");
+    Ok(plugin.parameters["filters"][0]["kautz_sections"].clone())
+}
+
+#[test]
+fn kautz_modal_budget_limits_selected_sections() {
+    let sections = constrained_kautz_sections(OptimizerConfig {
+        num_filters: 1,
+        min_freq: 20.0,
+        max_freq: 500.0,
+        ..OptimizerConfig::default()
+    })
+    .unwrap();
+    let sections = sections.as_array().expect("serialized section list");
+    assert_eq!(sections.len(), 1);
+    let frequency = sections[0]["pole_freq"].as_f64().unwrap();
+    assert!(
+        (frequency - 110.0).abs() < 2.0,
+        "retain the strongest eligible mode: {frequency}"
+    );
+}
+
+#[test]
+fn kautz_modal_budget_limits_pole_band_and_q() {
+    let sections = constrained_kautz_sections(OptimizerConfig {
+        num_filters: 4,
+        min_freq: 20.0,
+        max_freq: 500.0,
+        min_q: 1.0,
+        max_q: 3.0,
+        correction_band: Some(roomeq_model::CorrectionBandPolicy {
+            min_hz: 90.0,
+            max_hz: 130.0,
+            allow_natural_rolloff: true,
+        }),
+        ..OptimizerConfig::default()
+    })
+    .unwrap();
+    let sections = sections.as_array().expect("serialized section list");
+    assert_eq!(sections.len(), 1);
+    let frequency = sections[0]["pole_freq"].as_f64().unwrap();
+    let q = sections[0]["q"].as_f64().unwrap();
+    assert!((90.0..=130.0).contains(&frequency));
+    assert!(
+        (1.0..=3.0).contains(&q),
+        "Q must respect the requested maximum: {q}"
+    );
+}
+
+#[test]
+fn kautz_modal_budget_rejects_no_eligible_modes() {
+    let result = constrained_kautz_sections(OptimizerConfig {
+        min_freq: 250.0,
+        max_freq: 500.0,
+        ..OptimizerConfig::default()
+    });
+    assert!(
+        matches!(result, Err(AutoeqError::OptimizationFailed { message })
+        if message.contains("no room modes within"))
+    );
+}
+
+#[test]
+fn kautz_modal_budget_preserves_supported_q_below_half() {
+    let sections = constrained_kautz_sections(OptimizerConfig {
+        num_filters: 1,
+        min_freq: 20.0,
+        max_freq: 500.0,
+        min_q: 0.2,
+        max_q: 0.3,
+        ..OptimizerConfig::default()
+    })
+    .unwrap();
+    let sections = sections.as_array().unwrap();
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0]["q"].as_f64().unwrap(), 0.3);
+}
+
+#[test]
+fn kautz_modal_budget_rejects_invalid_public_input() {
+    for optimizer in [
+        OptimizerConfig {
+            num_filters: 0,
+            ..OptimizerConfig::default()
+        },
+        OptimizerConfig {
+            min_q: 5.0,
+            max_q: 2.0,
+            ..OptimizerConfig::default()
+        },
+        OptimizerConfig {
+            min_q: 0.01,
+            max_q: 0.05,
+            ..OptimizerConfig::default()
+        },
+        OptimizerConfig {
+            max_q: f64::NAN,
+            ..OptimizerConfig::default()
+        },
+        OptimizerConfig {
+            min_freq: 500.0,
+            max_freq: 20.0,
+            ..OptimizerConfig::default()
+        },
+        OptimizerConfig {
+            correction_band: Some(roomeq_model::CorrectionBandPolicy {
+                min_hz: 90.0,
+                max_hz: 130.0,
+                allow_natural_rolloff: false,
+            }),
+            ..OptimizerConfig::default()
+        },
+    ] {
+        assert!(matches!(
+            constrained_kautz_sections(optimizer),
+            Err(AutoeqError::OptimizationFailed { .. })
+        ));
+    }
+}
+
+#[test]
+fn kautz_playback_fit_honors_prepared_target_without_forcing_correction() {
+    let curve = modal_curve();
+    let mut config = RoomConfig::default();
+    config.optimizer.min_freq = 20.0;
+    config.optimizer.max_freq = 500.0;
+    let mut desired = curve.clone();
+    desired.spl -= roomeq_analysis::response_metrics::mean_response_in_range(&curve, 20.0, 500.0);
+    let resources = EqResources {
+        target: Some(crate::eq::PreparedEqTarget::Curve(Box::new(desired))),
+        ..EqResources::default()
+    };
+    let input = prepared(curve.clone());
+    let target = build_target_context("left", &config, &curve, None);
+    let features = preprocessed(&curve);
+    let result = process_iir_channel(IirChannelRequest {
+        mode: IirChannelMode::KautzModal,
+        channel_name: "left",
+        prepared: &input,
+        room_config: &config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &config.optimizer,
+        eq_resources: &resources,
+        callback: None,
+    })
+    .unwrap();
+    let plugin = result
+        .channel
+        .plugins
+        .iter()
+        .find(|plugin| plugin_label(plugin) == Some("kautz_modal"))
+        .unwrap();
+    let sections = plugin.parameters["filters"][0]["kautz_sections"]
+        .as_array()
+        .unwrap();
+    assert!(!sections.is_empty());
+    assert!(
+        sections
+            .iter()
+            .all(|section| section["gain"].as_f64() == Some(0.0))
+    );
+    for (before, after) in curve.spl.iter().zip(&result.raw_post_eq_curve.spl) {
+        assert!((before - after).abs() < 1e-10);
+    }
 }

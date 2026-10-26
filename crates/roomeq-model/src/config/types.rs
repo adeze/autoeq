@@ -33,6 +33,11 @@ use std::path::PathBuf;
 /// Contains device settings and signal parameters used during measurement capture
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct RecordingConfiguration {
+    /// Required acquisition inventory for newly exported capture configurations.
+    /// The canonical filename is `capture-handoff.json`; missing or changed
+    /// inventories are refused before correction. Absent on legacy imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_handoff_file: Option<String>,
     /// Playback device name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback_device_name: Option<String>,
@@ -292,6 +297,25 @@ pub enum ProcessingMode {
     KautzModal,
 }
 
+impl ProcessingMode {
+    /// Return the temporal acceptance class for this processing mode.
+    ///
+    /// Spectral and spatial checks are shared by all modes; only the
+    /// realization's latency, group-delay and pre-ringing envelope changes.
+    /// Keeping this mapping in the model prevents workflow and report code
+    /// from silently assigning FIR or hybrid output the low-latency IIR
+    /// limits.
+    pub fn runtime_output_class(self) -> crate::RuntimeOutputClass {
+        match self {
+            Self::PhaseLinear => crate::RuntimeOutputClass::Fir,
+            Self::Hybrid | Self::MixedPhase => crate::RuntimeOutputClass::Hybrid,
+            Self::LowLatency | Self::WarpedIir | Self::KautzModal => {
+                crate::RuntimeOutputClass::LowLatencyIir
+            }
+        }
+    }
+}
+
 /// Strategy for subwoofer optimization
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -303,6 +327,24 @@ pub enum SubwooferStrategy {
     Mso,
     /// Double Bass Array (active cancellation)
     Dba,
+}
+
+/// How RoomEQ chooses the stereo input-to-subwoofer routing matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubwooferRouting {
+    /// Evaluate every supported topology and select the best valid result.
+    #[default]
+    Optimize,
+}
+
+/// A measured physical subwoofer output.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SubwooferOutput {
+    /// Stable physical output identifier used by routing and exporters.
+    pub id: String,
+    /// Key of the measurement in the top-level `speakers` map.
+    pub speaker: String,
 }
 
 /// System topology model
@@ -439,18 +481,36 @@ impl From<&str> for SubwooferCrossoverRef {
 
 /// Subwoofer system configuration (part of SystemConfig)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SubwooferSystemConfig {
     /// Strategy for subwoofer optimization
-    #[serde(default)]
+    #[serde(default, rename = "strategy")]
     pub config: SubwooferStrategy,
+    /// Stereo routing topology selection policy.
+    #[serde(default)]
+    pub routing: SubwooferRouting,
+    /// Ordered measured physical subwoofer outputs.
+    pub outputs: Vec<SubwooferOutput>,
     /// Crossover reference key(s) (each points to an entry in `crossovers`):
     /// either one key shared by every sub, or a positional list with one
     /// entry per subwoofer (see [`SubwooferCrossoverRef`]).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Vec<String>>")]
     pub crossover: Option<SubwooferCrossoverRef>,
-    /// Mapping of subwoofer measurement key to main speaker logical role
-    #[serde(flatten)]
-    pub mapping: HashMap<String, String>,
+}
+
+impl SubwooferSystemConfig {
+    /// True when `measurement_key` belongs to a physical sub output.
+    pub fn contains_measurement(&self, measurement_key: &str) -> bool {
+        self.outputs
+            .iter()
+            .any(|output| output.speaker == measurement_key)
+    }
+
+    /// Resolve a physical output by its stable identifier.
+    pub fn output(&self, id: &str) -> Option<&SubwooferOutput> {
+        self.outputs.iter().find(|output| output.id == id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -614,6 +674,12 @@ impl Default for FirConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreRingingSerdeConfig {
     /// Maximum pre-ringing level in dB relative to main tap. Default: -30.0
+    ///
+    /// Design-time per-channel threshold: it constrains FIR design, not the
+    /// reported cross-channel aggregate. Runtime acceptance compares the
+    /// aggregate masking-derived audible value against its own −20 dB
+    /// ceiling, so an aggregate between the two is expected, not a
+    /// demonstrated design violation.
     #[serde(default = "default_pre_ringing_threshold")]
     pub threshold_db: f64,
     /// Maximum pre-ringing time in seconds. Default: 0.005 (5 ms)
@@ -628,6 +694,10 @@ pub struct MixedPhaseSerdeConfig {
     #[serde(default = "default_mixed_phase_fir_length")]
     pub max_fir_length_ms: f64,
     /// Pre-ringing threshold in dB. Default: -30.0
+    ///
+    /// Design-time per-channel threshold for excess-phase FIR design; see
+    /// `PreRingingSerdeConfig.threshold_db` for its relation to the
+    /// runtime aggregate ceiling.
     #[serde(default = "default_pre_ringing_threshold")]
     pub pre_ringing_threshold_db: f64,
     /// Minimum spatial correction depth for excess phase correction. Default: 0.5
@@ -636,6 +706,18 @@ pub struct MixedPhaseSerdeConfig {
     /// Phase smoothing width in octaves. Default: 1/6 octave
     #[serde(default = "default_mask_smoothing")]
     pub phase_smoothing_octaves: f64,
+    /// Evidence bar for the excess-phase assessment that must support the
+    /// phase action before any FIR is generated. Defaults mirror the
+    /// analysis-validated values; every field stays user-overridable.
+    #[serde(default)]
+    pub assessment: super::phase_assessment_config::PhaseAssessmentConfig,
+    /// Maximum causal FIR centering delay in milliseconds for standalone phase correction.
+    ///
+    /// This bounds the delay added by the generated FIR, not the measured
+    /// acoustic propagation delay. Other DSP stages and backend buffering
+    /// are separate. Default: None (no budget).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_correction_latency_ms: Option<f64>,
 }
 
 /// Multi-seat measurement configuration
@@ -1041,6 +1123,7 @@ pub struct CtcHrtfSpeakerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RuntimeOutputClass;
 
     #[test]
     fn supporting_source_output_naming_default_suffix() {
@@ -1063,5 +1146,33 @@ mod tests {
     fn supporting_source_output_naming_deserializes_default() {
         let back: SupportingSourceOutputNaming = serde_json::from_str("{}").unwrap();
         assert_eq!(back.suffix, "_support");
+    }
+
+    #[test]
+    fn processing_mode_maps_to_shared_runtime_output_class() {
+        assert_eq!(
+            ProcessingMode::LowLatency.runtime_output_class(),
+            RuntimeOutputClass::LowLatencyIir
+        );
+        assert_eq!(
+            ProcessingMode::WarpedIir.runtime_output_class(),
+            RuntimeOutputClass::LowLatencyIir
+        );
+        assert_eq!(
+            ProcessingMode::KautzModal.runtime_output_class(),
+            RuntimeOutputClass::LowLatencyIir
+        );
+        assert_eq!(
+            ProcessingMode::PhaseLinear.runtime_output_class(),
+            RuntimeOutputClass::Fir
+        );
+        assert_eq!(
+            ProcessingMode::Hybrid.runtime_output_class(),
+            RuntimeOutputClass::Hybrid
+        );
+        assert_eq!(
+            ProcessingMode::MixedPhase.runtime_output_class(),
+            RuntimeOutputClass::Hybrid
+        );
     }
 }

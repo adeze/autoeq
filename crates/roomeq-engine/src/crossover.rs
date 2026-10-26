@@ -391,6 +391,7 @@ fn optimize_crossover_impl(
     let combined_phase = combined_complex.mapv(|z| z.arg().to_degrees());
 
     let combined_curve = Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(&drivers),
         freq: drivers_data.freq_grid.clone(),
         spl: combined_spl,
         phase: Some(combined_phase),
@@ -559,6 +560,38 @@ mod tests {
         let driver = apply_polarity_inversion_to_driver(&curve, false);
 
         assert!(driver.phase.is_none());
+    }
+
+    #[test]
+    fn crossover_sum_retains_original_support_after_driver_densification() {
+        let original = Curve {
+            freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: Array1::zeros(5),
+            phase: Some(Array1::zeros(5)),
+            ..Default::default()
+        };
+        let grid = Array1::linspace(20.0, 200.0, 128);
+        let dense = autoeq_core::interpolate_response(&grid, &original);
+        let mut smoothed = dense.clone();
+        smoothed.resolution = dense
+            .retained_resolution()
+            .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+        let drivers = vec![dense, smoothed];
+        let config = OptimizerConfig {
+            max_iter: 8,
+            population: 4,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let (_, _, _, combined, _) =
+            optimize_crossover(drivers, CrossoverType::None, 48_000.0, &config, None, None)
+                .unwrap();
+        assert_eq!(
+            combined.retained_resolution().width_octaves(80.0),
+            Some(4.0)
+        );
+        assert!(combined.resolution.is_some());
+        assert!(combined.phase.is_some());
     }
 
     #[test]

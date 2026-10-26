@@ -149,6 +149,7 @@ pub fn build_channel_dsp_chain_with_curves(
     }
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins,
         drivers: None,
@@ -159,6 +160,14 @@ pub fn build_channel_dsp_chain_with_curves(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
@@ -279,10 +288,12 @@ pub fn build_multidriver_dsp_chain_with_curves(
             .map(|c| c.into());
 
         driver_chains.push(DriverDspChain {
+            measured_acoustics: None,
             name: get_driver_name(i, n_drivers),
             index: i,
             plugins: driver_plugins,
             initial_curve: driver_curve,
+            measured_band_hz: None,
         });
     }
 
@@ -293,6 +304,7 @@ pub fn build_multidriver_dsp_chain_with_curves(
     }
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins: combined_plugins,
         drivers: Some(driver_chains),
@@ -303,12 +315,24 @@ pub fn build_multidriver_dsp_chain_with_curves(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
 
 /// Build per-driver DSP for an explicit topology whose acoustic bands may
 /// contain multiple parallel drivers.
+///
+/// `driver_measured_bands` optionally records each driver's capture span so
+/// plots can clip the raw measurement where display extension continues past
+/// it; `None` (or a missing entry) leaves the band unrecorded.
 #[allow(clippy::too_many_arguments)]
 pub fn build_topology_dsp_chain_with_curves(
     channel_name: &str,
@@ -322,6 +346,7 @@ pub fn build_topology_dsp_chain_with_curves(
     eq_filters: &[Biquad],
     driver_eqs: &[Vec<Biquad>],
     driver_initial_curves: &[crate::Curve],
+    driver_measured_bands: Option<&[[f64; 2]]>,
 ) -> ChannelDspChain {
     debug_assert_eq!(driver_names.len(), driver_band_indices.len());
     debug_assert_eq!(driver_names.len(), driver_gains.len());
@@ -368,15 +393,20 @@ pub fn build_topology_dsp_chain_with_curves(
                 ));
             }
             DriverDspChain {
+                measured_acoustics: None,
                 name: name.clone(),
                 index: driver_index,
                 plugins,
                 initial_curve: Some((&driver_initial_curves[driver_index]).into()),
+                measured_band_hz: driver_measured_bands
+                    .and_then(|bands| bands.get(driver_index))
+                    .copied(),
             }
         })
         .collect();
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins: (!eq_filters.is_empty())
             .then(|| create_eq_plugin(eq_filters))
@@ -390,6 +420,14 @@ pub fn build_topology_dsp_chain_with_curves(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
@@ -532,12 +570,13 @@ pub fn build_multisub_dsp_chain_advanced(
             .unwrap_or(false);
         if invert {
             sub_plugins.push(create_gain_plugin_with_invert(gain, true));
-        } else if gain.abs() > 0.01 {
+        } else if gain != 0.0 {
             sub_plugins.push(create_gain_plugin(gain));
         }
 
-        // Add delay plugin if non-zero
-        if i < delays.len() && delays[i].abs() > 0.001 {
+        // Preserve the optimized controls exactly. Any deliberate pruning
+        // must recompute the response and diagnostics before emission.
+        if i < delays.len() && delays[i] != 0.0 {
             sub_plugins.push(create_delay_plugin(delays[i]));
         }
 
@@ -565,10 +604,12 @@ pub fn build_multisub_dsp_chain_advanced(
             .map(|c| c.into());
 
         driver_chains.push(DriverDspChain {
+            measured_acoustics: None,
             name: format!("{}_{}", group_name, i + 1),
             index: i,
             plugins: sub_plugins,
             initial_curve: driver_curve,
+            measured_band_hz: None,
         });
     }
 
@@ -579,6 +620,7 @@ pub fn build_multisub_dsp_chain_advanced(
     }
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins: combined_plugins,
         drivers: Some(driver_chains),
@@ -589,6 +631,14 @@ pub fn build_multisub_dsp_chain_advanced(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
@@ -634,10 +684,12 @@ fn build_dual_driver_array_chain(
         .and_then(|curves| curves.first())
         .map(|c| c.into());
     driver_chains.push(DriverDspChain {
+        measured_acoustics: None,
         name: front_name.to_string(),
         index: 0,
         plugins: front_plugins,
         initial_curve: front_curve,
+        measured_band_hz: None,
     });
 
     // Rear (Index 1) - Inverted
@@ -652,10 +704,12 @@ fn build_dual_driver_array_chain(
         .and_then(|curves| curves.get(1))
         .map(|c| c.into());
     driver_chains.push(DriverDspChain {
+        measured_acoustics: None,
         name: rear_name.to_string(),
         index: 1,
         plugins: rear_plugins,
         initial_curve: rear_curve,
+        measured_band_hz: None,
     });
 
     // Combined EQ
@@ -665,6 +719,7 @@ fn build_dual_driver_array_chain(
     }
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins: combined_plugins,
         drivers: Some(driver_chains),
@@ -675,6 +730,14 @@ fn build_dual_driver_array_chain(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
@@ -854,6 +917,7 @@ pub fn build_mixed_mode_crossover_chain_with_post_merge_eq(
     }
 
     ChannelDspChain {
+        physical_correction_target: None,
         channel: channel_name.to_string(),
         plugins,
         drivers: None,
@@ -864,6 +928,14 @@ pub fn build_mixed_mode_crossover_chain_with_post_merge_eq(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: None,
     }
 }
@@ -885,6 +957,7 @@ pub fn build_supporting_source_dsp_chains(
     constrained_target: Option<&crate::Curve>,
 ) -> (ChannelDspChain, ChannelDspChain) {
     let primary = ChannelDspChain {
+        physical_correction_target: None,
         channel: logical_channel.to_string(),
         plugins: vec![],
         drivers: None,
@@ -895,6 +968,14 @@ pub fn build_supporting_source_dsp_chains(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: constrained_target.map(|c| c.into()),
     };
 
@@ -908,6 +989,7 @@ pub fn build_supporting_source_dsp_chains(
     support_plugins.push(create_convolution_plugin(fir_wav_path));
 
     let support = ChannelDspChain {
+        physical_correction_target: None,
         channel: support_channel_name.to_string(),
         plugins: support_plugins,
         drivers: None,
@@ -918,6 +1000,14 @@ pub fn build_supporting_source_dsp_chains(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
         target_curve: constrained_target.map(|c| c.into()),
     };
 

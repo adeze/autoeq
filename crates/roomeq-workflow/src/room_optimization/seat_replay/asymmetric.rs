@@ -4,6 +4,7 @@ use roomeq_model::DriverDspChain;
 
 fn driver(name: &str, index: usize, gain: f64, delay: f64) -> DriverDspChain {
     DriverDspChain {
+        measured_acoustics: None,
         name: name.into(),
         index,
         plugins: vec![
@@ -11,6 +12,7 @@ fn driver(name: &str, index: usize, gain: f64, delay: f64) -> DriverDspChain {
             roomeq_engine::output::create_delay_plugin(delay),
         ],
         initial_curve: None,
+        measured_band_hz: None,
     }
 }
 
@@ -64,9 +66,8 @@ fn missing_low_driver_support_cannot_silently_remove_measured_bass() {
         Path::new("."),
         "training",
     );
-    let error = replay
-        .err()
-        .expect("unmeasured tweeter bass must not silently shrink final playback");
+    let error =
+        replay.expect_err("unmeasured tweeter bass must not silently shrink final playback");
     assert!(
         error
             .to_string()
@@ -87,10 +88,12 @@ fn driver_fir_is_not_mistaken_for_parent_retained_fir() {
     let chain = result.channels.get_mut("left").unwrap();
     chain.plugins = vec![convolution("shared.wav")];
     chain.drivers = Some(vec![DriverDspChain {
+        measured_acoustics: None,
         name: "woofer".into(),
         index: 0,
         plugins: vec![convolution("driver.wav")],
         initial_curve: None,
+        measured_band_hz: None,
     }]);
     result.channel_results.get_mut("left").unwrap().fir_coeffs = Some(vec![0.25]);
     physical.insert("woofer".into(), vec![capture(20.0, 20_000.0, 80.0, 0.0)]);

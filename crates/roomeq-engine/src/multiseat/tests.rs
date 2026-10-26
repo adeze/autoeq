@@ -3,6 +3,7 @@ use super::average::average_perceptual_from_responses;
 use super::compute::compute_combined_responses;
 use super::consts::MSO_OBJECTIVE_REGRESSION_TOLERANCE;
 use super::consts::select_modal_mode_count;
+use super::consts::{MSO_ALLPASS_Q_MAX, MSO_ALLPASS_Q_MIN};
 use super::extension::extension_preservation_penalty;
 use super::interpolate::interpolate_curve_to_grid;
 use super::misc::variance_from_responses;
@@ -377,6 +378,8 @@ fn test_continuous_mso_can_recover_fractional_optimum() {
         allpass_filters_per_sub: 0,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, polarities, allpass_filters) =
         optimize_continuous_mso(2, options, &|gains, delays, _, _| {
@@ -406,6 +409,8 @@ fn test_continuous_mso_can_optimize_polarity() {
         allpass_filters_per_sub: 0,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (_gains, _delays, polarities, allpass_filters) =
         optimize_continuous_mso(2, options, &|_, _, polarities, _| {
@@ -424,6 +429,8 @@ fn test_continuous_mso_can_optimize_allpass_filter() {
         allpass_filters_per_sub: 1,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (_gains, _delays, polarities, allpass_filters) =
         optimize_continuous_mso(2, options, &|_, _, _, allpass_filters| {
@@ -457,6 +464,8 @@ fn continuous_mso_identity_anchor_returns_no_allpass_filters() {
         allpass_filters_per_sub: 1,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, polarities, allpass_filters) =
         optimize_continuous_mso(2, options, &|gains, delays, polarities, allpass| {
@@ -479,6 +488,8 @@ fn test_continuous_mso_single_sub_returns_identity() {
         allpass_filters_per_sub: 0,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, polarities, allpass_filters) =
         optimize_continuous_mso(1, options, &|_, _, _, _| 999.9);
@@ -496,6 +507,8 @@ fn test_continuous_mso_zero_subs_returns_empty() {
         allpass_filters_per_sub: 0,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, polarities, allpass_filters) =
         optimize_continuous_mso(0, options, &|_, _, _, _| 0.0);
@@ -513,6 +526,8 @@ fn test_continuous_mso_three_subs_with_polarity_and_allpass() {
         allpass_filters_per_sub: 1,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, polarities, allpass_filters) =
         optimize_continuous_mso(3, options, &|gains, delays, polarities, allpass| {
@@ -561,6 +576,8 @@ fn test_continuous_mso_bounds_respected() {
         allpass_filters_per_sub: 0,
         allpass_min_freq: 20.0,
         allpass_max_freq: 120.0,
+        allpass_min_q: MSO_ALLPASS_Q_MIN,
+        allpass_max_q: MSO_ALLPASS_Q_MAX,
     };
     let (gains, delays, _polarities, _allpass) =
         optimize_continuous_mso(2, options, &|gains, delays, _, _| {

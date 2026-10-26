@@ -17,10 +17,11 @@ check-jsonschema --schemafile output_schema.json dsp_chain.json
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "global_plugins": [ ... ],
   "channels": { ... },
-  "metadata": { ... }
+  "metadata": { ... },
+  "correction_decisions": { ... }
 }
 ```
 
@@ -32,6 +33,58 @@ check-jsonschema --schemafile output_schema.json dsp_chain.json
 | `global_plugins` | array | Graph-level plugins, such as matrix/routing stages applied before per-channel chains; omitted when empty |
 | `channels` | object | Map of channel names to DSP chains |
 | `metadata` | object | Optimization metadata (optional) |
+| `correction_decisions` | object or null | Versioned correction decision ledger (ledger version `1.0.0`, optional so legacy outputs stay readable). See [Correction Decision Ledger](#correction-decision-ledger) |
+
+### Correction Decision Ledger
+
+`correction_decisions.decisions` is an ordered list of versioned decision
+records. Each record carries a stable decision ID, lifecycle stage
+(`provisional` for engine attempts, `final` for workflow-reconciled delivery
+claims), logical input and physical output identities, measurement/seat
+references, an optional explicit frequency interval (`frequency_band_hz`) or a
+filter-center point (`filter_center_hz`, never an interval), an action
+(`equalize`, `phase_correct`, `gain_adjust`, `reroute`, `prune`), a status,
+reason codes, observed quantities and limits with units, evidence references,
+confidence, linked/superseded record IDs, and the delivered-graph identity
+(`final_graph_identity`, required for final delivery claims).
+
+Status vocabulary: `applied`, `already_acceptable`, `insufficient_evidence`,
+`outside_scope`, `constrained`, `reverted`, `unresolved`, `advisory`. An
+`advisory` record is a nomination only; it never authorizes removal. A
+`constrained` solution that still contains an applied partial correction is
+represented as linked records via `related_decision_ids`, and a rollback as a
+superseding record via `supersedes_ids`. Rejected runs retain attempted
+records but cannot label them as approved delivered correction.
+
+Compatibility: readers must accept outputs without `correction_decisions`
+(legacy) and treat missing evidence as unknown, never as success. Records with
+an unsupported `ledger_version`, empty IDs, unordered/nonfinite bands, or a
+final stage without a delivered-graph identity are invalid; reports render
+them as unverified, never as delivered correction.
+
+### Operational Response Share (`channel_summaries`)
+
+`correction_decisions.channel_summaries` carries one entry per delivered
+physical output with decided final equalization scope, derived by workflow
+reconciliation from the ledger's own final records (report Results summary,
+"Operational room response (%)"):
+
+- scope: final-stage records (`stage: final` with a delivered-graph identity)
+  with action `equalize`, grouped by `physical_output`;
+- a record superseded by another record in the same ledger (its `decision_id`
+  appears in another record's `supersedes_ids`) is no longer operative and is
+  excluded from both counts;
+- delivered: scope records with status `applied`, `already_acceptable`, or
+  `constrained` — the same delivery-claim set reconciliation binds to the
+  delivered graph. `reverted`, `insufficient_evidence`, `outside_scope`, and
+  `unresolved` scope lower the share; provisional history never enters it;
+- `operational_response_pct` is `100 * delivered_equalize / decided_equalize`.
+
+This is a ledger-delivery share with provenance-bound bands, not a measured
+band-compliance percentage. A channel with no decided final equalization scope
+has no entry; readers render that as pending, never as 100%. Viewer colour
+thresholds follow `reviews/feat-report.md`: above 90 green, 80–90 yellow,
+below 80 red.
 
 ### Effective merged configuration
 
@@ -61,6 +114,13 @@ Bass-management output can expose the same route graph in two places:
   report, alongside selected crossover, delay, trim, polarity, and headroom
   decisions.
 
+Stereo graphs expose `physical_sub_outputs` plus `stereo_routing`, whose
+`candidates` record the objective, serialized-graph rejection reason, headroom
+margin, and exact matrix for direct-pair, crossed-pair, and dual-mono trials.
+`selected_topology`, `matrix`, and `selection_basis` describe the deployed
+route. Home-cinema graphs omit `stereo_routing` and expose canonical `LFE` only
+as a logical programme input.
+
 Each route describes one logical branch of the graph. It is not an instruction
 to add another physical crossover plugin for every route object. The
 executable stages are the ordered `global_plugins` and `channels.*.plugins`;
@@ -73,7 +133,7 @@ is an annotation, not an additional processing stage.
 |-------|---------|
 | `group_id` | Optimization group that selected the route parameters, such as `lcr` or `surround`; it is not a new audio channel. |
 | `source_channel` / `source_index` | Logical input channel and its graph index. |
-| `destination` / `destination_index` | Logical output channel and its graph index. Bass-managed low-frequency branches normally target the physical `LFE`/sub output. |
+| `destination` / `destination_index` | Physical output channel and its graph index. Bass-managed low-frequency branches target a named physical sub output such as `Sub1`; `LFE` is a home-cinema programme input, not a measurement/output identity. |
 | `pre_chain_channel` / `post_chain_channel` | Channel identity on either side of the route-owned stage. These preserve chain ownership when a route crosses a matrix boundary. |
 | `route_kind` | `main_highpass_to_self` keeps the main band on the source channel; `redirected_bass_lowpass_to_sub` sends a bass-managed speaker’s low band to the sub output; `lfe_lowpass_to_sub` sends the LFE programme band using its independent `lfe_low_pass_hz` cutoff (120 Hz by default). |
 | `high_pass_hz` / `low_pass_hz` | Band boundary for this logical branch. Only one is normally populated for a high-pass or low-pass branch. |
@@ -139,10 +199,16 @@ Each channel contains an ordered list of plugins that process audio in sequence.
 | `final_curve` | CurveData or null | Final frequency response after applying correction (normalized) |
 | `eq_response` | CurveData or null | EQ filter response curve (correction magnitude in dB) |
 | `target_curve` | CurveData or null | Effective target curve the optimizer worked against (mean-shifted + tilt, in absolute SPL) |
-| `pre_ir` | IrWaveform or null | Impulse response before correction (requires phase data) |
+| `pre_ir` | IrWaveform or null | Impulse response before correction (requires phase data, or a declared `measured_impulse_responses` entry, which takes precedence over the synthesized prediction) |
 | `post_ir` | IrWaveform or null | Impulse response after correction (requires phase data) |
 | `fir_temporal_masking` | TemporalIrMaskingMetrics or null | True FIR impulse-response temporal masking metrics for FIR, mixed-phase, hybrid, or standalone phase-correction filters. |
 | `direct_early_late_correction` | object or null | Direct/early/late correction-energy diagnostic, when that policy is enabled. |
+| `early_late_curves` | ChannelEarlyLateCurves or null | Third-octave early/late band energies from the channel's measured room IR (pre-correction), when a complete IR was declared at optimization time. Method is `incoherent_band_energy` with `full_peak_band` reference, `third_octave` smoothing, and a 20 ms split after the direct reference (`broadband envelope peak`, or `120 Hz lowpass envelope peak` for subwoofer/LFE). Absent renders as pending in the report; never invent acoustics for it. |
+| `early_reflections` | ChannelEarlyReflections or null | Band-limited 1–8 kHz early-reflection table from the measured room IR, when a complete IR was declared at optimization time (`bandlimited_early_reflection_table_v1`, −15 dBFS threshold, 15 ms window, gains in dBFS relative to the filtered direct peak, times post-direct). Only the pre-correction side exists at optimization time; `post` stays empty until a post-correction IR is measured. Absent renders as pending. |
+| `t60_octaves` | ChannelOctaveT60 or null | Nine-band Schroeder octave T60 (63 Hz–16 kHz) from the measured room IR, when a complete IR was declared at optimization time. Valid rows carry `T20`/`T30` fits above `min_r2`; invalid rows carry a nonempty reason with no plotted value (EDT-only fits stay invalid because EDT alone is not late-decay T60). Absent renders as pending. |
+| `waterfall` | ChannelWaterfall or null | STFT waterfall decay grid from the measured room IR (pre-correction), when a complete 500 ms post-peak window was declared at optimization time. Method is `hann_stft_waterfall_v1` (32 ms window, 2 ms hop, −5…500 ms rel. direct peak, max-pooled to 100 frames × 64 bins) with `full_grid_peak` reference: levels are relative to the grid's own peak and do not compare between channels. Absent renders as pending. |
+| `resonance_decays` | ChannelResonanceDecays or null | Prominent-resonance decay slices accompanying `waterfall`: 60 ms slice peaks with 20–200 ms fitted decay times (`decay_time_s` null when unfittable). An empty `decays` list means the analysis ran and found no prominent resonances. Absent renders as pending. |
+| `wavelet` | ChannelWavelet or null | Three-cycle complex-Morlet wavelet heatmap from the measured room IR (pre-correction), when a complete post-peak window was declared at optimization time. Method is `complex_morlet_three_cycle_v1` (6 log centres per octave, 1 ms hop, max 64 freqs × 100 frames) with `full_grid_peak` reference on the −30…0 dB display range. Absent renders as pending. |
 
 ---
 
@@ -249,7 +315,7 @@ time-domain ringing.
 | `residual_excess_phase_max_deg` | number | Maximum residual excess phase after delay removal. |
 | `residual_excess_phase_rms_deg` | number | RMS residual excess phase after delay removal. |
 
-The Python report generator (`scripts/display-roomeq.py`) displays this report
+The Python report generator (`ui/display-roomeq`) displays this report
 alongside per-channel main-impulse timing, pre/post-ringing peaks, audible
 ringing energy, and temporal-masking penalty.
 
@@ -379,6 +445,7 @@ Time delay for driver alignment.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `delay_ms` | number (ms) | Delay amount in milliseconds |
+| `label` | string (optional) | `delay_compile_common_latency` marks padding appended by causal delay compilation: the branch's share of the common latency offset, derived from optimized relative timing. Baseline restoration strips marked padding so refused graphs assert no compile-derived timing; structural delays carry no label. |
 
 ### Convolution Plugin
 
@@ -588,8 +655,11 @@ Information about the optimization process.
 | `perceptual_metrics.fir_temporal_masking_penalty` | number or null | Worst scalar FIR temporal masking penalty across channels. |
 | `supporting_source` | object or null | Per-channel supporting-source room-compensation reports. Present when at least one `SupportingSourceGroup` was processed. |
 | `correction_acceptance` | object or null | Versioned final runtime decision. Includes enforced spectral/spatial/boost/headroom/temporal/realization limits, violations, and correction stages reverted before output. Mixed-phase output is exempt from the pre-ringing budget: its unity-magnitude excess-phase FIR carries the phase correction in its precursor by design (budget enforced at design time via `pre_ringing_threshold_db`). |
+| `epa_provenance` | object | Declares the EPA numbers a configured model prediction, not measured audibility. See [EPA Provenance](#epa-provenance). |
+| `playback_summary` | object | Claim-level projection of the acceptance report: outcome, seat counts, worst seat, latency/headroom echoes, limits in force, and templated headlines. See [Playback Summary](#playback-summary). |
 | `optimizer_evidence` | object or null | Versioned room-level optimizer confidence plus every per-channel backend run. Each run records termination, convergence/best-effort status, objective, evaluation count/limit, seed, bound violation, restart history, and whether it supplied the emitted parameters. Selected `unusable` evidence cannot pass production acceptance. |
 | `stage_outcomes` | array | Machine-readable applied/skipped/degraded/failed outcomes for optional processing and safety stages. Each outcome may include additive `checks` entries (`id`, `kind`, `passed`, optional `observed`/`limit`, and diagnostic). |
+| `t60_flatness_tolerance_s` | number or null | Declared ±tolerance in seconds for the report Results summary T60 flatness share, carried from the input `reporting` policy. When absent the viewer applies the ITU-R BS.1116-2 §8.2.3.1 Fig. 1 midband default of ±0.05 s and labels the cell accordingly; it changes no acceptance math. |
 
 `optimizer_evidence.confidence` is derived only from runs with
 `selected_for_output: true`. Superseded adaptive passes and rejected local
@@ -624,6 +694,52 @@ EPA tuning knobs are described in [`INPUT_FORMAT.md`](./INPUT_FORMAT.md#epa-conf
 `epa_per_channel`, but the input spectrum is first aggregated across channels
 with BS.1770-style energy weights. This is a frequency-response diagnostic, not
 a replacement for time-domain LUFS metering.
+
+### EPA Provenance
+
+`metadata.epa_provenance` labels every EPA number in the bundle as a
+configured model estimate:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | string | Model identifier (`"epa_spectral_diagnostic"`). |
+| `predicted_not_measured` | boolean | Always `true`: EPA dimensions are predicted from frequency response, never measured audibility. |
+| `note` | string | Fixed audit note pointing at listening validation. |
+
+EPA preference can fall while the acceptance metric improves (or vice versa).
+That disagreement is expected, not a defect: acceptance measures
+target-weighted RMS shape improvement at the seats, while EPA preference is a
+loudness/sharpness/roughness-weighted composite that also moves with level
+balance, bandwidth, and spectral tilt changes the correction introduces. Read
+`perceptual_metrics.epa_preference_delta` next to the acceptance improvement:
+when they disagree, the correction changed something EPA weights that the
+target-weighted objective does not (or the reverse). Neither number proves
+audibility without a controlled listening result.
+
+### Playback Summary
+
+`metadata.playback_summary` is a pure projection of `correction_acceptance`
+for claim-level reporting: it introduces no new judgment, only restates the
+shipped outcome, the training-seat counts behind it, and the cost echoes.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `outcome` | string | Shipped outcome (`accepted`, `unchanged`, `rejected`, `insufficient_evidence`). |
+| `improvement_db` | number | Aggregate shape improvement in dB (echoes the acceptance metrics). |
+| `training_seats_improved` | integer | Training seats whose uncertainty-adjusted improvement clears zero. |
+| `training_seats_total` | integer | Training seats evaluated. |
+| `worst_seat` | string or null | Lowest-benefit training seat as `input:index`, when evaluated. Report it next to the average: a good mean with a regressed worst seat is a different claim than uniform benefit. |
+| `total_latency_ms` | number or null | Modeled total playback latency in ms, when assessed; absent stays absent. |
+| `available_headroom_db` | number or null | Available headroom in dB, when assessed; the output margin next to the average benefit. |
+| `realized_processing` | string or null | Correction family actually present in the shipped graph. |
+| `processing_fallback` | string or null | Requested-vs-realized divergence, when any. |
+| `limits` | array | Applicable acceptance limits in force, as `name=value`. |
+| `headlines` | array | Templated human-readable claims, deterministic for a fixed report. |
+
+Until a controlled listening result exists, the supported claim wording is
+"predicted improvement with plausible listening benefit". The wording
+"audibly preferred under these conditions" requires the listening plan in
+`docs/ROOMEQ_LISTENING_PLAN.md` to have been run.
 
 ### Inter-Channel Deviation (ICD)
 
@@ -706,12 +822,22 @@ survived the translation (see the per-format rows below).
 | `wavelet` | Wavelet GraphicEQ text | Serial single-channel-compatible magnitude EQ only. |
 | `pipewire` | PipeWire filter-chain configuration | Serial chains and supported convolution sidecars. |
 | `roon` | Roon DSP Engine JSON | Serial Roon-supported IIR/FIR stages, with Roon limits enforced. |
-| `rew` | REW Generic EQ filter-settings text | Exactly one channel; gain plus supported biquads; no delay, FIR, crossover, or routing. |
+| `rew` | REW Generic EQ reference text for manual entry | Exactly one channel; gain plus supported biquads; no delay, FIR, crossover, or routing. REW cannot reload this text. |
 | `coefficients` | Normalized biquad JSON | Any number of serial channels; gain, delay, and all 12 canonical RoomEQ biquad types; no FIR, crossover, or routing. Alias: `biquad-coefficients`. |
 
 ### REW Generic EQ
 
-The REW export contains an explicit preamp followed by ordered filter rows:
+The REW export provides a reference for manual filter entry, with an explicit
+preamp followed by ordered filter rows. REW saves and reloads filter settings
+using its binary `.req` format; its Generic EQ text cannot be reloaded. RoomEQ
+does not produce `.req` files. Check the resulting response when entering filters
+into REW, including its filter type and shelf parameter conventions.
+
+Export capability fields `supported` and `ready_to_export` describe RoomEQ
+rendering and resource availability. They do not verify external application
+import or playback.
+
+Example reference text:
 
 ```text
 Filter Settings file
@@ -774,7 +900,7 @@ Output for a basic stereo system with EQ filters only.
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "channels": {
     "left": {
       "channel": "left",
@@ -839,7 +965,7 @@ Output for a 2-way speaker with crossover and per-driver processing.
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "channels": {
     "left": {
       "channel": "left",
@@ -926,7 +1052,7 @@ Output for FIR mode, where each channel gets a WAV impulse response file.
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "channels": {
     "left": {
       "channel": "left",
@@ -967,7 +1093,7 @@ Output for mixed mode where FIR handles low frequencies and IIR handles high fre
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "channels": {
     "left": {
       "channel": "left",

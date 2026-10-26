@@ -381,8 +381,10 @@ fn bass_management_target_objective_penalizes_narrow_cancellation() {
         super::bass_management_objective_with_target(Some(&cancellation), Some(&target), 100.0)
             .unwrap();
 
+    // The 12 dB dip pays the full correctable-depth price (2 x 6 dB hinge);
+    // an RMS-diluted score would sit near the ~3 dB residual floor instead.
     assert!(
-        score > 20.0,
+        score > 12.0,
         "narrow crossover cancellation was diluted (score={score})"
     );
 }
@@ -506,6 +508,8 @@ fn bass_route_upper_frequency_hz_with_graph() {
 
     let mut graph = BassManagementRoutingGraph {
         physical_sub_output: "LFE".to_string(),
+        physical_sub_outputs: Vec::new(),
+        stereo_routing: None,
         input_channels: vec!["L".to_string()],
         output_channels: vec!["L".to_string(), "LFE".to_string()],
         routes: vec![
@@ -548,6 +552,7 @@ fn bass_route_upper_frequency_hz_with_graph() {
         ],
         matrix: None,
         input_trim_db: Default::default(),
+        post_dsp_main_alignment_band_hz: None,
         advisories: vec![],
     };
 
@@ -610,7 +615,9 @@ fn optimize_stereo_2_0_empty_config_errors() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
     let sys = config.system.as_ref().unwrap();
@@ -648,7 +655,9 @@ fn optimize_home_cinema_empty_config_succeeds() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
     let sys = config.system.as_ref().unwrap();

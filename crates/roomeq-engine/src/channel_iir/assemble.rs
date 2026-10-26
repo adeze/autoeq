@@ -2,7 +2,6 @@ use autoeq_core::{Curve, Result, interpolate_log_space, response};
 use autoeq_optim::optim::OptimizerRunEvidence;
 use log::info;
 use math_audio_iir_fir::Biquad;
-use ndarray::Array1;
 use roomeq_model::{ChannelDspChain, CurveData, PluginConfigWrapper};
 
 use super::{IirChannelRequest, IirChannelResult, IirOptimizerOutput};
@@ -18,6 +17,8 @@ pub(super) fn assemble_iir_result(
     request: &IirChannelRequest<'_>,
     optimizer_output: IirOptimizerOutput,
     optimizer_evidence: Vec<OptimizerRunEvidence>,
+    audibility_veto: Vec<roomeq_model::FilterVetoVerdict>,
+    veto_adjudication: Option<roomeq_model::VetoAdjudicationReport>,
 ) -> Result<IirChannelResult> {
     let dsp = assemble_dsp_chain(request, &optimizer_output);
     let raw_curve = request.prepared.measurements().representative();
@@ -28,7 +29,7 @@ pub(super) fn assemble_iir_result(
         &score_input.freq,
         request.sample_rate,
     );
-    let final_curve = response::apply_complex_response(&score_input, &response);
+    let mut final_curve = response::apply_complex_response(&score_input, &response);
 
     let display_initial = output::extend_curve_to_full_range(raw_curve);
     let mut display_input = display_initial.clone();
@@ -38,20 +39,46 @@ pub(super) fn assemble_iir_result(
         &display_input.freq,
         request.sample_rate,
     );
-    let display_final = response::apply_complex_response(&display_input, &display_response);
+    let mut display_final = response::apply_complex_response(&display_input, &display_response);
+    if matches!(
+        optimizer_output,
+        IirOptimizerOutput::KautzModal { .. } | IirOptimizerOutput::WarpedIir { .. }
+    ) {
+        // Warped PEQ parameters do not realize the warped transfer; Kautz has
+        // no PEQ representation. Report and score the serialized playback.
+        let neutral_plugins: Vec<_> = dsp
+            .plugins
+            .iter()
+            .filter(|plugin| {
+                plugin
+                    .parameters
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("user_preference")
+            })
+            .cloned()
+            .collect();
+        final_curve = realized_iir_curve(raw_curve, neutral_plugins, request.sample_rate)?;
+        display_final =
+            realized_iir_curve(&display_initial, dsp.plugins.clone(), request.sample_rate)?;
+    }
 
     let score_curve = if let Some(tilt_curve) = &request.target.target_tilt_curve {
         Curve {
             freq: final_curve.freq.clone(),
-            spl: &final_curve.spl - &tilt_curve.spl,
+            spl: &final_curve.spl - &interpolate_log_space(&final_curve.freq, tilt_curve).spl,
             phase: final_curve.phase.clone(),
             ..Curve::default()
         }
     } else {
         final_curve.clone()
     };
+    // Score on usable support only: multi-segment gap bins are display
+    // samples, not measurements. Single-band and unrestricted channels
+    // select an identical range, so their scores are unchanged.
+    let usable_score = request.prepared.usable_curve(&score_curve)?;
     let post_score = channel_target::flatness_score_in_range(
-        &score_curve,
+        usable_score.as_ref(),
         request.preprocessed.score_min_freq,
         request.target.max_freq,
     );
@@ -69,6 +96,7 @@ pub(super) fn assemble_iir_result(
     let target_curve = Some(display_target_curve(request, &display_initial, norm_range));
     let report_filters = optimizer_output.eq_filters().to_vec();
     let channel = ChannelDspChain {
+        physical_correction_target: None,
         channel: request.channel_name.to_string(),
         plugins: dsp.plugins,
         drivers: None,
@@ -79,7 +107,15 @@ pub(super) fn assemble_iir_result(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
         target_curve,
+        early_late_curves: None,
     };
 
     Ok(IirChannelResult {
@@ -94,7 +130,44 @@ pub(super) fn assemble_iir_result(
         fir_coeffs: None,
         convolution_sidecar: None,
         optimizer_evidence,
+        audibility_veto,
+        veto_adjudication,
+        // Multi-segment authorization runs once per channel in
+        // `execute_prepared_channel`, after every processing mode assembles.
+        segment_support: None,
     })
+}
+
+fn realized_iir_curve(
+    curve: &Curve,
+    plugins: Vec<PluginConfigWrapper>,
+    sample_rate: f64,
+) -> Result<Curve> {
+    let chain = ChannelDspChain {
+        physical_correction_target: None,
+        channel: String::from("iir-report"),
+        plugins,
+        drivers: None,
+        initial_curve: None,
+        final_curve: None,
+        eq_response: None,
+        target_curve: None,
+        pre_ir: None,
+        post_ir: None,
+        fir_temporal_masking: None,
+        direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
+    };
+    let mut convolution = crate::dsp_realization::NoConvolutionIr;
+    crate::dsp_realization::RealizedDsp::new(&chain, sample_rate, &mut convolution)?
+        .apply_to_curve(curve)
 }
 
 fn assemble_dsp_chain(
@@ -202,13 +275,15 @@ fn display_target_curve(
         let display_tilt = interpolate_log_space(&display_initial.freq, tilt_curve);
         &display_tilt.spl + request.target.mean_spl
     } else {
-        Array1::from_elem(display_initial.freq.len(), request.target.mean_spl)
+        crate::eq::resources::target_curve(display_initial, Some(request.eq_resources)).spl
+            + request.target.mean_spl
     };
     CurveData {
         freq: display_initial.freq.to_vec(),
         spl: spl.to_vec(),
         phase: None,
         norm_range,
+        ..Default::default()
     }
 }
 

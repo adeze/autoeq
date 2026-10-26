@@ -1,5 +1,4 @@
 use super::compute::compute_fir_frequency_response;
-use super::compute::compute_rms_deviation;
 use super::create::create_curve_with_null;
 use super::create::create_flat_curve;
 use super::create::create_test_curve;
@@ -7,6 +6,17 @@ use super::misc::load_test_csv;
 use autoeq::Curve;
 use autoeq::fir::{FirPhase, generate_fir_from_response};
 use ndarray::Array1;
+
+/// Compute RMS deviation between two curves (in dB).
+fn compute_rms_deviation(curve1: &[f64], curve2: &[f64]) -> f64 {
+    assert_eq!(curve1.len(), curve2.len());
+    let sum_sq: f64 = curve1
+        .iter()
+        .zip(curve2.iter())
+        .map(|(a, b)| (a - b).powi(2))
+        .sum();
+    (sum_sq / curve1.len() as f64).sqrt()
+}
 
 #[test]
 fn test_fir_round_trip_flat_response() {

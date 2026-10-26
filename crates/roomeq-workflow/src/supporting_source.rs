@@ -260,14 +260,6 @@ fn coherent_support_sum(
     ))
 }
 
-fn deployed_fir_coefficients(normalized_taps: &[f64], gain_db: f64) -> Vec<f64> {
-    let linear_gain = 10.0_f64.powf(gain_db / 20.0);
-    normalized_taps
-        .iter()
-        .map(|tap| tap * linear_gain)
-        .collect()
-}
-
 /// Compute the support output channel name from a logical role.
 pub fn support_channel_name(
     logical_role: &str,
@@ -388,7 +380,7 @@ pub fn process_supporting_source_channel_with_frequency_samples(
             || system
                 .subwoofers
                 .as_ref()
-                .is_some_and(|subwoofers| subwoofers.mapping.contains_key(&support_name))
+                .is_some_and(|subwoofers| subwoofers.output(&support_name).is_some())
     });
     if support_name == logical_role || collides_with_logical_channel {
         return Err(AutoeqError::InvalidConfiguration {
@@ -460,9 +452,8 @@ pub fn process_supporting_source_channel_with_frequency_samples(
         },
     )?;
     support_chain.final_curve = Some((&support_final_curve).into());
-    let deployed_fir_coeffs = deployed_fir_coefficients(&filter.taps, filter.normalization_gain_db);
-
     let primary_result = ChannelOptimizationResult {
+        measurement_conditioning: None,
         name: logical_role.to_string(),
         pre_score: 0.0,
         post_score: 0.0,
@@ -471,15 +462,23 @@ pub fn process_supporting_source_channel_with_frequency_samples(
         biquads: Vec::new(),
         fir_coeffs: None,
         optimizer_evidence: Vec::new(),
+        audibility_veto: Vec::new(),
+        veto_adjudication: None,
     };
     let support_result = ChannelOptimizationResult {
+        measurement_conditioning: None,
         name: support_name.clone(),
         pre_score: 0.0,
         post_score: 0.0,
         initial_curve: support.clone(),
         final_curve: support_final_curve,
         biquads: Vec::new(),
-        fir_coeffs: Some(deployed_fir_coeffs),
+        // Retain the convolution kernel written to the WAV. Normalization
+        // gain is already a separate plugin in support_chain, so folding it
+        // into these taps would disagree with the artifact and replay it twice.
+        fir_coeffs: Some(filter.taps.clone()),
+        audibility_veto: Vec::new(),
+        veto_adjudication: None,
         optimizer_evidence: Vec::new(),
     };
 
@@ -605,6 +604,7 @@ mod tests {
                 "/definitely/not/a/real/supporting-source.csv".into(),
             ),
             speaker_name: None,
+            provenance: Default::default(),
         });
 
         assert_eq!(
@@ -631,6 +631,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
@@ -662,6 +664,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
@@ -692,6 +696,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
@@ -716,6 +722,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
@@ -734,6 +742,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
@@ -770,16 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn deployed_fir_evidence_includes_the_normalization_gain_stage() {
-        let gain_db = 20.0 * 2.0_f64.log10();
-
-        assert_eq!(
-            deployed_fir_coefficients(&[0.5, -1.0, 0.25], gain_db),
-            vec![1.0, -2.0, 0.5]
-        );
-    }
-
-    #[test]
     fn process_channel_emits_chains_results_and_report() {
         let primary_curve = flat_curve(80.0);
         let support_curve = flat_curve(80.0);
@@ -806,19 +806,21 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };
         let mut room_config = room_config;
         room_config.optimizer.allow_delay = Some(true);
-        let output_dir = std::env::temp_dir();
+        let output_dir = tempfile::tempdir().unwrap();
         let ((primary_chain, support_chain), (primary_result, support_result), report) =
             process_supporting_source_channel(
                 "L",
                 &group,
                 &room_config,
                 48000.0,
-                &output_dir,
+                output_dir.path(),
                 None,
             )
             .unwrap();
@@ -835,6 +837,20 @@ mod tests {
         assert_eq!(primary_result.name, "L");
         assert_eq!(support_result.name, "L_support");
         assert_eq!(support_result.fir_coeffs.as_ref().unwrap().len(), 128);
+        let mut wav = hound::WavReader::open(output_dir.path().join("L_support_fir.wav"))
+            .expect("persisted supporting-source kernel");
+        let stored: Vec<f32> = wav
+            .samples::<f32>()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let retained: Vec<f32> = support_result
+            .fir_coeffs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|tap| *tap as f32)
+            .collect();
+        assert_eq!(stored, retained, "retained taps must match the WAV kernel");
         assert!(
             support_chain
                 .final_curve
@@ -944,6 +960,8 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
         };

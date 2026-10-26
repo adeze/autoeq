@@ -84,6 +84,100 @@ pub fn predict_bass_source_curve_from_routes(
     })
 }
 
+/// Predict the physical-sub contribution made by one logical input when each
+/// physical output has its own measured acoustic transfer.
+///
+/// Route gain, delay, polarity, and low-pass are applied once per matrix edge
+/// before the destination responses are coherently summed.  This is the
+/// authoritative multi-output counterpart of
+/// [`predict_bass_source_curve_from_routes`]; using one already-summed sub
+/// curve for every edge would duplicate physical outputs and erase the
+/// distinction between direct, crossed, and dual-mono stereo routing.
+pub fn predict_bass_source_curve_from_output_routes(
+    reference_curve: &Curve,
+    output_base_curves: &HashMap<String, Curve>,
+    fallback_curve: &Curve,
+    source_pre_route_transfer: Option<&Curve>,
+    graph: &BassManagementRoutingGraph,
+    source_channel: &str,
+    sample_rate: f64,
+) -> Option<Curve> {
+    use num_complex::Complex;
+
+    let pre_route_transfer_realized = source_pre_route_transfer.is_some();
+    let mut complex_sum = vec![Complex::new(0.0, 0.0); reference_curve.freq.len()];
+    let mut any_route = false;
+
+    for route in graph.routes.iter().filter(|route| {
+        route.source_channel == source_channel
+            && matches!(
+                route.route_kind.as_str(),
+                "redirected_bass_lowpass_to_sub" | "lfe_lowpass_to_sub"
+            )
+    }) {
+        let base_curve = match output_base_curves.get(&route.destination) {
+            Some(curve) => curve,
+            None if graph.physical_sub_outputs.len() <= 1 => fallback_curve,
+            None => return None,
+        };
+        let base_curve = if same_frequency_grid(&reference_curve.freq, &base_curve.freq) {
+            base_curve.clone()
+        } else {
+            interpolate_log_space(&reference_curve.freq, base_curve)
+        };
+        let route_curve = apply_source_pre_route_transfer(&base_curve, source_pre_route_transfer)?;
+        if !curve_has_usable_phase(&route_curve) {
+            return None;
+        }
+        let phase = route_curve.phase.as_ref()?;
+        let response = if let Some(freq) = route.low_pass_hz {
+            compute_crossover_complex_response(
+                &route.crossover_type,
+                freq,
+                sample_rate,
+                true,
+                &reference_curve.freq,
+            )
+        } else {
+            vec![Complex::new(1.0, 0.0); reference_curve.freq.len()]
+        };
+        let polarity_phase = if route.polarity_inverted { 180.0 } else { 0.0 };
+        let input_trim_db = if pre_route_transfer_realized {
+            0.0
+        } else {
+            graph
+                .input_trim_db
+                .get(&route.source_channel)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        any_route = true;
+        for idx in 0..reference_curve.freq.len() {
+            let delay_phase = -360.0 * reference_curve.freq[idx] * route.delay_ms / 1000.0;
+            let magnitude =
+                10.0_f64.powf((route_curve.spl[idx] + route.gain_db + input_trim_db) / 20.0);
+            let phase_rad = (phase[idx] + delay_phase + polarity_phase).to_radians();
+            complex_sum[idx] += Complex::from_polar(magnitude, phase_rad) * response[idx];
+        }
+    }
+
+    if !any_route {
+        return None;
+    }
+    let mut spl = ndarray::Array1::<f64>::zeros(reference_curve.freq.len());
+    let mut phase = ndarray::Array1::<f64>::zeros(reference_curve.freq.len());
+    for (idx, value) in complex_sum.iter().enumerate() {
+        spl[idx] = 20.0 * value.norm().max(1e-12).log10();
+        phase[idx] = value.arg().to_degrees();
+    }
+    Some(Curve {
+        freq: reference_curve.freq.clone(),
+        spl,
+        phase: Some(phase),
+        ..Default::default()
+    })
+}
+
 /// Apply the logical input's pre-route DSP transfer to the physical-sub
 /// acoustic response before route-owned crossover, gain, delay and polarity.
 ///
@@ -308,6 +402,110 @@ pub fn predict_bass_bus_curve_from_routes(
 }
 
 #[cfg(test)]
+mod routed_factor_tests {
+    use super::*;
+    use crate::Curve;
+    use crate::response;
+    use crate::topology::complex_sum_mains;
+    use math_audio_iir_fir::{Biquad, BiquadFilterType};
+    use ndarray::Array1;
+    use roomeq_model::{BassManagementRoute, BassManagementRoutingGraph};
+    use std::collections::HashMap;
+
+    #[test]
+    fn common_peq_factor_commutes_with_complex_main_sub_route_sum() {
+        let frequencies = Array1::logspace(10.0, 25.0_f64.log10(), 1500.0_f64.log10(), 91);
+        let main = Curve {
+            freq: frequencies.clone(),
+            spl: frequencies.mapv(|frequency| 78.0 - 3.0 * (frequency / 300.0).log2().abs()),
+            phase: Some(frequencies.mapv(|frequency| -frequency * 0.08)),
+            ..Default::default()
+        };
+        let sub = Curve {
+            freq: frequencies.clone(),
+            spl: frequencies.mapv(|frequency| 75.0 - 2.0 * (frequency / 90.0).log2().abs()),
+            phase: Some(frequencies.mapv(|frequency| -frequency * 0.11 + 23.0)),
+            ..Default::default()
+        };
+        let source_transfer = Curve {
+            freq: frequencies.clone(),
+            spl: frequencies.mapv(|frequency| 1.5 - 0.25 * (frequency / 200.0).log2().abs()),
+            phase: Some(frequencies.mapv(|frequency| -frequency * 0.005)),
+            ..Default::default()
+        };
+        let route = BassManagementRoute {
+            group_id: Some("lcr".into()),
+            source_channel: "L".into(),
+            source_index: 0,
+            destination: "Sub".into(),
+            destination_index: 0,
+            pre_chain_channel: Some("L".into()),
+            post_chain_channel: Some("Sub".into()),
+            route_kind: "redirected_bass_lowpass_to_sub".into(),
+            crossover_type: "LR24".into(),
+            high_pass_hz: None,
+            low_pass_hz: Some(90.0),
+            gain_db: -2.5,
+            gain_linear: 10.0_f64.powf(-2.5 / 20.0),
+            matrix_gain: 1.0,
+            delay_ms: 1.7,
+            polarity_inverted: true,
+        };
+        let graph = BassManagementRoutingGraph {
+            physical_sub_output: "Sub".into(),
+            physical_sub_outputs: vec!["Sub".into()],
+            input_channels: vec!["L".into()],
+            output_channels: vec!["L".into(), "Sub".into()],
+            routes: vec![route],
+            matrix: None,
+            input_trim_db: HashMap::new(),
+            post_dsp_main_alignment_band_hz: None,
+            stereo_routing: None,
+            advisories: Vec::new(),
+        };
+        let routed = predict_deployed_source_curve_from_routes(
+            Some(&main),
+            &sub,
+            Some(&source_transfer),
+            &graph,
+            "L",
+            48_000.0,
+        )
+        .unwrap();
+        let bass = predict_bass_source_curve_from_routes(
+            &sub,
+            Some(&source_transfer),
+            &graph,
+            "L",
+            48_000.0,
+        )
+        .unwrap();
+        let peq = [Biquad::new(
+            BiquadFilterType::Peak,
+            72.0,
+            48_000.0,
+            0.8,
+            3.0,
+        )];
+        let candidate_response =
+            response::compute_peq_complex_response(&peq, &frequencies, 48_000.0);
+        let applied_after_sum = response::apply_complex_response(&routed, &candidate_response);
+        let main_after_peq = response::apply_complex_response(&main, &candidate_response);
+        let bass_after_peq = response::apply_complex_response(&bass, &candidate_response);
+        let applied_before_sum = complex_sum_mains(&[&main_after_peq, &bass_after_peq]);
+        for (actual, expected) in applied_after_sum.spl.iter().zip(&applied_before_sum.spl) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+        let actual_phase = applied_after_sum.phase.as_ref().unwrap();
+        let expected_phase = applied_before_sum.phase.as_ref().unwrap();
+        for (actual, expected) in actual_phase.iter().zip(expected_phase) {
+            let wrapped_difference = (actual - expected + 180.0).rem_euclid(360.0) - 180.0;
+            assert!(wrapped_difference.abs() < 1e-8);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::topology::apply_crossover_response_to_curve;
@@ -340,6 +538,8 @@ mod tests {
     fn routing_graph(crossover_type: &str, input_trim_db: f64) -> BassManagementRoutingGraph {
         BassManagementRoutingGraph {
             physical_sub_output: "LFE".to_string(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
             input_channels: vec!["L".to_string()],
             output_channels: vec!["L".to_string(), "LFE".to_string()],
             routes: vec![BassManagementRoute {
@@ -362,6 +562,7 @@ mod tests {
             }],
             matrix: None,
             input_trim_db: HashMap::from([("L".to_string(), input_trim_db)]),
+            post_dsp_main_alignment_band_hz: None,
             advisories: Vec::new(),
         }
     }
@@ -405,6 +606,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn output_route_replay_uses_each_physical_measurement_once() {
+        let reference = flat_curve();
+        let sub1 = flat_curve();
+        let mut sub2 = flat_curve();
+        sub2.spl.fill(-20.0);
+
+        let mut graph = routing_graph("LR24", 0.0);
+        graph.physical_sub_output = "Sub1".to_string();
+        graph.physical_sub_outputs = vec!["Sub1".to_string(), "Sub2".to_string()];
+        graph.output_channels = vec!["L".to_string(), "Sub1".to_string(), "Sub2".to_string()];
+        let mut sub1_route = graph.routes[0].clone();
+        sub1_route.destination = "Sub1".to_string();
+        sub1_route.destination_index = 1;
+        sub1_route.pre_chain_channel = Some("L".to_string());
+        sub1_route.post_chain_channel = Some("Sub1".to_string());
+        sub1_route.low_pass_hz = None;
+        sub1_route.gain_db = 20.0 * 0.5_f64.log10();
+        sub1_route.gain_linear = 0.5;
+        sub1_route.matrix_gain = 0.5;
+        let mut sub2_route = sub1_route.clone();
+        sub2_route.destination = "Sub2".to_string();
+        sub2_route.destination_index = 2;
+        sub2_route.post_chain_channel = Some("Sub2".to_string());
+        graph.routes = vec![sub1_route, sub2_route];
+
+        let outputs = HashMap::from([("Sub1".to_string(), sub1), ("Sub2".to_string(), sub2)]);
+        let replay = predict_bass_source_curve_from_output_routes(
+            &reference, &outputs, &reference, None, &graph, "L", 48_000.0,
+        )
+        .expect("both physical outputs have measured responses");
+        let expected = 20.0 * (0.5_f64 + 0.05).log10();
+        assert!(
+            replay
+                .spl
+                .iter()
+                .all(|level| (*level - expected).abs() < 1.0e-9),
+            "dual-mono replay must sum 0.5*Sub1 + 0.5*Sub2 exactly once"
+        );
+
+        let missing = HashMap::from([("Sub1".to_string(), flat_curve())]);
+        assert!(
+            predict_bass_source_curve_from_output_routes(
+                &reference, &missing, &reference, None, &graph, "L", 48_000.0,
+            )
+            .is_none(),
+            "multi-output replay must not substitute an aggregate fallback for a missing output"
+        );
     }
 
     #[test]

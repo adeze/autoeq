@@ -5,11 +5,17 @@
 //! not support native AutoEQ constraints, so ceiling/spacing/min-gain are
 //! folded into the scalar objective as penalties.
 
-use super::backend::{AlgorithmType, ConstraintCapabilities, FilterOptimizer};
+use super::backend::{
+    AlgorithmType, ConstraintCapabilities, FilterOptimizer, FilterOptimizerOutput,
+};
 use super::constraints_install::install_constraints;
+use super::optimize::OptimizerBackendCompletion;
 use super::params::OptimParams;
+use super::run_control::OptimizerBudgetProfile;
 use super::{ObjectiveData, OptimProgressCallback, PenaltyMode, compute_fitness_penalties_ref};
-use math_audio_optimisation::{CmaEsConfig, CmaEsIntermediate, ParallelConfig, cma_es};
+use math_audio_optimisation::{
+    CmaEsConfig, CmaEsIntermediate, CmaEsReport, ParallelConfig, cma_es,
+};
 use ndarray::Array1;
 use std::sync::Arc;
 
@@ -22,32 +28,8 @@ impl AutoeqCmaEsBackend {
     pub fn new(name: &'static str) -> Self {
         Self { name }
     }
-}
 
-impl FilterOptimizer for AutoeqCmaEsBackend {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn library(&self) -> &'static str {
-        "AutoEQ"
-    }
-
-    fn algorithm_type(&self) -> AlgorithmType {
-        AlgorithmType::Global
-    }
-
-    fn capabilities(&self) -> ConstraintCapabilities {
-        ConstraintCapabilities {
-            nonlinear_ineq: false,
-            nonlinear_eq: false,
-            linear: false,
-            iteration_callback: true,
-            fallback_penalty_mode: PenaltyMode::Standard,
-        }
-    }
-
-    fn optimize(
+    fn optimize_with_completion(
         &self,
         x: &mut [f64],
         lower: &[f64],
@@ -55,17 +37,20 @@ impl FilterOptimizer for AutoeqCmaEsBackend {
         objective: ObjectiveData,
         params: &OptimParams,
         callback: Option<OptimProgressCallback>,
-    ) -> Result<(String, f64), (String, f64)> {
+    ) -> CmaEsOptimizationCompletion {
         if lower.len() != x.len() || upper.len() != x.len() {
-            return Err((
-                format!(
-                    "bounds dimension mismatch: x={}, lower={}, upper={}",
-                    x.len(),
-                    lower.len(),
-                    upper.len(),
-                ),
-                f64::INFINITY,
-            ));
+            return (
+                Err((
+                    format!(
+                        "bounds dimension mismatch: x={}, lower={}, upper={}",
+                        x.len(),
+                        lower.len(),
+                        upper.len(),
+                    ),
+                    f64::INFINITY,
+                )),
+                None,
+            );
         }
 
         let mut objective = objective;
@@ -112,7 +97,7 @@ impl FilterOptimizer for AutoeqCmaEsBackend {
 
         if let Some(mut user_cb) = callback {
             cfg.callback = Some(Box::new(move |im: &CmaEsIntermediate| {
-                user_cb(im.iter, im.fun, None)
+                user_cb(im.iter, im.fun, None, None)
             }));
         }
 
@@ -121,14 +106,204 @@ impl FilterOptimizer for AutoeqCmaEsBackend {
                 if report.x.len() == x.len() {
                     x.copy_from_slice(report.x.as_slice().unwrap());
                 }
-                let label = if report.success {
-                    format!("AutoEQ CMA-ES: {}", report.message)
-                } else {
-                    format!("AutoEQ CMA-ES: {} (not converged)", report.message)
-                };
-                Ok((label, report.fun))
+                completed_report_result(report)
             }
-            Err(e) => Err((format!("CMA-ES setup failed: {:?}", e), f64::INFINITY)),
+            Err(e) => (
+                Err((format!("CMA-ES setup failed: {:?}", e), f64::INFINITY)),
+                None,
+            ),
         }
+    }
+}
+
+type CmaEsOptimizationCompletion = (
+    Result<(String, f64), (String, f64)>,
+    Option<OptimizerBackendCompletion>,
+);
+
+fn completed_report_result(report: CmaEsReport) -> CmaEsOptimizationCompletion {
+    // The solver reports success on stagnation, step-size collapse, target,
+    // or callback stops; only budget exhaustion reports success=false. Carry
+    // the solver-side convergence verdict through the typed completion so a
+    // converged run is not downgraded to best-effort. Budget stops keep the
+    // legacy tuple classification downstream.
+    let completion = report
+        .success
+        .then_some(OptimizerBackendCompletion::Converged);
+    let label = if report.success {
+        format!("AutoEQ CMA-ES: {}", report.message)
+    } else {
+        format!("AutoEQ CMA-ES: {} (not converged)", report.message)
+    };
+    (Ok((label, report.fun)), completion)
+}
+
+impl FilterOptimizer for AutoeqCmaEsBackend {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn supports_initial_candidate(&self) -> bool {
+        true
+    }
+
+    fn evaluation_budget_profile(
+        &self,
+        lower_bounds: &[f64],
+        upper_bounds: &[f64],
+        params: &OptimParams,
+    ) -> Option<OptimizerBudgetProfile> {
+        if lower_bounds.len() != upper_bounds.len() {
+            return None;
+        }
+        let lambda = params.population.max(4);
+        let minimum = lambda.saturating_add(1);
+        let solver_limit = params.maxeval.max(minimum);
+        Some(OptimizerBudgetProfile::new(
+            params.maxeval,
+            Some(solver_limit),
+            minimum,
+            minimum,
+            Some(lambda),
+            Some(lambda),
+            Some(solver_limit.saturating_sub(1) / lambda),
+        ))
+    }
+
+    fn library(&self) -> &'static str {
+        "AutoEQ"
+    }
+
+    fn algorithm_type(&self) -> AlgorithmType {
+        AlgorithmType::Global
+    }
+
+    fn capabilities(&self) -> ConstraintCapabilities {
+        ConstraintCapabilities {
+            nonlinear_ineq: false,
+            nonlinear_eq: false,
+            linear: false,
+            iteration_callback: true,
+            fallback_penalty_mode: PenaltyMode::Standard,
+        }
+    }
+
+    fn optimize(
+        &self,
+        x: &mut [f64],
+        lower: &[f64],
+        upper: &[f64],
+        objective: ObjectiveData,
+        params: &OptimParams,
+        callback: Option<OptimProgressCallback>,
+    ) -> Result<(String, f64), (String, f64)> {
+        self.optimize_with_completion(x, lower, upper, objective, params, callback)
+            .0
+    }
+
+    fn optimize_with_typed_completion(
+        &self,
+        x: &mut [f64],
+        lower: &[f64],
+        upper: &[f64],
+        objective: ObjectiveData,
+        params: &OptimParams,
+        callback: Option<OptimProgressCallback>,
+    ) -> (
+        FilterOptimizerOutput,
+        Option<super::optimize::OptimizerBackendCompletion>,
+    ) {
+        let (result, completion) =
+            self.optimize_with_completion(x, lower, upper, objective, params, callback);
+        (
+            FilterOptimizerOutput::Completed {
+                result,
+                pareto_report: None,
+            },
+            completion,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array1;
+
+    fn report(success: bool, message: &str) -> CmaEsReport {
+        CmaEsReport {
+            x: Array1::from(vec![0.5]),
+            fun: 0.25,
+            success,
+            message: message.to_string(),
+            nfev: 1607,
+            nit: 80,
+            sigma: 0.01,
+            restarts: 0,
+            feasible: true,
+            max_violation: 0.0,
+        }
+    }
+
+    #[test]
+    fn completed_stagnation_report_carries_typed_convergence() {
+        let (result, completion) = completed_report_result(report(
+            true,
+            "stagnated for 80 generations below f_tol=1.000e-4",
+        ));
+        assert!(result.is_ok(), "completed solver report: {result:?}");
+        let (status, objective) = result.unwrap();
+        assert!(!status.contains("not converged"));
+        assert_eq!(objective, 0.25);
+
+        let mut evidence = super::super::optimize::OptimizerRunEvidence::from_backend_result(
+            "autoeq:cmaes",
+            Ok((status, objective)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            20000,
+            None,
+        );
+        evidence.apply_backend_completion(completion.unwrap());
+        assert_eq!(
+            evidence.termination,
+            super::super::optimize::OptimizerTermination::Converged
+        );
+        assert!(evidence.converged);
+        assert!(!evidence.best_effort);
+        assert_eq!(
+            evidence.confidence,
+            super::super::optimize::OptimizerConfidence::High
+        );
+        assert_eq!(evidence.objective, Some(0.25));
+    }
+
+    #[test]
+    fn budget_stop_keeps_legacy_evaluation_limit_classification() {
+        let (result, completion) =
+            completed_report_result(report(false, "maximum evaluations reached"));
+        assert!(result.is_ok(), "completed solver report: {result:?}");
+        assert!(
+            completion.is_none(),
+            "budget stop carries no typed completion"
+        );
+        let (status, objective) = result.unwrap();
+
+        let evidence = super::super::optimize::OptimizerRunEvidence::from_backend_result(
+            "autoeq:cmaes",
+            Ok((status, objective)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            20000,
+            None,
+        );
+        assert_eq!(
+            evidence.termination,
+            super::super::optimize::OptimizerTermination::EvaluationLimit
+        );
+        assert!(!evidence.converged);
+        assert!(evidence.best_effort);
     }
 }

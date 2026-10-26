@@ -20,6 +20,8 @@ use roomeq_model::*;
 use serde_json::json;
 
 mod conformance;
+mod evidence;
+mod identity;
 mod make;
 mod realized_transfer;
 mod roundtrip;
@@ -118,6 +120,7 @@ fn test_camilladsp_uses_second_order_filters() {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "eq".to_string(),
@@ -137,14 +140,24 @@ fn test_camilladsp_uses_second_order_filters() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
     let result = export_camilladsp(&output, 48000.0).unwrap();
     // Must be second-order Highpass/Lowpass, NOT HighpassFO/LowpassFO
@@ -169,6 +182,7 @@ fn test_camilladsp_no_duplicate_yaml_keys() {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![
                 PluginConfigWrapper {
@@ -189,14 +203,24 @@ fn test_camilladsp_no_duplicate_yaml_keys() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
     let result = export_camilladsp(&output, 48000.0).unwrap();
     // First gain: "left_gain:", second: "left_gain_1:"
@@ -211,6 +235,7 @@ fn test_easyeffects_rejects_different_channel_gains() {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "gain".to_string(),
@@ -225,11 +250,20 @@ fn test_easyeffects_rejects_different_channel_gains() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     channels.insert(
         "right".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "right".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "gain".to_string(),
@@ -244,14 +278,24 @@ fn test_easyeffects_rejects_different_channel_gains() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
     let error = export_easyeffects(&output).unwrap_err().to_string();
     assert!(error.contains("cannot preserve different per-channel DSP chains"));
@@ -265,6 +309,7 @@ fn test_unknown_channels_sort_alphabetically() {
         channels.insert(
             name.to_string(),
             ChannelDspChain {
+                physical_correction_target: None,
                 channel: name.to_string(),
                 plugins: vec![],
                 drivers: None,
@@ -276,15 +321,25 @@ fn test_unknown_channels_sort_alphabetically() {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
     }
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
     let sorted = sorted_channels(&output);
     let names: Vec<&str> = sorted.iter().map(|(n, _)| n.as_str()).collect();
@@ -298,6 +353,7 @@ fn standard_channel_order_places_rears_before_surrounds() {
         channels.insert(
             name.to_string(),
             ChannelDspChain {
+                physical_correction_target: None,
                 channel: name.to_string(),
                 plugins: Vec::new(),
                 drivers: None,
@@ -309,15 +365,25 @@ fn standard_channel_order_places_rears_before_surrounds() {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
     }
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
 
     let names: Vec<_> = sorted_channels(&output)
@@ -370,6 +436,7 @@ fn test_export_with_drivers() {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "eq".to_string(),
@@ -381,6 +448,7 @@ fn test_export_with_drivers() {
             }],
             drivers: Some(vec![
                 DriverDspChain {
+                    measured_acoustics: None,
                     name: "woofer".to_string(),
                     index: 0,
                     plugins: vec![
@@ -394,8 +462,10 @@ fn test_export_with_drivers() {
                         },
                     ],
                     initial_curve: None,
+                    measured_band_hz: None,
                 },
                 DriverDspChain {
+                    measured_acoustics: None,
                     name: "tweeter".to_string(),
                     index: 1,
                     plugins: vec![PluginConfigWrapper {
@@ -403,6 +473,7 @@ fn test_export_with_drivers() {
                         parameters: json!({"gain_db": 0.0, "invert": true}),
                     }],
                     initial_curve: None,
+                    measured_band_hz: None,
                 },
             ]),
             initial_curve: None,
@@ -413,15 +484,25 @@ fn test_export_with_drivers() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
 
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
 
     // CamillaDSP cannot represent these parallel branches yet. It must fail
@@ -444,6 +525,7 @@ fn test_export_with_drivers() {
 
 fn per_sub_driver(name: &str, index: usize, low_pass_hz: f64) -> DriverDspChain {
     DriverDspChain {
+        measured_acoustics: None,
         name: name.to_string(),
         index,
         plugins: vec![
@@ -462,6 +544,7 @@ fn per_sub_driver(name: &str, index: usize, low_pass_hz: f64) -> DriverDspChain 
             },
         ],
         initial_curve: None,
+        measured_band_hz: None,
     }
 }
 
@@ -473,6 +556,7 @@ fn per_driver_low_pass_survives_canonical_graph_paths() {
     channels.insert(
         "LFE".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "LFE".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "crossover".to_string(),
@@ -495,14 +579,24 @@ fn per_driver_low_pass_survives_canonical_graph_paths() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let output = DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     };
 
     // The canonical graph accepts driver low-passes.

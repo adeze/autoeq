@@ -1,0 +1,2212 @@
+[
+  {
+    "source_data": {
+      "sample_rate": 48000,
+      "metadata": {
+        "timestamp": "2026-10-11T12:00:00Z",
+        "producer_version": "0.5.77"
+      },
+      "channels": {
+        "R": {
+          "initial_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              71.0,
+              76.0,
+              73.0,
+              66.0
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              70.0,
+              75.0,
+              72.0,
+              65.0
+            ]
+          },
+          "plugins": []
+        },
+        "LFE": {
+          "initial_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              68.0,
+              73.0,
+              70.0,
+              63.0
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              69.0,
+              74.0,
+              71.0,
+              64.0
+            ]
+          },
+          "plugins": [],
+          "drivers": [
+            {
+              "name": "Sub A",
+              "initial_curve": {
+                "freq": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "spl": [
+                  69.0,
+                  74.0,
+                  71.0,
+                  64.0
+                ]
+              },
+              "final_curve": {
+                "freq": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "spl": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ]
+              }
+            },
+            {
+              "name": "Sub B",
+              "initial_curve": {
+                "freq": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "spl": [
+                  67.0,
+                  72.0,
+                  69.0,
+                  62.0
+                ]
+              },
+              "final_curve": {
+                "freq": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "spl": [
+                  69.0,
+                  74.0,
+                  71.0,
+                  64.0
+                ]
+              }
+            }
+          ]
+        },
+        "Odd": {
+          "plugins": []
+        },
+        "C": {
+          "initial_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              72.0,
+              77.0,
+              74.0,
+              67.0
+            ]
+          },
+          "plugins": []
+        },
+        "L": {
+          "initial_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              70.0,
+              75.0,
+              72.0,
+              65.0
+            ]
+          },
+          "final_curve": {
+            "freq": [
+              50.0,
+              100.0,
+              1000.0,
+              10000.0
+            ],
+            "spl": [
+              70.0,
+              75.0,
+              72.0,
+              65.0
+            ]
+          },
+          "plugins": []
+        }
+      }
+    },
+    "request": {
+      "title": "Room EQ",
+      "status_sections": [
+        {
+          "kind": "html",
+          "html": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Saved DSP playback eligibility: unverified</h2><p>No recorded acceptance verdict (legacy or unverified output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n",
+          "tab": null,
+          "flat": true
+        }
+      ],
+      "provenance": {
+        "roomeq_version": "0.5.77",
+        "data_timestamp": "2026-10-11T12:00:00Z",
+        "generated_at": "2026-10-11T12:00:01Z"
+      },
+      "relative_levels_html": "<div class=\"filters-section\">\n<h3>Relative level compensation</h3>\n<p class=\"epa-footer\">Monitor band 0.5–3 kHz, sub band 30–80 Hz. Compensation is the attenuation still needed downstream, measured on the predicted post-DSP curves so any in-chain level alignment is not applied twice. The post-DSP columns include that trim: the offset is the predicted landing level versus the quietest monitor before correction (it includes EQ, time alignment and headroom attenuation; a negative value does not by itself indicate channel imbalance), and the balance column verifies the remaining spread against the quietest monitor after DSP. These are predictions, not verification captures.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Level compensation (dB)</th><th>Post-DSP offset from original reference (dB)</th><th>Post-DSP balance vs reference monitor (dB)</th></tr></thead><tbody>\n<tr><td>R</td><td>+0.0</td><td>+0.0</td><td>+0.0</td></tr>\n<tr><td>LFE</td><td>+3.0</td><td>+0.0</td><td>+0.0</td></tr>\n<tr><td>Odd</td><td>n/a</td><td>n/a</td><td>n/a</td></tr>\n<tr><td>C</td><td>-2.0</td><td>n/a</td><td>n/a</td></tr>\n<tr><td>L</td><td>+0.0</td><td>+0.0</td><td>+0.0</td></tr>\n</tbody></table></div>\n",
+      "modes_html": "",
+      "global_groups": {
+        "why": [
+          {
+            "kind": "html",
+            "html": "<section class=\"correction-explanation\"><h2>Why this correction?</h2><p>Recorded reasons for correction scope, limitations and the final outcome.</p><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Channel / scope</th><th>Frequency</th><th>Decision</th><th>Why</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">All assessed frequencies</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final outcome</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">No final correction decision was recorded.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Frequency range unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Scope not recorded</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">This output does not provide an explicit correction band. It is not inferred from the response curves.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Individual decisions unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Reason unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">No versioned decision ledger was recorded with this output. Detailed reasons for individual peaks and dips are unavailable.</td></tr></tbody></table></div><p>Detailed reasons for individual peaks and dips are unavailable unless recorded above. An unchanged response alone does not identify a cancellation, poor measurement, or an already acceptable result.</p></section>\n",
+            "tab": null
+          },
+          {
+            "kind": "html",
+            "html": "<section class=\"acceptance-views\"><h2>Acceptance diagnostics</h2><p>Unavailable: no production acceptance views were recorded (legacy or unfinalized output).</p></section>",
+            "tab": null
+          },
+          {
+            "kind": "html",
+            "html": "<section class=\"capture-views\"><h1>Capture acceptance diagnostics</h1><p>Unavailable: saved optimization graph binding is invalid: Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n",
+            "tab": null
+          }
+        ],
+        "overview": [
+          {
+            "kind": "html",
+            "html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n<tr><td>LFE</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n<tr><td>Odd</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>R</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n</tbody></table></div>\n",
+            "tab": null
+          },
+          {
+            "kind": "figure",
+            "figure": {
+              "title": "Combined Overview — Before EQ",
+              "x": {
+                "label": "Frequency (Hz)",
+                "scale": "log",
+                "min": 20.0,
+                "max": 20000.0
+              },
+              "y": {
+                "label": "SPL (dB)",
+                "scale": "linear",
+                "min": 30.0,
+                "max": 80.0
+              },
+              "y2": null,
+              "series": [
+                {
+                  "name": "L (before)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    70.0,
+                    75.0,
+                    72.0,
+                    65.0
+                  ],
+                  "color": "rgba(31, 119, 180, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "R (before)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    71.0,
+                    76.0,
+                    73.0,
+                    66.0
+                  ],
+                  "color": "rgba(255, 127, 14, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "C (before)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    72.0,
+                    77.0,
+                    74.0,
+                    67.0
+                  ],
+                  "color": "rgba(44, 160, 44, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "LFE/Sub A (before)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    69.0,
+                    74.0,
+                    71.0,
+                    64.0
+                  ],
+                  "color": "rgba(214, 39, 40, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "LFE/Sub B (before)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    67.0,
+                    72.0,
+                    69.0,
+                    62.0
+                  ],
+                  "color": "rgba(214, 39, 40, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                }
+              ],
+              "hlines": [],
+              "vlines": [],
+              "xranges": [],
+              "annotations": [],
+              "legend": true
+            },
+            "tab": null
+          },
+          {
+            "kind": "figure",
+            "figure": {
+              "title": "Combined Overview — EQ",
+              "x": {
+                "label": "Frequency (Hz)",
+                "scale": "log",
+                "min": 20.0,
+                "max": 20000.0
+              },
+              "y": {
+                "label": "Gain (dB)",
+                "scale": "linear",
+                "min": -15.0,
+                "max": 15.0
+              },
+              "y2": null,
+              "series": [
+                {
+                  "name": "0 dB",
+                  "x": [
+                    20.000000000000004,
+                    20000.000000000004
+                  ],
+                  "y": [
+                    0.0,
+                    0.0
+                  ],
+                  "color": "rgba(150, 150, 150, 0.5)",
+                  "width": 1.0,
+                  "dash": "dash",
+                  "visible": true,
+                  "y_axis": 0
+                }
+              ],
+              "hlines": [],
+              "vlines": [],
+              "xranges": [],
+              "annotations": [],
+              "legend": true
+            },
+            "tab": null
+          },
+          {
+            "kind": "figure",
+            "figure": {
+              "title": "Combined Overview — Corrected",
+              "x": {
+                "label": "Frequency (Hz)",
+                "scale": "log",
+                "min": 20.0,
+                "max": 20000.0
+              },
+              "y": {
+                "label": "SPL (dB)",
+                "scale": "linear",
+                "min": 30.0,
+                "max": 80.0
+              },
+              "y2": null,
+              "series": [
+                {
+                  "name": "L (corrected)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    70.0,
+                    75.0,
+                    72.0,
+                    65.0
+                  ],
+                  "color": "rgba(31, 119, 180, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "R (corrected)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    70.0,
+                    75.0,
+                    72.0,
+                    65.0
+                  ],
+                  "color": "rgba(255, 127, 14, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                },
+                {
+                  "name": "LFE (corrected)",
+                  "x": [
+                    50.0,
+                    100.0,
+                    1000.0,
+                    10000.0
+                  ],
+                  "y": [
+                    69.0,
+                    74.0,
+                    71.0,
+                    64.0
+                  ],
+                  "color": "rgba(214, 39, 40, 0.9)",
+                  "width": 2.0,
+                  "dash": "solid",
+                  "visible": true,
+                  "y_axis": 0
+                }
+              ],
+              "hlines": [],
+              "vlines": [],
+              "xranges": [],
+              "annotations": [],
+              "legend": true
+            },
+            "tab": null
+          }
+        ],
+        "speakers": [],
+        "timing": [],
+        "symmetric": [
+          {
+            "kind": "html",
+            "html": "<p>Rust aligns final curves within their shared frequency range. The absolute sum assumes equal phase; it is an upper bound, not a prediction of interference from simultaneous playback. The complex sum is the coherent pressure sum from measured phase; the sum difference between them is the cancellation loss.</p><p>Unpaired channels (not summed): LFE, Odd, C</p>",
+            "tab": null
+          },
+          {
+            "kind": "html",
+            "html": "<p>Symmetric pair L+R: no Rust pair export in this output bundle. Regenerate with the updated RoomEQ exporter.</p>",
+            "tab": "L+R"
+          }
+        ],
+        "time_domain": [],
+        "epa": [],
+        "flow": [
+          {
+            "kind": "html",
+            "html": "<p>Read left to right. Each numbered node is a saved processing stage; expand its row below for parameters. Branches join at Σ before output processing. Link widths show connections, not signal level. Select All channels for the complete graph, or an output for its inputs.</p>",
+            "tab": null
+          },
+          {
+            "kind": "html",
+            "html": "<p>Signal flow unavailable: this saved graph has driver or global processing without explicit routing. No connection order was guessed.</p>",
+            "tab": "All channels"
+          },
+          {
+            "kind": "sankey",
+            "chart": {
+              "title": "Saved DSP: L",
+              "nodes": [
+                "1: Input L",
+                "2: Output L"
+              ],
+              "links": [
+                {
+                  "source": 0,
+                  "target": 1,
+                  "value": 1.0,
+                  "color": "rgba(74,144,217,0.25)"
+                }
+              ],
+              "node_boxes": true
+            },
+            "tab": "L",
+            "min_width": 1000,
+            "min_height": 320
+          },
+          {
+            "kind": "html",
+            "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input L</td><td><details><summary>Input L</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output L</td><td><details><summary>Output L</summary><pre>{}</pre></details></td></tr></tbody></table>",
+            "tab": "L"
+          },
+          {
+            "kind": "sankey",
+            "chart": {
+              "title": "Saved DSP: R",
+              "nodes": [
+                "1: Input R",
+                "2: Output R"
+              ],
+              "links": [
+                {
+                  "source": 0,
+                  "target": 1,
+                  "value": 1.0,
+                  "color": "rgba(74,144,217,0.25)"
+                }
+              ],
+              "node_boxes": true
+            },
+            "tab": "R",
+            "min_width": 1000,
+            "min_height": 320
+          },
+          {
+            "kind": "html",
+            "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input R</td><td><details><summary>Input R</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output R</td><td><details><summary>Output R</summary><pre>{}</pre></details></td></tr></tbody></table>",
+            "tab": "R"
+          },
+          {
+            "kind": "sankey",
+            "chart": {
+              "title": "Saved DSP: C",
+              "nodes": [
+                "1: Input C",
+                "2: Output C"
+              ],
+              "links": [
+                {
+                  "source": 0,
+                  "target": 1,
+                  "value": 1.0,
+                  "color": "rgba(74,144,217,0.25)"
+                }
+              ],
+              "node_boxes": true
+            },
+            "tab": "C",
+            "min_width": 1000,
+            "min_height": 320
+          },
+          {
+            "kind": "html",
+            "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input C</td><td><details><summary>Input C</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output C</td><td><details><summary>Output C</summary><pre>{}</pre></details></td></tr></tbody></table>",
+            "tab": "C"
+          },
+          {
+            "kind": "html",
+            "html": "<p>Signal flow unavailable: this saved graph has driver or global processing without explicit routing. No connection order was guessed.</p>",
+            "tab": "LFE"
+          },
+          {
+            "kind": "sankey",
+            "chart": {
+              "title": "Saved DSP: Odd",
+              "nodes": [
+                "1: Input Odd",
+                "2: Output Odd"
+              ],
+              "links": [
+                {
+                  "source": 0,
+                  "target": 1,
+                  "value": 1.0,
+                  "color": "rgba(74,144,217,0.25)"
+                }
+              ],
+              "node_boxes": true
+            },
+            "tab": "Odd",
+            "min_width": 1000,
+            "min_height": 320
+          },
+          {
+            "kind": "html",
+            "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input Odd</td><td><details><summary>Input Odd</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output Odd</td><td><details><summary>Output Odd</summary><pre>{}</pre></details></td></tr></tbody></table>",
+            "tab": "Odd"
+          }
+        ]
+      },
+      "channel_blocks": [
+        {
+          "label": "L",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: L</h2>\n",
+                "tab": "L"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: L (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": 25.0,
+                    "max": 75.0
+                  },
+                  "y2": null,
+                  "series": [
+                    {
+                      "name": "Before EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        70.0,
+                        75.0,
+                        72.0,
+                        65.0
+                      ],
+                      "color": "rgba(255, 100, 100, 0.8)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    },
+                    {
+                      "name": "After EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        70.0,
+                        75.0,
+                        72.0,
+                        65.0
+                      ],
+                      "color": "rgba(100, 200, 100, 0.9)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    }
+                  ],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "L"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>L</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "L"
+              }
+            ],
+            "time_domain": [
+              {
+                "kind": "html",
+                "html": "<h3>Speech Transmission Index — L</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+                "tab": "L"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+                "tab": "L"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+                "tab": "L"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+                "tab": "L"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+                "tab": "L"
+              }
+            ],
+            "epa": []
+          }
+        },
+        {
+          "label": "R",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: R</h2>\n",
+                "tab": "R"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: R (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": 30.0,
+                    "max": 80.0
+                  },
+                  "y2": null,
+                  "series": [
+                    {
+                      "name": "Before EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        71.0,
+                        76.0,
+                        73.0,
+                        66.0
+                      ],
+                      "color": "rgba(255, 100, 100, 0.8)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    },
+                    {
+                      "name": "After EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        70.0,
+                        75.0,
+                        72.0,
+                        65.0
+                      ],
+                      "color": "rgba(100, 200, 100, 0.9)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    }
+                  ],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "R"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>R</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "R"
+              }
+            ],
+            "time_domain": [
+              {
+                "kind": "html",
+                "html": "<h3>Speech Transmission Index — R</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+                "tab": "R"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+                "tab": "R"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+                "tab": "R"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+                "tab": "R"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+                "tab": "R"
+              }
+            ],
+            "epa": []
+          }
+        },
+        {
+          "label": "C",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: C</h2>\n",
+                "tab": "C"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: C (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": 30.0,
+                    "max": 80.0
+                  },
+                  "y2": null,
+                  "series": [
+                    {
+                      "name": "Before EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        72.0,
+                        77.0,
+                        74.0,
+                        67.0
+                      ],
+                      "color": "rgba(255, 100, 100, 0.8)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    }
+                  ],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "C"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "C"
+              }
+            ],
+            "time_domain": [
+              {
+                "kind": "html",
+                "html": "<h3>Speech Transmission Index — C</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+                "tab": "C"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+                "tab": "C"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+                "tab": "C"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+                "tab": "C"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+                "tab": "C"
+              }
+            ],
+            "epa": []
+          }
+        },
+        {
+          "label": "Sub A",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: Sub A</h2>\n<p class=\"epa-footer\">Physical driver output of LFE: its measurement through this driver's own DSP chain (shared EQ + driver gain/crossover/route). The EQ plot below shows this total driver shaping.</p>\n",
+                "tab": "Sub A"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: Sub A (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": 25.0,
+                    "max": 75.0
+                  },
+                  "y2": null,
+                  "series": [
+                    {
+                      "name": "Before EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        69.0,
+                        74.0,
+                        71.0,
+                        64.0
+                      ],
+                      "color": "rgba(255, 100, 100, 0.8)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    }
+                  ],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "Sub A"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Sub A</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "Sub A"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n    <h3>Sub DSP Chain</h3>\n    <div class=\"filter-list\">driver gain +0.0 dB</div>\n</div>\n",
+                "tab": "Sub A"
+              }
+            ],
+            "time_domain": [],
+            "epa": []
+          }
+        },
+        {
+          "label": "Sub B",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: Sub B</h2>\n<p class=\"epa-footer\">Physical driver output of LFE: its measurement through this driver's own DSP chain (shared EQ + driver gain/crossover/route). The EQ plot below shows this total driver shaping.</p>\n",
+                "tab": "Sub B"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: Sub B (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": 25.0,
+                    "max": 75.0
+                  },
+                  "y2": null,
+                  "series": [
+                    {
+                      "name": "Before EQ",
+                      "x": [
+                        50.0,
+                        100.0,
+                        1000.0,
+                        10000.0
+                      ],
+                      "y": [
+                        67.0,
+                        72.0,
+                        69.0,
+                        62.0
+                      ],
+                      "color": "rgba(255, 100, 100, 0.8)",
+                      "width": 2.0,
+                      "dash": "solid",
+                      "visible": true,
+                      "y_axis": 0
+                    }
+                  ],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "Sub B"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Sub B</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "Sub B"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n    <h3>Sub DSP Chain</h3>\n    <div class=\"filter-list\">driver gain +0.0 dB</div>\n</div>\n",
+                "tab": "Sub B"
+              }
+            ],
+            "time_domain": [],
+            "epa": []
+          }
+        },
+        {
+          "label": "Odd",
+          "groups": {
+            "speakers": [
+              {
+                "kind": "html",
+                "html": "<h2>Channel: Odd</h2>\n",
+                "tab": "Odd"
+              },
+              {
+                "kind": "figure",
+                "figure": {
+                  "title": "Channel: Odd (Full Range)",
+                  "x": {
+                    "label": "Frequency (Hz)",
+                    "scale": "log",
+                    "min": 20.0,
+                    "max": 20000.0
+                  },
+                  "y": {
+                    "label": "SPL (dB)",
+                    "scale": "linear",
+                    "min": -20.0,
+                    "max": 30.0
+                  },
+                  "y2": null,
+                  "series": [],
+                  "hlines": [],
+                  "vlines": [],
+                  "xranges": [],
+                  "annotations": [],
+                  "legend": true
+                },
+                "tab": "Odd"
+              },
+              {
+                "kind": "html",
+                "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Odd</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+                "tab": "Odd"
+              }
+            ],
+            "time_domain": [
+              {
+                "kind": "html",
+                "html": "<h3>Speech Transmission Index — Odd</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+                "tab": "Odd"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+                "tab": "Odd"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+                "tab": "Odd"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+                "tab": "Odd"
+              },
+              {
+                "kind": "html",
+                "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+                "tab": "Odd"
+              }
+            ],
+            "epa": []
+          }
+        }
+      ]
+    },
+    "expected": {
+      "schema": "autoeq-report-data-v1",
+      "title": "Room EQ",
+      "sections": [
+        {
+          "kind": "html",
+          "html": "<section class=\"playback-status\" role=\"group\" aria-label=\"Playback verdict\" style=\"display:flex;gap:12px;flex-wrap:wrap;margin:16px 0;border:0;padding:0\"><section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Saved DSP playback eligibility: unverified</h2><p>No recorded acceptance verdict (legacy or unverified output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #f1c40f;padding:16px\"><h2>Delivered payload: not verified</h2><p>Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n<section class=\"playback-status-box\" role=\"note\" style=\"flex:1;min-width:260px;border:2px solid #e74c3c;padding:16px\"><h2>Playback approval</h2><p>Not approved for playback. These curves are diagnostic only.</p></section>\n</section>\n",
+          "tab": null,
+          "flat": true
+        },
+        {
+          "kind": "html",
+          "html": "<section class=\"correction-explanation\"><h2>Why this correction?</h2><p>Recorded reasons for correction scope, limitations and the final outcome.</p><div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;text-align:left\"><thead><tr><th>Channel / scope</th><th>Frequency</th><th>Decision</th><th>Why</th></tr></thead><tbody><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">All assessed frequencies</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Final outcome</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">No final correction decision was recorded.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Frequency range unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Scope not recorded</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">This output does not provide an explicit correction band. It is not inferred from the response curves.</td></tr><tr><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">System</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Individual decisions unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">Reason unavailable</td><td style=\"padding:8px;border-bottom:1px solid #ddd;vertical-align:top\">No versioned decision ledger was recorded with this output. Detailed reasons for individual peaks and dips are unavailable.</td></tr></tbody></table></div><p>Detailed reasons for individual peaks and dips are unavailable unless recorded above. An unchanged response alone does not identify a cancellation, poor measurement, or an already acceptable result.</p></section>\n",
+          "tab": null,
+          "bucket": "DSP analysis",
+          "subhead": "Why this correction?"
+        },
+        {
+          "kind": "html",
+          "html": "<section class=\"acceptance-views\"><h2>Acceptance diagnostics</h2><p>Unavailable: no production acceptance views were recorded (legacy or unfinalized output).</p></section>",
+          "tab": null,
+          "bucket": "DSP analysis",
+          "subhead": "Why this correction?"
+        },
+        {
+          "kind": "html",
+          "html": "<section class=\"capture-views\"><h1>Capture acceptance diagnostics</h1><p>Unavailable: saved optimization graph binding is invalid: Recomputable payload binding unavailable (legacy or unbound output).</p></section>\n",
+          "tab": null,
+          "bucket": "DSP analysis",
+          "subhead": "Why this correction?"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Results summary</h3>\n<p class=\"epa-footer\">Acoustic values use the imported room impulse response. Operational response is the share of final EQ decisions confirmed as delivered; “Not assessed” means the saved ledger has no final EQ assessment. Missing acoustic values require a measured room IR and valid analysis.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Operational room response (%)</th><th>Early reflection level (dB)</th><th>Early vs late ratio (dB)</th><th>T60 flatness in window (%)</th><th>T60 within ITU recommendation (%)</th><th>Deepest notch &lt; 300 Hz (dB)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>L</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n<tr><td>LFE</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n<tr><td>Odd</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#eee;color:#888\">n/a</td></tr>\n<tr><td>R</td><td style=\"background:#eee;color:#666\" title=\"No final EQ assessment is present in the saved decision ledger\">Not assessed</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_reflections\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: early_late_curves\">pending</td><td style=\"background:#eee;color:#888\" title=\"needs roomeq field: nine valid measured t60_octaves fits\">pending</td><td style=\"background:#eee;color:#666\" title=\"Requires valid recording_config.room_dimensions and all eight measured octave T60 fits from 63 Hz to 8 kHz\">Not assessed</td><td style=\"background:#2ecc7133\">-2.0</td></tr>\n</tbody></table></div>\n",
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Summary"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Combined Overview — Before EQ",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 30.0,
+              "max": 80.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "L (before)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(31, 119, 180, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "R (before)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  71.0,
+                  76.0,
+                  73.0,
+                  66.0
+                ],
+                "color": "rgba(255, 127, 14, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "C (before)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  72.0,
+                  77.0,
+                  74.0,
+                  67.0
+                ],
+                "color": "rgba(44, 160, 44, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "LFE/Sub A (before)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  69.0,
+                  74.0,
+                  71.0,
+                  64.0
+                ],
+                "color": "rgba(214, 39, 40, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "LFE/Sub B (before)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  67.0,
+                  72.0,
+                  69.0,
+                  62.0
+                ],
+                "color": "rgba(214, 39, 40, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Summary"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Combined Overview — EQ",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "Gain (dB)",
+              "scale": "linear",
+              "min": -15.0,
+              "max": 15.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "0 dB",
+                "x": [
+                  20.000000000000004,
+                  20000.000000000004
+                ],
+                "y": [
+                  0.0,
+                  0.0
+                ],
+                "color": "rgba(150, 150, 150, 0.5)",
+                "width": 1.0,
+                "dash": "dash",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Summary"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Combined Overview — Corrected",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 30.0,
+              "max": 80.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "L (corrected)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(31, 119, 180, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "R (corrected)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(255, 127, 14, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "LFE (corrected)",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  69.0,
+                  74.0,
+                  71.0,
+                  64.0
+                ],
+                "color": "rgba(214, 39, 40, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Summary"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Relative level compensation</h3>\n<p class=\"epa-footer\">Monitor band 0.5–3 kHz, sub band 30–80 Hz. Compensation is the attenuation still needed downstream, measured on the predicted post-DSP curves so any in-chain level alignment is not applied twice. The post-DSP columns include that trim: the offset is the predicted landing level versus the quietest monitor before correction (it includes EQ, time alignment and headroom attenuation; a negative value does not by itself indicate channel imbalance), and the balance column verifies the remaining spread against the quietest monitor after DSP. These are predictions, not verification captures.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>Level compensation (dB)</th><th>Post-DSP offset from original reference (dB)</th><th>Post-DSP balance vs reference monitor (dB)</th></tr></thead><tbody>\n<tr><td>R</td><td>+0.0</td><td>+0.0</td><td>+0.0</td></tr>\n<tr><td>LFE</td><td>+3.0</td><td>+0.0</td><td>+0.0</td></tr>\n<tr><td>Odd</td><td>n/a</td><td>n/a</td><td>n/a</td></tr>\n<tr><td>C</td><td>-2.0</td><td>n/a</td><td>n/a</td></tr>\n<tr><td>L</td><td>+0.0</td><td>+0.0</td><td>+0.0</td></tr>\n</tbody></table></div>\n",
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: L</h2>\n",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: L (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 25.0,
+              "max": 75.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "Before EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(255, 100, 100, 0.8)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "After EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(100, 200, 100, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>L</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: R</h2>\n",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: R (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 30.0,
+              "max": 80.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "Before EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  71.0,
+                  76.0,
+                  73.0,
+                  66.0
+                ],
+                "color": "rgba(255, 100, 100, 0.8)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              },
+              {
+                "name": "After EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  70.0,
+                  75.0,
+                  72.0,
+                  65.0
+                ],
+                "color": "rgba(100, 200, 100, 0.9)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>R</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: C</h2>\n",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: C (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 30.0,
+              "max": 80.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "Before EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  72.0,
+                  77.0,
+                  74.0,
+                  67.0
+                ],
+                "color": "rgba(255, 100, 100, 0.8)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>C</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: Sub A</h2>\n<p class=\"epa-footer\">Physical driver output of LFE: its measurement through this driver's own DSP chain (shared EQ + driver gain/crossover/route). The EQ plot below shows this total driver shaping.</p>\n",
+          "tab": "Sub A",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: Sub A (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 25.0,
+              "max": 75.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "Before EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  69.0,
+                  74.0,
+                  71.0,
+                  64.0
+                ],
+                "color": "rgba(255, 100, 100, 0.8)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "Sub A",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Sub A</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "Sub A",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n    <h3>Sub DSP Chain</h3>\n    <div class=\"filter-list\">driver gain +0.0 dB</div>\n</div>\n",
+          "tab": "Sub A",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: Sub B</h2>\n<p class=\"epa-footer\">Physical driver output of LFE: its measurement through this driver's own DSP chain (shared EQ + driver gain/crossover/route). The EQ plot below shows this total driver shaping.</p>\n",
+          "tab": "Sub B",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: Sub B (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": 25.0,
+              "max": 75.0
+            },
+            "y2": null,
+            "series": [
+              {
+                "name": "Before EQ",
+                "x": [
+                  50.0,
+                  100.0,
+                  1000.0,
+                  10000.0
+                ],
+                "y": [
+                  67.0,
+                  72.0,
+                  69.0,
+                  62.0
+                ],
+                "color": "rgba(255, 100, 100, 0.8)",
+                "width": 2.0,
+                "dash": "solid",
+                "visible": true,
+                "y_axis": 0
+              }
+            ],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "Sub B",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Sub B</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "Sub B",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n    <h3>Sub DSP Chain</h3>\n    <div class=\"filter-list\">driver gain +0.0 dB</div>\n</div>\n",
+          "tab": "Sub B",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<h2>Channel: Odd</h2>\n",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "figure",
+          "figure": {
+            "title": "Channel: Odd (Full Range)",
+            "x": {
+              "label": "Frequency (Hz)",
+              "scale": "log",
+              "min": 20.0,
+              "max": 20000.0
+            },
+            "y": {
+              "label": "SPL (dB)",
+              "scale": "linear",
+              "min": -20.0,
+              "max": 30.0
+            },
+            "y2": null,
+            "series": [],
+            "hlines": [],
+            "vlines": [],
+            "xranges": [],
+            "annotations": [],
+            "legend": true
+          },
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<div class=\"filters-section\">\n<h3>Frequency landmarks — peaks, notches, LF extension</h3>\n<p class=\"epa-footer\">1/3-octave-smoothed measured response. Extrema need 3 dB prominence, 1/12 octave apart (top 3 each). LF extension is the −6 dB point below the 30–200 Hz peak.</p>\n<table class=\"epa-table\"><thead><tr><th>Speaker</th><th>LF extension (−6 dB)</th><th>Strongest peaks (freq / level)</th><th>Strongest notches (freq / level)</th></tr></thead><tbody>\n<tr><td>Odd</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td><td style=\"color:#999\">n/a</td></tr>\n</tbody></table></div>\n",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Details per speaker"
+        },
+        {
+          "kind": "html",
+          "html": "<p>No data available in this output.</p>",
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Time of Flight"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Rust aligns final curves within their shared frequency range. The absolute sum assumes equal phase; it is an upper bound, not a prediction of interference from simultaneous playback. The complex sum is the coherent pressure sum from measured phase; the sum difference between them is the cancellation loss.</p><p>Unpaired channels (not summed): LFE, Odd, C</p>",
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Symmetric monitors"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Symmetric pair L+R: no Rust pair export in this output bundle. Regenerate with the updated RoomEQ exporter.</p>",
+          "tab": "L+R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Symmetric monitors"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Arrival timing and applied delays are in Time of Flight. The diagnostics below describe the measured room impulse responses.</p>",
+          "tab": null,
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<h3>Speech Transmission Index — L</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+          "tab": "L",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<h3>Speech Transmission Index — R</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+          "tab": "R",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<h3>Speech Transmission Index — C</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+          "tab": "C",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<h3>Speech Transmission Index — Odd</h3><p class=\"epa-footer\">STI unavailable: requires a native measured room impulse response covering all seven octaves (125 Hz–8 kHz), with usable band energy and its complete decay. Synthesized EQ impulses do not supply this result.</p>",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">1–8 kHz early reflections: pending roomeq field early_reflections from a measured room IR.</p>",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Early vs late sound: pending roomeq field early_late_curves with a shared level reference.</p>\n",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Waterfall and resonance decay: pending roomeq fields waterfall and resonance_decays from a measured room impulse response.</p>\n",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p class=\"epa-footer\">Three-cycle wavelet: pending roomeq field wavelet from a measured room impulse response.</p>\n",
+          "tab": "Odd",
+          "bucket": "Acoustics analysis",
+          "subhead": "Time domain analysis"
+        },
+        {
+          "kind": "html",
+          "html": "<p>EPA scores are model-based psychoacoustic estimates before and after DSP. They are not listening-test results or proof of improved audibility. Compare each metric using its stated direction and units.</p>",
+          "tab": null,
+          "bucket": "Psychoacoustic report",
+          "subhead": "Section 6: EPA scores"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Read left to right. Each numbered node is a saved processing stage; expand its row below for parameters. Branches join at Σ before output processing. Link widths show connections, not signal level. Select All channels for the complete graph, or an output for its inputs.</p>",
+          "tab": null,
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Signal flow unavailable: this saved graph has driver or global processing without explicit routing. No connection order was guessed.</p>",
+          "tab": "All channels",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "sankey",
+          "chart": {
+            "title": "Saved DSP: L",
+            "nodes": [
+              "1: Input L",
+              "2: Output L"
+            ],
+            "links": [
+              {
+                "source": 0,
+                "target": 1,
+                "value": 1.0,
+                "color": "rgba(74,144,217,0.25)"
+              }
+            ],
+            "node_boxes": true
+          },
+          "tab": "L",
+          "min_width": 1000,
+          "min_height": 320,
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input L</td><td><details><summary>Input L</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output L</td><td><details><summary>Output L</summary><pre>{}</pre></details></td></tr></tbody></table>",
+          "tab": "L",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "sankey",
+          "chart": {
+            "title": "Saved DSP: R",
+            "nodes": [
+              "1: Input R",
+              "2: Output R"
+            ],
+            "links": [
+              {
+                "source": 0,
+                "target": 1,
+                "value": 1.0,
+                "color": "rgba(74,144,217,0.25)"
+              }
+            ],
+            "node_boxes": true
+          },
+          "tab": "R",
+          "min_width": 1000,
+          "min_height": 320,
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input R</td><td><details><summary>Input R</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output R</td><td><details><summary>Output R</summary><pre>{}</pre></details></td></tr></tbody></table>",
+          "tab": "R",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "sankey",
+          "chart": {
+            "title": "Saved DSP: C",
+            "nodes": [
+              "1: Input C",
+              "2: Output C"
+            ],
+            "links": [
+              {
+                "source": 0,
+                "target": 1,
+                "value": 1.0,
+                "color": "rgba(74,144,217,0.25)"
+              }
+            ],
+            "node_boxes": true
+          },
+          "tab": "C",
+          "min_width": 1000,
+          "min_height": 320,
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input C</td><td><details><summary>Input C</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output C</td><td><details><summary>Output C</summary><pre>{}</pre></details></td></tr></tbody></table>",
+          "tab": "C",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<p>Signal flow unavailable: this saved graph has driver or global processing without explicit routing. No connection order was guessed.</p>",
+          "tab": "LFE",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "sankey",
+          "chart": {
+            "title": "Saved DSP: Odd",
+            "nodes": [
+              "1: Input Odd",
+              "2: Output Odd"
+            ],
+            "links": [
+              {
+                "source": 0,
+                "target": 1,
+                "value": 1.0,
+                "color": "rgba(74,144,217,0.25)"
+              }
+            ],
+            "node_boxes": true
+          },
+          "tab": "Odd",
+          "min_width": 1000,
+          "min_height": 320,
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        },
+        {
+          "kind": "html",
+          "html": "<table><thead><tr><th>Node</th><th>Stage</th><th>Saved parameters</th></tr></thead><tbody><tr><td>1</td><td>Input Odd</td><td><details><summary>Input Odd</summary><pre>{}</pre></details></td></tr><tr><td>2</td><td>Output Odd</td><td><details><summary>Output Odd</summary><pre>{}</pre></details></td></tr></tbody></table>",
+          "tab": "Odd",
+          "bucket": "DSP analysis",
+          "subhead": "DSP signal flow"
+        }
+      ],
+      "provenance": {
+        "roomeq_version": "0.5.77",
+        "data_timestamp": "2026-10-11T12:00:00Z",
+        "generated_at": "2026-10-11T12:00:01Z"
+      }
+    },
+    "options": {
+      "capture_verification": {}
+    }
+  }
+]

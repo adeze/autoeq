@@ -6,6 +6,7 @@
 //! caller wiring algorithm-specific code.
 
 use crate::optim::registry;
+use math_audio_optimisation::cobra::{CobraConfig, CobraIntermediate, cobra};
 use math_audio_optimisation::cobyla::{CobylaRhoBegin, cobyla};
 use math_audio_optimisation::{
     CmaEsConfig, CobylaConfig, CobylaStopTols, DEConfigBuilder, Init, IsresConfig, Mutation,
@@ -30,7 +31,7 @@ pub struct ScalarOptimConfig {
     pub atolerance: f64,
     /// DE mutation strategy. Ignored by non-DE backends.
     pub strategy: String,
-    /// Optional deterministic seed.
+    /// Stochastic seed (`None` selects [`crate::DEFAULT_SEED`]).
     pub seed: Option<u64>,
 }
 
@@ -76,10 +77,10 @@ where
     optimize_bounded_scalar_with_callback(bounds, initial, config, objective, None)
 }
 
-/// Native generation-boundary cancellation for DE and CMA-ES.
+/// Cancel DE/CMA-ES at generation boundaries and COBRA after surrogate infill.
 /// A stopped run returns an error, never a deliverable best-effort candidate.
 /// Backends without native callbacks reject callback requests before scoring.
-/// This does not interrupt an in-flight objective evaluation or initial population.
+/// This does not interrupt an active evaluation, initial design, or model search.
 pub fn optimize_bounded_scalar_with_callback<F>(
     bounds: &[(f64, f64)],
     initial: &[f64],
@@ -96,7 +97,12 @@ where
         .ok_or_else(|| format!("Unknown algorithm: {}", config.algorithm))?;
     let canonical = backend.name().to_string();
 
-    if callback.is_some() && !matches!(canonical.as_str(), "autoeq:cmaes" | "autoeq:de") {
+    if callback.is_some()
+        && !matches!(
+            canonical.as_str(),
+            "autoeq:cmaes" | "autoeq:de" | "autoeq:cobra"
+        )
+    {
         return Err(format!(
             "native scalar cancellation is not supported by {canonical}"
         ));
@@ -104,8 +110,8 @@ where
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback = callback.map(|mut callback| {
         let stopped = stopped.clone();
-        Box::new(move |iteration, loss, preference| {
-            let action = callback(iteration, loss, preference);
+        Box::new(move |iteration, loss, preference, response| {
+            let action = callback(iteration, loss, preference, response);
             if matches!(action, crate::de::CallbackAction::Stop) {
                 stopped.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -114,13 +120,14 @@ where
     });
 
     let f = |x: &Array1<f64>| objective(x.as_slice().unwrap());
-    let x0 = clamp_initial(initial, bounds);
+    let x0 = || clamp_initial(initial, bounds);
 
     let result = match canonical.as_str() {
-        "autoeq:cmaes" => optimize_cmaes(&canonical, bounds, x0, config, &f, callback),
-        "autoeq:de" => optimize_de(&canonical, bounds, x0, config, &f, callback),
-        "autoeq:cobyla" => optimize_cobyla(&canonical, bounds, x0, config, &f),
-        "autoeq:isres" => optimize_isres(&canonical, bounds, x0, config, &f),
+        "autoeq:cmaes" => optimize_cmaes(&canonical, bounds, x0(), config, &f, callback),
+        "autoeq:de" => optimize_de(&canonical, bounds, x0(), config, &f, callback),
+        "autoeq:cobra" => optimize_cobra(&canonical, bounds, config, &f, callback),
+        "autoeq:cobyla" => optimize_cobyla(&canonical, bounds, x0(), config, &f),
+        "autoeq:isres" => optimize_isres(&canonical, bounds, x0(), config, &f),
         other => Err(format!(
             "Algorithm '{}' is registered for PEQ filter optimization but is not supported for bounded scalar RoomEQ objectives",
             other
@@ -185,13 +192,13 @@ where
             lambda,
             mu: 0,
             maxeval: config.max_iter.max(lambda + 1),
-            seed: config.seed,
+            seed: Some(config.seed.unwrap_or(crate::DEFAULT_SEED)),
             f_tol: config.atolerance.max(1e-12),
             stagnation_window: 80,
             callback: callback.map(|mut callback| {
                 Box::new(
                     move |progress: &math_audio_optimisation::cmaes::CmaEsIntermediate| {
-                        callback(progress.iter, progress.fun, None)
+                        callback(progress.iter, progress.fun, None, None)
                     },
                 ) as math_audio_optimisation::cmaes::CmaEsCallback
             }),
@@ -231,12 +238,10 @@ where
         .init(Init::LatinHypercube)
         .x0(x0)
         .disp(false);
-    if let Some(seed) = config.seed {
-        builder = builder.seed(seed);
-    }
+    builder = builder.seed(config.seed.unwrap_or(crate::DEFAULT_SEED));
     if let Some(mut callback) = callback {
         builder = builder.callback(Box::new(move |progress| {
-            callback(progress.iter, progress.fun, None)
+            callback(progress.iter, progress.fun, None, None)
         }));
     }
 
@@ -252,6 +257,54 @@ where
         algorithm: canonical.to_string(),
         success: report.success,
         message: report.message,
+    })
+}
+
+fn optimize_cobra<F>(
+    canonical: &str,
+    bounds: &[(f64, f64)],
+    config: &ScalarOptimConfig,
+    f: &F,
+    callback: Option<super::OptimProgressCallback>,
+) -> Result<ScalarOptimResult, String>
+where
+    F: Fn(&Array1<f64>) -> f64 + Sync,
+{
+    if bounds
+        .iter()
+        .any(|(lo, hi)| !lo.is_finite() || !hi.is_finite())
+    {
+        return Err("COBRA requires finite bounds".to_string());
+    }
+    let report = cobra(
+        f,
+        &[],
+        CobraConfig {
+            bounds: bounds.to_vec(),
+            maxeval: config.max_iter.max(1),
+            seed: Some(config.seed.unwrap_or(crate::DEFAULT_SEED)),
+            // The native initial design does not accept an incoming candidate.
+            // Disable callback-free polish and its estimated evaluation count.
+            polish_fraction: 0.0,
+            callback: callback.map(|mut callback| {
+                Box::new(move |progress: &CobraIntermediate| {
+                    callback(progress.iter, progress.fun, None, None)
+                }) as math_audio_optimisation::cobra::CobraCallback
+            }),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("COBRA failed: {error:?}"))?;
+    if !report.fun.is_finite() || report.x.iter().any(|x| !x.is_finite()) {
+        return Err("COBRA returned no finite scalar candidate".to_string());
+    }
+    Ok(ScalarOptimResult {
+        x: report.x.to_vec(),
+        fun: report.fun,
+        algorithm: canonical.to_string(),
+        // Budget exhaustion or callback stop does not establish convergence.
+        success: false,
+        message: format!("{} (not converged, nfev={})", report.message, report.nfev),
     })
 }
 
@@ -311,7 +364,7 @@ where
             mu,
             lambda: 0,
             maxeval: config.max_iter.max(mu * 7),
-            seed: config.seed,
+            seed: Some(config.seed.unwrap_or(crate::DEFAULT_SEED)),
             f_tol: config.atolerance.max(1e-12),
             ..Default::default()
         },
@@ -337,7 +390,7 @@ mod tests {
             Arc,
             atomic::{AtomicUsize, Ordering},
         };
-        for algorithm in ["autoeq:de", "cma-es"] {
+        for algorithm in ["autoeq:de", "cma-es", "cobra"] {
             let evaluations = AtomicUsize::new(0);
             let calls = Arc::new(AtomicUsize::new(0));
             let callback_calls = calls.clone();
@@ -355,7 +408,7 @@ mod tests {
                     evaluations.fetch_add(1, Ordering::Relaxed);
                     quadratic(x)
                 },
-                Some(Box::new(move |_, loss, preference| {
+                Some(Box::new(move |_, loss, preference, _| {
                     assert!(loss.is_finite());
                     assert_eq!(preference, None);
                     callback_calls.fetch_add(1, Ordering::Relaxed);
@@ -382,7 +435,7 @@ mod tests {
                     ..Default::default()
                 },
                 |_| panic!("unsupported cancellation must not launch search"),
-                Some(Box::new(|_, _, _| crate::de::CallbackAction::Stop)),
+                Some(Box::new(|_, _, _, _| crate::de::CallbackAction::Stop)),
             );
             assert!(result.unwrap_err().contains("not supported"));
         }
@@ -390,7 +443,7 @@ mod tests {
 
     #[test]
     fn continuing_scalar_callback_preserves_seeded_search() {
-        for algorithm in ["autoeq:de", "autoeq:cmaes"] {
+        for algorithm in ["autoeq:de", "autoeq:cmaes", "autoeq:cobra"] {
             let config = ScalarOptimConfig {
                 algorithm: algorithm.into(),
                 max_iter: 80,
@@ -409,7 +462,7 @@ mod tests {
                 initial,
                 &config,
                 quadratic,
-                Some(Box::new(|_, _, _| crate::de::CallbackAction::Continue)),
+                Some(Box::new(|_, _, _, _| crate::de::CallbackAction::Continue)),
             )
             .unwrap();
             assert_eq!(plain.x, observed.x, "{algorithm}");
@@ -447,6 +500,52 @@ mod tests {
                 "seeded L-SHADE loss reproducibility"
             );
         }
+    }
+
+    #[test]
+    fn cobra_rejects_nonfinite_bounds_before_scoring_or_clamping() {
+        for bounds in [
+            [(f64::NAN, 1.0)],
+            [(-1.0, f64::INFINITY)],
+            [(f64::NEG_INFINITY, 1.0)],
+        ] {
+            let result = optimize_bounded_scalar(
+                &bounds,
+                &[0.0],
+                &ScalarOptimConfig {
+                    algorithm: "cobra".into(),
+                    ..Default::default()
+                },
+                |_| panic!("nonfinite COBRA bounds must be refused before scoring"),
+            );
+            assert!(result.unwrap_err().contains("finite bounds"));
+        }
+    }
+
+    #[test]
+    fn cobra_solves_bounded_scalar_quadratic_with_an_evaluation_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = AtomicUsize::new(0);
+        let result = optimize_bounded_scalar(
+            &[(-2.0, 2.0), (-2.0, 2.0)],
+            &[1.5, 1.5],
+            &ScalarOptimConfig {
+                algorithm: "cobra".into(),
+                max_iter: 40,
+                seed: Some(7),
+                ..Default::default()
+            },
+            |x| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                quadratic(x)
+            },
+        )
+        .unwrap();
+        assert_eq!(result.algorithm, "autoeq:cobra");
+        assert!(result.fun < 1e-2, "fun={}", result.fun);
+        assert!(result.x.iter().all(|x| (-2.0..=2.0).contains(x)));
+        assert_eq!(calls.load(Ordering::Relaxed), 40);
+        assert!(!result.success);
     }
 
     fn quadratic(x: &[f64]) -> f64 {
@@ -605,5 +704,24 @@ mod tests {
         )
         .expect("optimizer should run");
         assert!(result.fun < 1e-2);
+    }
+
+    #[test]
+    fn unseeded_scalar_search_is_reproducible() {
+        let config = ScalarOptimConfig {
+            algorithm: "autoeq:de".to_string(),
+            max_iter: 200,
+            population: 8,
+            seed: None,
+            ..Default::default()
+        };
+        let run = || {
+            optimize_bounded_scalar(&[(-2.0, 2.0), (-2.0, 2.0)], &[1.5, 1.5], &config, quadratic)
+                .expect("unseeded search should run")
+        };
+        let first = run();
+        let second = run();
+        assert_eq!(first.x, second.x);
+        assert_eq!(first.fun, second.fun);
     }
 }

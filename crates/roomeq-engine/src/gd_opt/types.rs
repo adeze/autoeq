@@ -37,6 +37,26 @@ pub struct ChannelMeasurementInput {
     pub phase: Array1<f64>,
     /// Coherence (γ²) per bin, range [0, 1].
     pub coherence: Array1<f64>,
+    /// Original sampling and applied smoothing support; interpolation must retain it.
+    /// `None` identifies an original, unannotated input grid.
+    pub resolution: Option<std::sync::Arc<autoeq_core::resolution::MeasurementResolution>>,
+}
+
+impl ChannelMeasurementInput {
+    /// Combine support without promoting a derived grid to a capture.
+    pub fn combined_resolution<'a>(
+        inputs: impl IntoIterator<Item = &'a Self>,
+    ) -> Option<std::sync::Arc<autoeq_core::resolution::MeasurementResolution>> {
+        let curves: Vec<_> = inputs
+            .into_iter()
+            .map(|input| autoeq_core::Curve {
+                freq: input.freq.clone(),
+                resolution: input.resolution.clone(),
+                ..Default::default()
+            })
+            .collect();
+        autoeq_core::resolution::MeasurementResolution::combine(&curves)
+    }
 }
 
 /// Alignment target for the PhaseLinear FIR path (§3.7, GD-3b).

@@ -155,10 +155,18 @@ impl WorkflowExecutor for Stereo20Executor {
             validation_bundle: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: config.report_t60_tolerance_s(),
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         };
 
         // 5. Process supporting-source channels.
@@ -174,6 +182,7 @@ impl WorkflowExecutor for Stereo20Executor {
         )?;
 
         Ok(RoomOptimizationResult {
+            finalized_decisions: None,
             channels: channel_chains,
             channel_results,
             deployed_source_curves: HashMap::new(),

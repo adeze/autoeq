@@ -41,8 +41,16 @@ pub fn pareto_optimization(
         // Initialize x with random/initial values or let optimizer handle it
         // The optimizer expects x to be initialized.
         // We can use setup_initial_guess from workflow
-        let mut x =
-            crate::optim::setup::initial_guess(&params_with_filters, &lower_bounds, &upper_bounds);
+        // O1: project the seed onto the configured per-filter gain
+        // envelopes. Deterministic and bit-identical without envelopes.
+        let mut x = crate::optim::constraint_envelope::project_gains_onto_envelopes(
+            &crate::optim::setup::initial_guess(&params_with_filters, &lower_bounds, &upper_bounds),
+            params_with_filters.peq_model,
+            objective_data.loss_type,
+            objective_data.max_boost_envelope.as_deref(),
+            objective_data.min_cut_envelope.as_deref(),
+        )
+        .0;
 
         let result = crate::optim::optimize_filters(
             &mut x, // Will be filled by optimizer
@@ -180,10 +188,7 @@ mod pareto_front_tests {
 
     #[test]
     fn nan_failed_candidate_does_not_survive_valid_converged() {
-        let filters = vec![
-            entry(5.0, 2, true),
-            entry(f64::NAN, 1, false),
-        ];
+        let filters = vec![entry(5.0, 2, true), entry(f64::NAN, 1, false)];
         let front = extract_non_dominated(&filters);
         assert_eq!(front.len(), 1);
         assert!(front[0].converged);
@@ -204,10 +209,7 @@ mod pareto_front_tests {
 
     #[test]
     fn all_failed_front_is_empty() {
-        let filters = vec![
-            entry(f64::NAN, 1, false),
-            entry(f64::INFINITY, 2, false),
-        ];
+        let filters = vec![entry(f64::NAN, 1, false), entry(f64::INFINITY, 2, false)];
         assert!(extract_non_dominated(&filters).is_empty());
         assert!(extract_non_dominated(&[]).is_empty());
     }
@@ -216,10 +218,7 @@ mod pareto_front_tests {
     fn finite_best_effort_is_kept_and_ranked() {
         // A failed run with a finite best-effort loss must still participate:
         // here it strictly beats the converged entry on loss.
-        let filters = vec![
-            entry(8.0, 2, true),
-            entry(5.0, 2, false),
-        ];
+        let filters = vec![entry(8.0, 2, true), entry(5.0, 2, false)];
         let front = extract_non_dominated(&filters);
         assert_eq!(front.len(), 1);
         assert_eq!(front[0].flatness_loss, 5.0);
@@ -228,10 +227,7 @@ mod pareto_front_tests {
 
     #[test]
     fn exact_tie_prefers_converged_entry() {
-        let filters = vec![
-            entry(5.0, 2, false),
-            entry(5.0, 2, true),
-        ];
+        let filters = vec![entry(5.0, 2, false), entry(5.0, 2, true)];
         let front = extract_non_dominated(&filters);
         assert_eq!(front.len(), 1);
         assert!(front[0].converged);

@@ -302,7 +302,9 @@ fn role_for_channel_role_score_band_clamps_to_config() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -326,6 +328,7 @@ mod apply_tests {
 
     fn flat_result() -> roomeq_engine::room_result::ChannelOptimizationResult {
         roomeq_engine::room_result::ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: "test".to_string(),
             pre_score: 1.0,
             post_score: 0.5,
@@ -334,6 +337,8 @@ mod apply_tests {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         }
     }
 
@@ -444,7 +449,9 @@ mod coverage_tests {
             optimizer: OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -474,8 +481,11 @@ mod coverage_tests {
                 ]),
                 subwoofers: Some(SubwooferSystemConfig {
                     config: Default::default(),
-                    crossover: Some("sub".to_string().into()),
-                    mapping: HashMap::new(),
+                    crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec![
+                        "sub".to_string(),
+                    ])),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                 }),
                 bass_management: Some(BassManagementConfig::default()),
                 supporting_source_outputs: None,
@@ -494,7 +504,9 @@ mod coverage_tests {
             optimizer: OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -624,6 +636,7 @@ mod coverage_tests {
                     MeasurementSource::InMemoryMultiple(vec![flat_curve(), flat_curve()])
                 ],
                 allpass_optimization: false,
+                joint_optimization: false,
             })),
             Some(2)
         );
@@ -677,6 +690,7 @@ mod coverage_tests {
         let config = home_cinema_config();
         let source = MeasurementSource::InMemory(flat_curve());
         let _result = roomeq_engine::room_result::ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: "LFE".to_string(),
             pre_score: 0.0,
             post_score: 0.0,
@@ -685,6 +699,8 @@ mod coverage_tests {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         };
         let acceptance =
             all_channel_multiseat_acceptance(&config, "LFE", &source, &flat_curve(), &flat_curve());
@@ -724,13 +740,14 @@ mod coverage_tests {
         assert_eq!(resolved.crossover_type, "LR24");
         let routes = resolved_group_route_settings("lcr", None);
         assert_eq!(routes.main_delay_ms, 0.0);
-        let outputs = resolved_bass_sub_outputs("sub", None);
+        let outputs = resolved_bass_sub_outputs(&config, "sub", None);
         assert_eq!(outputs.len(), 1);
     }
 
     #[test]
     fn resolved_group_crossover_uses_optimization_result() {
         let optimization = BassManagementOptimizationReport {
+            crossover_cancellation: None,
             applied: true,
             phase_required: false,
             phase_available: false,
@@ -765,6 +782,7 @@ mod coverage_tests {
             }],
             source_results: Vec::new(),
             sub_output_results: Vec::new(),
+            stereo_routing: None,
             advisories: Vec::new(),
         };
         let config = home_cinema_config();
@@ -778,7 +796,7 @@ mod coverage_tests {
         let config = home_cinema_config();
         let report = analyze_layout(&config);
         assert_eq!(report.bed_channels, 3);
-        assert_eq!(report.lfe_channels, 0);
+        assert_eq!(report.lfe_channels, 1);
     }
 
     #[test]
@@ -836,6 +854,8 @@ mod coverage_tests {
     fn estimated_bass_bus_peak_gain() {
         let graph = BassManagementRoutingGraph {
             physical_sub_output: "sub".to_string(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
             input_channels: vec!["L".to_string()],
             output_channels: vec!["sub".to_string()],
             routes: vec![BassManagementRoute {
@@ -858,6 +878,7 @@ mod coverage_tests {
             }],
             matrix: None,
             input_trim_db: Default::default(),
+            post_dsp_main_alignment_band_hz: None,
             advisories: Vec::new(),
         };
         let peak = estimated_bass_bus_peak_gain_db(Some(&graph), 0.0);

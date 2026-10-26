@@ -28,6 +28,7 @@ mod load;
 mod tests;
 
 pub use autoeq_core::{
-    InlineMeasurement, MeasurementMultiple, MeasurementRef, MeasurementSingle, MeasurementSource,
+    EstimatedPosition, EstimatedRangeCell, InlineMeasurement, MeasurementMultiple, MeasurementRef,
+    MeasurementSingle, MeasurementSource,
 };
 pub use load::*;

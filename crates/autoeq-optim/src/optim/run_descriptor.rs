@@ -62,6 +62,42 @@ impl OptimizationRunDescriptor {
         if objective_data.integrality.is_some() {
             constraints.push("integrality".into());
         }
+        if let Some((rail, weight)) = objective_data.q_rail_penalty {
+            constraints.push(format!(
+                "q_rail_penalty_v2:rail={rail}:gain_weight={weight}:exponent=4:families=peak+matched_peak"
+            ));
+        }
+        constraints.extend(super::resolution_guard::guard_identities(objective_data));
+        if let Some(multi) = objective_data.multi_objective.as_ref()
+            && multi
+                .objectives
+                .iter()
+                .any(|objective| objective.captured_loss_perturbation_bound.is_some())
+        {
+            constraints.push(format!(
+                "{}:lambda={}:weights={:?}:loss_bounds={:?}",
+                if multi.strategy == crate::roomeq::MultiMeasurementStrategy::VariancePenalized {
+                    "captured_variance_noise_v1"
+                } else {
+                    "captured_power_average_noise_v1"
+                },
+                multi.variance_lambda,
+                multi.weights,
+                multi
+                    .objectives
+                    .iter()
+                    .map(|objective| objective.captured_loss_perturbation_bound)
+                    .collect::<Vec<_>>()
+            ));
+        }
+        if objective_data.epa_flatness_regression_weight != 0.0 {
+            let epa = objective_data.epa_config.clone().unwrap_or_default();
+            constraints.push(format!(
+                "epa_spectral_regression_v1:weight={}:erb_mix={}:band_mix={}:bands={:?}:baseline=uncorrected_target_error",
+                objective_data.epa_flatness_regression_weight,
+                epa.flatness_erb_weight, epa.flatness_band_weight, epa.flatness_band_weights
+            ));
+        }
 
         Self {
             schema: "autoeq.optimization-run".into(),

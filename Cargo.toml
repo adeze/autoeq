@@ -46,13 +46,24 @@ members = [
     "crates/roomeq-analysis",
     "crates/roomeq-synthetic",
     "crates/roomeq-workflow",
+    "crates/autoeq-qa",
+    "crates/autoeq-report-wasm",
+    "crates/autoeq-report-wasm-shell",
+    "crates/autoeq-report-gpui",
 ]
+# Local GPUI demos have a separate workspace so backend installs do not
+# resolve their sibling checkout dependencies.
+exclude = ["crates/autoeq-gpui-examples"]
+
 [workspace.package]
-version = "0.5.73"
+version = "0.5.77"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
+
+[workspace.lints.clippy]
+perf = { level = "warn", priority = -1 }
 
 [workspace.dependencies]
 autoeq-core = { path = "crates/autoeq-core", version = "0.5" }
@@ -63,37 +74,37 @@ autoeq-measurements = { path = "crates/autoeq-measurements", version = "0.5" }
 autoeq-optim = { path = "crates/autoeq-optim", version = "0.5" }
 autoeq-workflow = { path = "crates/autoeq-workflow", version = "0.5" }
 autoeq-cli = { path = "crates/autoeq-cli", version = "0.5" }
-roomeq-model = { path = "crates/roomeq-model", version = "0.5" }
-roomeq-engine = { path = "crates/roomeq-engine", version = "0.5" }
-roomeq-export = { path = "crates/roomeq-export", version = "0.5" }
+autoeq-report-wasm = { path = "crates/autoeq-report-wasm", version = "0.5" }
+autoeq-report-wasm-shell = { path = "crates/autoeq-report-wasm-shell", version = "0.5" }
+autoeq-report-gpui = { path = "crates/autoeq-report-gpui", version = "0.5" }
+roomeq-model = { path = "crates/roomeq-model", version = "0.5.14" }
+roomeq-engine = { path = "crates/roomeq-engine", version = "0.5.83" }
+roomeq-export = { path = "crates/roomeq-export", version = "0.5.9" }
 roomeq-quality = { path = "crates/roomeq-quality", version = "0.5" }
 roomeq-qa = { path = "crates/roomeq-qa", version = "0.5" }
-roomeq-cli = { path = "crates/roomeq-cli", version = "0.5" }
+roomeq-cli = { path = "crates/roomeq-cli", version = "0.5.9" }
 roomeq-analysis = { path = "crates/roomeq-analysis", version = "0.5" }
 roomeq-synthetic = { path = "crates/roomeq-synthetic", version = "0.5" }
-roomeq-workflow = { path = "crates/roomeq-workflow", version = "0.5" }
+roomeq-workflow = { path = "crates/roomeq-workflow", version = "0.5.35" }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.23"
 build_html = "2.7"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
-criterion = "0.8"
+criterion = "0.8.2"
 csv = "1.4"
 directories = "6"
 env_logger = "0.11"
+libm = { version = "=0.2.16", default-features = false }
 log = "0.4.28"
 num_cpus = "1.17"
 num-complex = "0.4"
-nalgebra = { version = "0.35", default-features = false, features = ["std"] }
-metaheuristics-nature = "10.1"
+nalgebra = { package = "sotf-nalgebra", git = "https://github.com/pierreaubert/sotf-3rdparties",  version = "0.35", default-features = false, features = ["std"] }
+metaheuristics-nature = { package = "sotf-metaheuristics-nature",  version = "10.1", git = "https://github.com/pierreaubert/sotf-3rdparties" }
 rustfft = "6.4"
 hound = "3.5"
-# `plotly` is gated behind the `plotly` feature (off by default). Library code
-# under `src/plot/` and the `roomeq-fuzzer` binary require it; the main
-# `autoeq` binary degrades gracefully and skips chart generation when off.
-# currently we have compilation errors in 0.14.1
-plotly = "0.14.1"
+# Reports are self-contained HTML+WASM documents (no Plotly dependency).
 rand = "0.10.2"
 rand_chacha = "0.10.0"
 reqwest = { version = "0.13", features = ["json"] }
@@ -109,31 +120,29 @@ urlencoding = "2.1"
 zip = { version = "8", default-features = false }
 tempfile = "3.23"
 assert_fs = "1.0"
-proptest = { version = "1.8", default-features = false, features = ["std"] }
+proptest = { version = "1.9", default-features = false, features = ["std"] }
 serial_test = "4"
 wide = "0.6.1"
 
-# Math-Audio crates from GitHub
-math-iir-fir = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
-math-dsp = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
-math-optimisation = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
-math-rir = { git = "https://github.com/adeze/math-audio", rev = "f2237e7e01220de556b0f8d364c1980927bdfcb2", version = "0.5" }
-sofa-reader = "0.2"
+# Shared report primitives from the sibling math-audio workspace.
+math-iir-fir = { version = "0.5", path = "../math-audio/crates/math-iir-fir" }
+math-dsp = { version = "0.5", path = "../math-audio/crates/math-dsp" }
+math-optimisation = { version = "0.5", path = "../math-audio/crates/math-optimisation" }
+math-rir = { version = "0.5.12", path = "../math-audio/crates/math-rir" }
+sofa-reader = { version = "0.2", git = "https://github.com/pierreaubert/sofa-reader" }
 
 # Core numerical computing
 ndarray = { version = "0.17", default-features = false, features = ["rayon", "serde"] }
-oxiblas-ndarray = "0.2.1"
+oxiblas-ndarray = "0.2.2"
 
-# Optional, WebDriver-free static rendering. Charts are emitted as deterministic
-# SVG and `resvg` rasterizes them in-process to PNG.
-resvg = "0.48"
 rayon = "1.11"
 
 [dependencies]
 autoeq-core = { workspace = true }
 autoeq-artifacts = { workspace = true }
 autoeq-fir = { workspace = true }
-autoeq-plot = { workspace = true, optional = true }
+autoeq-plot = { workspace = true }
+autoeq-report-wasm = { workspace = true }
 autoeq-measurements = { workspace = true }
 autoeq-optim = { workspace = true }
 autoeq-workflow = { workspace = true }
@@ -144,23 +153,21 @@ roomeq-export = { workspace = true }
 roomeq-quality = { workspace = true }
 roomeq-qa = { workspace = true, optional = true }
 roomeq-cli = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 roomeq-analysis = { workspace = true }
 roomeq-synthetic = { workspace = true }
 roomeq-workflow = { workspace = true }
 anyhow = { workspace = true }
-plotly = { workspace = true, optional = true }
 serde_json = { workspace = true }
 math-iir-fir = { workspace = true }
 math-optimisation = { workspace = true }
 
 [features]
 default = []
-cli = ["dep:autoeq-cli", "dep:roomeq-cli"]
+cli = ["dep:autoeq-cli", "dep:roomeq-cli", "dep:tokio"]
+rerun-telemetry = ["cli", "autoeq-cli/rerun-telemetry"]
 measurement-zarr = ["roomeq-workflow/measurement-zarr"]
 qa = ["cli", "dep:roomeq-qa"]
-plotly = ["dep:plotly", "dep:autoeq-plot", "autoeq-plot/plotly", "autoeq-cli?/plotly"]
-# Static PNG export has no browser, WebDriver, display-server, or network dependency.
-plotly_static = ["plotly", "autoeq-plot/plotly_static", "autoeq-cli?/plotly_static"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 
@@ -197,7 +204,7 @@ required-features = ["cli"]
 [[bin]]
 name = "roomeq-fuzzer"
 path = "src/bin/roomeq_fuzzer.rs"
-required-features = ["qa", "plotly"]
+required-features = ["qa"]
 
 [[bin]]
 name = "roomeq-qa-quality"
@@ -235,7 +242,6 @@ path = "src/lib.rs"
 
 [[example]]
 name = "headphone_loss_demo"
-required-features = ["plotly"]
 
 [[example]]
 name = "headphone_loss_validation"
@@ -255,14 +261,37 @@ tokio = { workspace = true }
 [lints]
 workspace = true
 
+[profile.dev]
+opt-level = 0
+# Line tables only: gives file:line stack traces, but skips 10GB+ of variable/type DWARF info that chokes the linker.
+debug = "line-tables-only"
+
+# Keep debug symbols in separate .dwo files so the linker never touches them
+split-debuginfo = "unpacked"
+
+# Do NOT strip; backtraces will still work
+strip = "none"
+
+# -------------------------------------------------------------------
+# 2. DEPENDENCY OVERRIDES (The Secret Weapon)
+# Heavily optimize external dependencies (tokio, serde, etc.) in dev mode.
+# They take time to compile ONCE, but sccache caches them forever,
+# and your 50 binaries will run 10x faster during QA/tests.
+# -------------------------------------------------------------------
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 # `release` is the everyday optimised profile — used by CI, `just prod-*`,
 # benchmarks, and local release iteration. Thin LTO keeps cross-crate inlining
 # without the serial bottleneck of fat LTO, and 14 codegen units balance
 # parallelism with optimiser visibility.
+opt-level = 3
 lto = "thin"
 codegen-units = 14
-panic = "unwind"
+panic = "abort"           # Removes unwind tables, saving ~15% binary size and link work
+debug = false             # Omit debug symbols in release binaries
+strip = "debuginfo"       # Strip debug symbols, keep symbol table
 
 # `dist` is the "cut a release" profile. Inherits everything from `release`
 # and tightens for maximum runtime performance at the cost of much longer

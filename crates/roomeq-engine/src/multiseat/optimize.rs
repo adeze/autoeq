@@ -201,6 +201,8 @@ pub fn optimize_multiseat(
         measurements.num_seats, variance_before
     );
 
+    let options = MsoSearchOptions::from_config(config, eval_min, eval_max)
+        .with_measurement_resolution(measurements, sample_rate);
     // Optimize based on strategy
     let (optimal_gains, optimal_delays, optimal_polarities, optimal_allpass_filters) = match config
         .strategy
@@ -209,7 +211,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             eval_min,
             eval_max,
@@ -219,7 +221,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             eval_min,
             eval_max,
@@ -229,7 +231,7 @@ pub fn optimize_multiseat(
             &interpolated,
             &freqs,
             measurements.num_subs,
-            config,
+            options,
             sample_rate,
             config.primary_seat,
             config.max_deviation_db,
@@ -249,7 +251,7 @@ pub fn optimize_multiseat(
                 &interpolated,
                 &freqs,
                 measurements.num_subs,
-                config,
+                options,
                 sample_rate,
                 eval_min,
                 eval_max,
@@ -619,13 +621,12 @@ pub(super) fn optimize_minimize_variance(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -656,13 +657,12 @@ fn optimize_average_response(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -692,7 +692,7 @@ fn optimize_primary_with_constraints(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     primary_seat: usize,
     max_deviation_db: f64,
@@ -700,7 +700,6 @@ fn optimize_primary_with_constraints(
     max_freq: f64,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -737,14 +736,13 @@ fn optimize_modal_basis(
     interpolated: &[Vec<Vec<Complex64>>],
     freqs: &Array1<f64>,
     num_subs: usize,
-    config: &MultiSeatConfig,
+    options: MsoSearchOptions,
     sample_rate: f64,
     min_freq: f64,
     max_freq: f64,
     basis: &ModalBasis,
     objective_context: &MsoObjectiveContext,
 ) -> MsoSolution {
-    let options = MsoSearchOptions::from_config(config, min_freq, max_freq);
     optimize_continuous_mso(
         num_subs,
         options,
@@ -1286,7 +1284,8 @@ fn optimize_continuous_area_dispatch<const D: usize>(
         });
     }
 
-    let options = MsoSearchOptions::from_config(config, eval_min, eval_max);
+    let options = MsoSearchOptions::from_config(config, eval_min, eval_max)
+        .with_measurement_resolution(measurements, sample_rate);
     let ((gains, delays, polarities, allpass_filters), search_report) =
         optimize_continuous_mso_with_budget(measurements.num_subs, options, budget, &evaluate_area);
     if search_report.stop_reason == "cancelled" || is_cancelled(budget) {
@@ -2047,18 +2046,33 @@ mod tests {
         let measurements = MultiSeatMeasurements::new(vec![
             vec![curve(90.0, 0.010), curve(86.0, 0.010)],
             vec![curve(90.0, 0.009), curve(86.0, 0.009)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let config = continuous_area_config(unit_area_base());
         let (result, report) = optimize_multiseat_continuous_area_with_budget(
-            &measurements, &config, (20.0, 120.0), 48000.0,
-            &MsoSearchBudget { seed: Some(42), ..Default::default() },
-        ).unwrap();
+            &measurements,
+            &config,
+            (20.0, 120.0),
+            48000.0,
+            &MsoSearchBudget {
+                seed: Some(42),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(report.stop_reason, "completed");
         assert!(result.objective_before > 0.05);
-        assert!(result.objective_after < 0.1 * result.objective_before,
-            "known correctable arrival: {} -> {}", result.objective_before, result.objective_after);
-        assert!((result.delays[1] - 1.0).abs() < 0.03,
-            "expected 1 ms compensation, got {:?}", result.delays);
+        assert!(
+            result.objective_after < 0.1 * result.objective_before,
+            "known correctable arrival: {} -> {}",
+            result.objective_before,
+            result.objective_after
+        );
+        assert!(
+            (result.delays[1] - 1.0).abs() < 0.03,
+            "expected 1 ms compensation, got {:?}",
+            result.delays
+        );
         assert!(result.allpass_filters.iter().all(Vec::is_empty));
         let mut holdouts = Vec::new();
         // Independently evaluate physical phasors at two unseen synthetic
@@ -2076,27 +2090,35 @@ mod tests {
                 for sub in 0..2 {
                     let arrival = common_arrival_s - sub as f64 * 0.001;
                     let acoustic = num_complex::Complex64::from_polar(
-                        amplitude, -std::f64::consts::TAU * f * arrival,
+                        amplitude,
+                        -std::f64::consts::TAU * f * arrival,
                     );
                     before += acoustic;
                     let polarity = if result.polarities[sub] { -1.0 } else { 1.0 };
-                    after += acoustic * polarity * num_complex::Complex64::from_polar(
-                        10.0_f64.powf(result.gains[sub] / 20.0),
-                        -std::f64::consts::TAU * f * result.delays[sub] / 1000.0,
-                    );
+                    after += acoustic
+                        * polarity
+                        * num_complex::Complex64::from_polar(
+                            10.0_f64.powf(result.gains[sub] / 20.0),
+                            -std::f64::consts::TAU * f * result.delays[sub] / 1000.0,
+                        );
                 }
                 let target = 2.0 * amplitude;
-                maximum_error_db = maximum_error_db.max((20.0 * (after.norm() / target).log10()).abs());
-                baseline_max_error_db = baseline_max_error_db.max((20.0 * (before.norm() / target).log10()).abs());
+                maximum_error_db =
+                    maximum_error_db.max((20.0 * (after.norm() / target).log10()).abs());
+                baseline_max_error_db =
+                    baseline_max_error_db.max((20.0 * (before.norm() / target).log10()).abs());
             }
             assert!(baseline_max_error_db > 0.5);
-            assert!(maximum_error_db < 0.03, "held-out constructive target error {maximum_error_db} dB");
+            assert!(
+                maximum_error_db < 0.03,
+                "held-out constructive target error {maximum_error_db} dB"
+            );
             holdouts.push(serde_json::json!({
                 "level_db": level_db, "common_arrival_s": common_arrival_s,
                 "baseline_max_error_db": baseline_max_error_db, "final_max_error_db": maximum_error_db,
             }));
         }
-        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa");
+        let directory = crate::qa_evidence_dir();
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("continuous-expected-analytic-arrival.json"),
             serde_json::to_vec_pretty(&serde_json::json!({

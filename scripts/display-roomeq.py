@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Display roomeq optimization results using Plotly.
+Display roomeq optimization results as an HTML report.
 
 Reads a roomeq-generated JSON file and creates an HTML file with interactive
 plots comparing initial (without EQ) and final (with EQ) frequency response
@@ -80,7 +80,7 @@ def infer_mode_name(filepath: Path) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Display roomeq optimization results using Plotly.",
+        description="Display roomeq optimization results.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -119,8 +119,31 @@ Examples:
         type=Path,
         help="Base RoomEQ config; prints its diff against metadata.effective_config",
     )
+    parser.add_argument(
+        "--smoothed-octave",
+        type=float,
+        default=1.0,
+        help="Fractional-octave smoothing for the Section 2 smoothed-response "
+        "overlays (default: 1.0 per reviews/feat-report.md)",
+    )
 
+    parser.add_argument(
+        "--capture-verification", type=Path, metavar="JSON",
+        help="Include bound capture diagnostics with an optimization result, or render them alone with -o",
+    )
     args = parser.parse_args()
+
+    if args.capture_verification and args.compare:
+        parser.error("--capture-verification cannot be combined with --compare")
+
+    if args.capture_verification and args.output_json is None:
+        if args.html_output or args.base_config:
+            parser.error("standalone --capture-verification uses -o and no base config")
+        from src.capture_views import create_capture_report
+        destination = args.output or args.capture_verification.with_name(args.capture_verification.stem + "_captures.html")
+        create_capture_report(args.capture_verification, destination)
+        print(f"Capture diagnostics written to: {destination}")
+        return
 
     # --- Comparison mode ---
     if args.compare:
@@ -215,7 +238,12 @@ Examples:
     if not has_curves:
         print("Warning: No curve data found. The JSON may not contain frequency response data.")
 
-    create_html_report(data, html_output_path, output_json_path)
+    create_html_report(
+        data, html_output_path, output_json_path,
+        smoothed_octaves=args.smoothed_octave,
+        capture_verification=(json.loads(args.capture_verification.read_text(encoding="utf-8"))
+                              if args.capture_verification else None),
+    )
 
 
 if __name__ == "__main__":

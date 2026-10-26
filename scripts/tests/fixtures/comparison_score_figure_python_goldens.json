@@ -1,0 +1,139 @@
+{
+  "cases": {
+    "empty": [
+      [],
+      []
+    ],
+    "same_loss": [
+      [
+        [
+          "iir",
+          1.23456,
+          0.87654
+        ],
+        [
+          "fir",
+          2.0,
+          1.0
+        ]
+      ],
+      [
+        "flat",
+        "flat"
+      ]
+    ],
+    "mixed_losses": [
+      [
+        [
+          "iir_epa",
+          0.5,
+          0.4
+        ],
+        [
+          "fir_epa",
+          0.7,
+          0.6
+        ]
+      ],
+      [
+        "flat",
+        "epa"
+      ]
+    ]
+  },
+  "figures": {
+    "empty": {
+      "kind": "bar",
+      "chart": {
+        "title": "Flat-loss before / after EQ (lower is better)",
+        "categories": [],
+        "groups": [
+          {
+            "name": "Before EQ",
+            "values": [],
+            "color": "rgba(200, 200, 200, 0.7)"
+          },
+          {
+            "name": "After EQ",
+            "values": [],
+            "color": null
+          }
+        ],
+        "ylabel": "Flat loss (lower is better)",
+        "ymin": null,
+        "ymax": null,
+        "legend": true,
+        "hlines": []
+      },
+      "tab": null
+    },
+    "same_loss": {
+      "kind": "bar",
+      "chart": {
+        "title": "Flat-loss before / after EQ (lower is better)",
+        "categories": [
+          "IIR (flat)",
+          "FIR (flat)"
+        ],
+        "groups": [
+          {
+            "name": "Before EQ",
+            "values": [
+              1.23456,
+              2.0
+            ],
+            "color": "rgba(200, 200, 200, 0.7)"
+          },
+          {
+            "name": "After EQ",
+            "values": [
+              0.87654,
+              1.0
+            ],
+            "color": null
+          }
+        ],
+        "ylabel": "Flat loss (lower is better)",
+        "ymin": null,
+        "ymax": null,
+        "legend": true,
+        "hlines": []
+      },
+      "tab": null
+    },
+    "mixed_losses": {
+      "kind": "bar",
+      "chart": {
+        "title": "Flat-loss before / after EQ (lower is better) — Note: bars show the flat-loss metric for every run, even ones that optimized EPA — this is so all modes stay on a single comparable scale. For perceptual comparison see the EPA Pref columns above.",
+        "categories": [
+          "IIR (EPA)",
+          "FIR (EPA)"
+        ],
+        "groups": [
+          {
+            "name": "Before EQ",
+            "values": [
+              0.5,
+              0.7
+            ],
+            "color": "rgba(200, 200, 200, 0.7)"
+          },
+          {
+            "name": "After EQ",
+            "values": [
+              0.4,
+              0.6
+            ],
+            "color": null
+          }
+        ],
+        "ylabel": "Flat loss (lower is better)",
+        "ymin": null,
+        "ymax": null,
+        "legend": true,
+        "hlines": []
+      },
+      "tab": null
+    }
+  }
+}

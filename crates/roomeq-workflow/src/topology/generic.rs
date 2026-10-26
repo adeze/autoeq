@@ -131,13 +131,14 @@ impl WorkflowExecutor for GenericExecutor {
             roomeq_engine::output::compute_epa_multichannel(&channel_chains, &epa_cfg);
 
         Ok(RoomOptimizationResult {
+            finalized_decisions: None,
             channels: channel_chains,
             channel_results,
             deployed_source_curves: HashMap::new(),
             combined_pre_score: avg_pre,
             combined_post_score: avg_post,
             metadata: OptimizationMetadata {
-            final_convolution_sha256: None,
+                final_convolution_sha256: None,
                 pre_score: avg_pre,
                 post_score: avg_post,
                 algorithm: config.optimizer.algorithm.clone(),
@@ -161,10 +162,18 @@ impl WorkflowExecutor for GenericExecutor {
                 validation_bundle: None,
                 supporting_source: None,
                 correction_acceptance: None,
+                audibility_veto: None,
+                veto_adjudication: None,
                 optimizer_evidence: None,
                 stage_outcomes: Vec::new(),
                 qa_seed_distribution: None,
                 effective_config: None,
+                t60_flatness_tolerance_s: config.report_t60_tolerance_s(),
+                operation_gates: None,
+
+                provisional_decisions: Vec::new(),
+                epa_provenance: None,
+                playback_summary: None,
             },
         })
     }

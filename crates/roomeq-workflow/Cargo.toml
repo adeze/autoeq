@@ -1,6 +1,6 @@
 [package]
 name = "roomeq-workflow"
-version = "0.5.32"
+version = "0.5.35"
 edition = "2024"
 description = "RoomEQ resource loading and application workflow composition"
 license = "GPL-3.0-or-later"
@@ -23,23 +23,28 @@ hound = { workspace = true }
 log = { workspace = true }
 math-dsp = { workspace = true }
 math-iir-fir = { workspace = true }
+math-rir = { workspace = true }
 ndarray = { workspace = true }
 num-complex = { workspace = true }
+roomeq-analysis = { workspace = true }
 roomeq-engine = { workspace = true }
 roomeq-export = { workspace = true }
 roomeq-model = { workspace = true }
+roomeq-quality = { workspace = true }
 rayon = { workspace = true }
+same-file = "=1.0.6"
 rustfft = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_ignored = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 sofa-reader = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-tempfile = { workspace = true }
 
 [[bench]]
 name = "end_to_end_scaling"

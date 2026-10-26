@@ -1,0 +1,1 @@
+{"missing":{"data":{"metadata":{}},"expected":""},"null":{"data":{"metadata":{"stage_outcomes":null}},"expected":"<section class=\"waveform-status\"><h2>Waveform-view availability</h2><p>Unavailable: malformed stage outcomes.</p></section>"}}

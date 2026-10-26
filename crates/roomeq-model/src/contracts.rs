@@ -28,6 +28,10 @@ pub struct DspGraph {
     /// Output version
     #[serde(default = "crate::config::default_config_version")]
     pub version: String,
+    /// Required artifact-bundle manifest schema for newly published bundles.
+    /// Absent on legacy graphs, which may still use embedded measurements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_bundle_schema_version: Option<u32>,
     /// Global graph-level plugins, e.g. matrix routing that combines several
     /// programme inputs before per-output correction chains.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -40,16 +44,24 @@ pub struct DspGraph {
     /// Metadata about the optimization
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<OptimizationMetadata>,
+    /// Versioned correction decision ledger (global K4 contract). Optional
+    /// so legacy outputs without decision metadata stay readable; engine
+    /// stages record provisional entries and only workflow reconciliation
+    /// binds final records to this delivered graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction_decisions: Option<crate::decision_ledger::CorrectionDecisionLedger>,
 }
 
 impl DspGraph {
     pub fn new(version: impl Into<String>) -> Self {
         Self {
             version: version.into(),
+            artifact_bundle_schema_version: None,
             global_plugins: Vec::new(),
             channels: HashMap::new(),
             deployed_source_curves: HashMap::new(),
             metadata: None,
+            correction_decisions: None,
         }
     }
 
@@ -58,6 +70,7 @@ impl DspGraph {
         self.channels.insert(
             name.clone(),
             ChannelDspChain {
+                physical_correction_target: None,
                 channel: name,
                 plugins: plugins
                     .into_iter()
@@ -75,6 +88,14 @@ impl DspGraph {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
     }
@@ -97,6 +118,11 @@ impl DspGraph {
                     "DSP graph channel key '{name}' does not match embedded channel name '{}'",
                     chain.channel
                 ));
+            }
+            if let Some(target) = &chain.physical_correction_target {
+                target
+                    .validate()
+                    .map_err(|reason| format!("channel '{name}' physical target: {reason}"))?;
             }
             validate_plugins(&format!("channel '{name}'"), &chain.plugins)?;
             if let Some(drivers) = &chain.drivers {

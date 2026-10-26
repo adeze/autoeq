@@ -11,11 +11,18 @@ fn generic_group_final_level_uses_target_without_deployed_source_curves() {
     chain.target_curve = Some((&target).into());
     let mut config = RoomConfig::default();
     config.optimizer.max_freq = 200.0;
-    let outcome = apply_final_channel_level_alignment(&mut result, &config, 48_000.0, Path::new(".")).unwrap();
+    let outcome =
+        apply_final_channel_level_alignment(&mut result, &config, 48_000.0, Path::new("."))
+            .unwrap();
     assert_eq!(outcome.status, StageStatus::Applied);
     assert!((result.channel_results["L"].final_curve.spl[10] - target.spl[10]).abs() < 1e-9);
-    assert!(result.channels["L"].plugins.iter().any(|plugin|
-        plugin.plugin_type == "gain" && plugin.parameters["gain_db"].as_f64() == Some(-5.0)));
+    assert!(
+        result.channels["L"]
+            .plugins
+            .iter()
+            .any(|plugin| plugin.plugin_type == "gain"
+                && plugin.parameters["gain_db"].as_f64() == Some(-5.0))
+    );
 }
 
 #[test]
@@ -38,6 +45,7 @@ fn mixed_phase_missing_fir_is_scoped_degradation() {
             .unwrap();
             acceptance.accepted = true;
             acceptance.decision = roomeq_model::CorrectionDecision::Accepted;
+            acceptance.refresh_outcome();
             result.metadata.correction_acceptance = Some(acceptance);
             let before_channels = serde_json::to_value(&result.channels).unwrap();
             record_missing_mixed_phase_fir_reversions(&mut result, ProcessingMode::LowLatency);
@@ -80,6 +88,8 @@ fn mixed_phase_owns_phase_correction_stage() {
         pre_ringing_threshold_db: -30.0,
         min_spatial_depth: 0.5,
         phase_smoothing_octaves: 1.0 / 6.0,
+        assessment: Default::default(),
+        max_correction_latency_ms: None,
     });
     assert!(!should_run_standalone_phase_correction(&config));
 
@@ -92,6 +102,7 @@ fn route_owned_topology_owns_main_sub_phase_alignment() {
     let mut route_plugin = output::create_gain_plugin(0.0);
     route_plugin.parameters["room_eq_stage"] = serde_json::json!("route_owned");
     let routed_chain = ChannelDspChain {
+        physical_correction_target: None,
         channel: "LFE".to_string(),
         plugins: vec![route_plugin],
         drivers: None,
@@ -102,7 +113,15 @@ fn route_owned_topology_owns_main_sub_phase_alignment() {
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
         target_curve: None,
+        early_late_curves: None,
     };
     let routed = HashMap::from([("LFE".to_string(), routed_chain)]);
 
@@ -112,6 +131,7 @@ fn route_owned_topology_owns_main_sub_phase_alignment() {
 
 fn routed_test_chain(target: &Curve) -> ChannelDspChain {
     ChannelDspChain {
+        physical_correction_target: None,
         channel: "L".to_string(),
         plugins: vec![output::create_crossover_plugin("LR24", 100.0, "high")],
         drivers: None,
@@ -123,6 +143,14 @@ fn routed_test_chain(target: &Curve) -> ChannelDspChain {
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
+        early_late_curves: None,
     }
 }
 
@@ -197,7 +225,8 @@ fn home_cinema_input_alignment_delay_is_staged_before_routing() {
         subwoofers: Some(SubwooferSystemConfig {
             config: SubwooferStrategy::Single,
             crossover: None,
-            mapping: HashMap::new(),
+            routing: Default::default(),
+            outputs: Vec::new(),
         }),
         ..SystemConfig::default()
     });
@@ -234,14 +263,16 @@ fn shared_alignment_fit_band_excludes_subwoofer_and_crossover_rolloff() {
     config.system = Some(SystemConfig {
         model: SystemModel::HomeCinema,
         speakers: HashMap::from([
-            ("Left".to_string(), "left".to_string()),
+            ("L".to_string(), "left".to_string()),
             ("TopFrontLeft".to_string(), "TFL".to_string()),
-            ("LFE".to_string(), "sub".to_string()),
         ]),
         subwoofers: Some(SubwooferSystemConfig {
             config: SubwooferStrategy::Single,
-            crossover: Some("main_sub".to_string().into()),
-            mapping: HashMap::new(),
+            crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec![
+                "main_sub".to_string(),
+            ])),
+            routing: Default::default(),
+            outputs: Vec::new(),
         }),
         bass_management: None,
         ..SystemConfig::default()
@@ -256,6 +287,119 @@ fn shared_alignment_fit_band_excludes_subwoofer_and_crossover_rolloff() {
         shared_alignment_fit_band(&config, &curves),
         (100.0, 20_000.0)
     );
+}
+
+#[test]
+fn bass_only_matching_preserves_upper_band_and_skips_broadband_shelves() {
+    let mut config = minimal_room_config(ProcessingMode::LowLatency);
+    config.optimizer.max_freq = 200.0;
+    config.optimizer.inter_channel_timbre_matching =
+        Some(roomeq_model::InterChannelTimbreMatchingConfig {
+            enabled: true,
+            reference_channel: "L".into(),
+            ..Default::default()
+        });
+    let mut result = crate::test_fixtures::single_channel_room_result("L");
+    let main = flat_curve();
+    let mut height = main.clone();
+    for (&f, spl) in height.freq.iter().zip(height.spl.iter_mut()) {
+        if f < 200.0 {
+            *spl += 10.0;
+        }
+    }
+    for (name, curve) in [("L", main), ("TFL", height)] {
+        config.speakers.insert(
+            name.into(),
+            SpeakerConfig::Single(MeasurementSource::InMemory(curve.clone())),
+        );
+        let mut channel = result.channel_results["L"].clone();
+        channel.initial_curve = curve.clone();
+        channel.final_curve = curve.clone();
+        result.channel_results.insert(name.into(), channel);
+        let mut chain = result.channels["L"].clone();
+        chain.channel = name.into();
+        chain.plugins.clear();
+        chain.initial_curve = Some((&curve).into());
+        chain.final_curve = Some((&curve).into());
+        result.channels.insert(name.into(), chain);
+        result.deployed_source_curves.insert(name.into(), curve);
+    }
+    let stage = apply_inter_channel_timbre_matching_stage(
+        &config,
+        48_000.0,
+        &result.deployed_source_curves,
+        &mut result.channel_results,
+        &mut result.channels,
+    )
+    .unwrap();
+    assert_eq!(stage.status, StageStatus::Skipped);
+    assert!(
+        stage
+            .advisories
+            .contains(&"broadband_shelves_outside_correction_band".into())
+    );
+    let height_config = roomeq_model::HeightChannelAlignmentConfig {
+        enabled: true,
+        match_arrival_time: false,
+        reference_channels: HashMap::from([("TFL".into(), "L".into())]),
+        ..Default::default()
+    };
+    let stage = apply_topology_height_alignment_with_frequency_samples(
+        &mut result,
+        &height_config,
+        &config,
+        None,
+        48_000.0,
+        256,
+    );
+    assert_ne!(stage.status, StageStatus::Failed, "{:?}", stage.advisories);
+    assert!(
+        result.channels["TFL"].plugins.is_empty(),
+        "bass mismatch must not cause broadband gain or shelves"
+    );
+}
+
+#[test]
+fn cinema_alignment_detects_whole_group_offsets_outside_bass_eq_band() {
+    let mut config = minimal_room_config(ProcessingMode::LowLatency);
+    config.optimizer.max_freq = 200.0;
+    config.system = Some(SystemConfig {
+        model: SystemModel::HomeCinema,
+        subwoofers: Some(SubwooferSystemConfig {
+            config: SubwooferStrategy::Single,
+            crossover: None,
+            routing: Default::default(),
+            outputs: Vec::new(),
+        }),
+        ..SystemConfig::default()
+    });
+    let mut quiet_surround = flat_curve();
+    quiet_surround.spl -= 10.0;
+    let curves = HashMap::from([
+        ("L".into(), flat_curve()),
+        ("R".into(), flat_curve()),
+        ("SL".into(), quiet_surround.clone()),
+        ("SR".into(), quiet_surround),
+    ]);
+    let (gains, spread, band) = final_role_level_alignment_gains(&config, &curves, &curves);
+    assert!(
+        (spread - 10.0).abs() < 0.01,
+        "equal L/R pairs are not equal cinema levels"
+    );
+    assert_eq!(band, (500.0, 2_000.0));
+    assert!((gains["L"] + 10.0).abs() < 0.01);
+    assert!((gains["R"] + 10.0).abs() < 0.01);
+    assert!(!gains.contains_key("SL"));
+
+    let mut damaged = curves.clone();
+    let left = damaged.get_mut("L").unwrap();
+    for (&frequency, level) in left.freq.iter().zip(left.spl.iter_mut()) {
+        *level += if frequency < 200.0 { 30.0 } else { -30.0 };
+    }
+    let (_, damaged_spread, frozen_band) =
+        final_role_level_alignment_gains(&config, &damaged, &curves);
+    assert_eq!(frozen_band, band, "candidate EQ must not redefine support");
+    assert!((damaged_spread - 30.0).abs() < 0.01);
 }
 
 #[test]
@@ -275,14 +419,15 @@ fn final_role_level_alignment_corrects_broadband_lr_offset_down_only() {
         ("LFE".to_string(), curve(80.0)),
     ]);
 
-    let (gains, spread_db) = final_role_level_alignment_gains(&config, &curves);
+    let (gains, spread_db, band) = final_role_level_alignment_gains(&config, &curves, &curves);
+    assert_eq!(band, (100.0, 1_000.0));
 
     assert!((spread_db - 3.5).abs() < 1.0e-9);
     assert!((gains["L"] + 3.5).abs() < 1.0e-9);
     assert!(!gains.contains_key("R"));
     assert!(!gains.contains_key("LFE"));
 
-    let mut aligned = curves;
+    let mut aligned = curves.clone();
     for (name, gain_db) in gains {
         aligned
             .get_mut(&name)
@@ -290,15 +435,161 @@ fn final_role_level_alignment_corrects_broadband_lr_offset_down_only() {
             .spl
             .mapv_inplace(|value| value + gain_db);
     }
-    let (remaining_gains, remaining_spread_db) =
-        final_role_level_alignment_gains(&config, &aligned);
+    let (remaining_gains, remaining_spread_db, _) =
+        final_role_level_alignment_gains(&config, &aligned, &curves);
     assert!(remaining_gains.is_empty());
     assert!(remaining_spread_db <= FINAL_CHANNEL_LEVEL_TOLERANCE_DB);
 }
 
 #[test]
+fn final_channel_level_caps_trim_and_accepts_residual_spread() {
+    // Agreed policy: alignment trims cap at 2 dB and residual spread above
+    // the 0.5 dB tolerance is accepted as Degraded instead of discarding
+    // the candidate. A 3.5 dB spread must therefore apply a -2 dB trim,
+    // keep the candidate, and report the residual spread on the check.
+    let mut config = minimal_room_config(ProcessingMode::LowLatency);
+    config.optimizer.min_freq = 20.0;
+    config.optimizer.max_freq = 200.0;
+    let curve = |level| Curve {
+        freq: ndarray::Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 96),
+        spl: ndarray::Array1::from_elem(96, level),
+        phase: Some(ndarray::Array1::zeros(96)),
+        ..Curve::default()
+    };
+    let curves = HashMap::from([
+        ("L".to_string(), curve(80.0)),
+        ("R".to_string(), curve(76.5)),
+    ]);
+    let mut result = crate::test_fixtures::single_channel_room_result("L");
+    let mut right_chain = result.channels["L"].clone();
+    right_chain.channel = "R".to_string();
+    result.channels.insert("R".to_string(), right_chain);
+    let mut right_result = result.channel_results["L"].clone();
+    right_result.name = "R".to_string();
+    result.channel_results.insert("R".to_string(), right_result);
+    for (name, realized) in &curves {
+        result.channel_results.get_mut(name).unwrap().final_curve = realized.clone();
+    }
+    result.deployed_source_curves = curves;
+
+    let outcome =
+        apply_final_channel_level_alignment(&mut result, &config, 48_000.0, Path::new("."))
+            .unwrap();
+    assert_eq!(outcome.status, StageStatus::Degraded);
+    assert!(!outcome.checks[0].passed);
+    assert!((outcome.checks[0].observed.unwrap() - 1.5).abs() < 1.0e-9);
+    assert!(
+        outcome
+            .advisories
+            .iter()
+            .any(|advisory| advisory.contains("residual_spread_accepted_after_trim_cap"))
+    );
+    assert!(result.channels["L"].plugins.iter().any(|plugin| {
+        plugin.parameters["label"] == "final_channel_level_alignment"
+            && (plugin.parameters["gain_db"].as_f64().unwrap() + 2.0).abs() < 1.0e-9
+    }));
+}
+
+#[test]
+fn final_channel_level_uses_upper_band_after_unequal_headroom_gains() {
+    let mut config = minimal_room_config(ProcessingMode::LowLatency);
+    config.optimizer.min_freq = 20.0;
+    config.optimizer.max_freq = 200.0;
+    let curve = |level| Curve {
+        freq: ndarray::Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 96),
+        spl: ndarray::Array1::from_elem(96, level),
+        phase: Some(ndarray::Array1::zeros(96)),
+        ..Curve::default()
+    };
+    // The correction band remains bass-only. These realized curves model an
+    // unequal final per-output headroom attenuation after initially matched
+    // upper-band responses.
+    let curves = HashMap::from([
+        ("L".to_string(), curve(80.0)),
+        ("R".to_string(), curve(77.65)),
+    ]);
+
+    let (gains, spread_before_db, band) =
+        final_role_level_alignment_gains(&config, &curves, &curves);
+    assert_eq!(band, (200.0, 20_000.0));
+    assert!((spread_before_db - 2.35).abs() < 1.0e-9);
+    assert!((gains["L"] + 2.35).abs() < 1.0e-9);
+    assert!(!gains.contains_key("R"));
+
+    let mut aligned = curves.clone();
+    for (name, gain_db) in gains {
+        aligned
+            .get_mut(&name)
+            .unwrap()
+            .spl
+            .mapv_inplace(|value| value + gain_db);
+    }
+    let (_, spread_after_db, _) = final_role_level_alignment_gains(&config, &aligned, &curves);
+    assert!(spread_after_db <= FINAL_CHANNEL_LEVEL_TOLERANCE_DB);
+
+    let mut result = crate::test_fixtures::single_channel_room_result("L");
+    let mut right_chain = result.channels["L"].clone();
+    right_chain.channel = "R".to_string();
+    result.channels.insert("R".to_string(), right_chain);
+    let mut right_result = result.channel_results["L"].clone();
+    right_result.name = "R".to_string();
+    result.channel_results.insert("R".to_string(), right_result);
+    for (name, realized) in &curves {
+        result.channel_results.get_mut(name).unwrap().final_curve = realized.clone();
+    }
+    result.deployed_source_curves = curves;
+
+    let outcome =
+        apply_final_channel_level_alignment(&mut result, &config, 48_000.0, Path::new("."))
+            .unwrap();
+    assert_eq!(outcome.status, StageStatus::Applied);
+    assert!(outcome.advisories[0].contains("spread_before_db=2.350"));
+    // The 2.35 dB trim is capped at the 2 dB alignment limit; the residual
+    // 0.35 dB spread stays within tolerance, so the outcome remains Applied.
+    assert!(outcome.advisories[0].contains("spread_after_db=0.350"));
+    assert!(result.channels["L"].plugins.iter().any(|plugin| {
+        plugin.parameters["label"] == "final_channel_level_alignment"
+            && (plugin.parameters["gain_db"].as_f64().unwrap() + 2.0).abs() < 1.0e-9
+    }));
+    assert!(
+        !result.channels["R"]
+            .plugins
+            .iter()
+            .any(|plugin| { plugin.parameters["label"] == "final_channel_level_alignment" })
+    );
+}
+
+#[test]
+fn final_channel_level_refreshes_non_routed_curves_but_preserves_generic_sentinel() {
+    let mut result = crate::test_fixtures::single_channel_room_result("L");
+    let stale = result.channel_results["L"].final_curve.clone();
+    result.deployed_source_curves = HashMap::from([("L".to_string(), stale)]);
+    result
+        .channels
+        .get_mut("L")
+        .unwrap()
+        .plugins
+        .push(output::create_gain_plugin(3.0));
+    refresh_non_routed_deployed_source_curves(&mut result, 48_000.0, Path::new(".")).unwrap();
+    for (realized, initial) in result.deployed_source_curves["L"]
+        .spl
+        .iter()
+        .zip(result.channel_results["L"].initial_curve.spl.iter())
+    {
+        assert!((realized - initial - 3.0).abs() < 1.0e-9);
+    }
+
+    let mut generic = crate::test_fixtures::single_channel_room_result("L");
+    generic.channels.get_mut("L").unwrap().drivers = Some(Vec::new());
+    assert!(generic.deployed_source_curves.is_empty());
+    refresh_non_routed_deployed_source_curves(&mut generic, 48_000.0, Path::new(".")).unwrap();
+    assert!(generic.deployed_source_curves.is_empty());
+}
+
+#[test]
 fn topology_height_residual_is_added_after_existing_delay() {
     let mut chain = ChannelDspChain {
+        physical_correction_target: None,
         channel: "TFL".to_string(),
         plugins: vec![output::create_delay_plugin(1.25)],
         drivers: None,
@@ -309,7 +600,15 @@ fn topology_height_residual_is_added_after_existing_delay() {
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
         target_curve: None,
+        early_late_curves: None,
     };
 
     assert!(insert_topology_height_residual_delay(
@@ -343,6 +642,7 @@ fn reported_curve_retains_user_preference_filters() {
         6.0,
     );
     let chain = ChannelDspChain {
+        physical_correction_target: None,
         channel: "L".to_string(),
         plugins: vec![roomeq_engine::output::create_labeled_eq_plugin(
             &[preference],
@@ -356,7 +656,15 @@ fn reported_curve_retains_user_preference_filters() {
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
         target_curve: None,
+        early_late_curves: None,
     };
 
     let reported = reported_curve_with_user_preferences(&base_curve, &chain, 48_000.0);
@@ -380,6 +688,119 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+
+#[test]
+fn unrouted_rejected_kernels_remain_available_for_bounded_final_refinement() {
+    use math_audio_iir_fir::{Biquad, BiquadFilterType};
+    let frequencies =
+        Array1::from_iter((0..=400).map(|index| 20.0 * 1000.0_f64.powf(index as f64 / 400.0)));
+    let flat = roomeq_model::Curve {
+        spl: Array1::from_elem(frequencies.len(), 80.0),
+        phase: Some(Array1::zeros(frequencies.len())),
+        freq: frequencies,
+        ..Default::default()
+    };
+    let peak = Biquad::new(BiquadFilterType::Peak, 1000.0, 48_000.0, 1.0, 8.0);
+    let excessive_cut = Biquad::new(BiquadFilterType::Peak, 1000.0, 48_000.0, 1.0, -24.0);
+    let apply = |curve: &roomeq_model::Curve, filter: &Biquad| {
+        let transfer = autoeq_core::response::compute_peq_complex_response(
+            std::slice::from_ref(filter),
+            &curve.freq,
+            48_000.0,
+        );
+        autoeq_core::response::apply_complex_response(curve, &transfer)
+    };
+    for (measured, correction_possible) in [(apply(&flat, &peak), true), (flat.clone(), false)] {
+        let mut result = single_channel_room_result("L");
+        let channel = result.channel_results.get_mut("L").unwrap();
+        channel.initial_curve = measured.clone();
+        channel.final_curve = apply(&measured, &excessive_cut);
+        channel.biquads = vec![excessive_cut.clone()];
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.initial_curve = Some((&measured).into());
+        chain.final_curve = Some((&channel.final_curve).into());
+        chain.target_curve = Some((&flat).into());
+        chain.plugins = vec![output::create_eq_plugin(&channel.biquads)];
+        let original_plugins = chain.plugins.clone();
+        let mut config = RoomConfig::default();
+        config.speakers.insert(
+            "L".into(),
+            SpeakerConfig::Single(MeasurementSource::InMemory(measured)),
+        );
+        config.optimizer.min_freq = 20.0;
+        config.optimizer.max_freq = 20_000.0;
+        let captures = seat_replay::capture_training(&config).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        prepare_cumulative_correction(
+            &mut result,
+            48_000.0,
+            2,
+            (20.0, 20_000.0),
+            dir.path(),
+            ProcessingMode::LowLatency,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&result.channels["L"].plugins).unwrap(),
+            serde_json::to_value(&original_plugins).unwrap()
+        );
+        let carrier = &result.deployed_source_curves["L"];
+        assert!(
+            carrier
+                .spl
+                .iter()
+                .zip(&result.channel_results["L"].final_curve.spl)
+                .all(|(actual, expected)| (actual - expected).abs() < 1e-9),
+            "refinement seed retained the gate's reverted playback carrier"
+        );
+        let rejected = result.metadata.correction_acceptance.as_ref().unwrap();
+        assert!(!rejected.accepted);
+        assert_eq!(
+            rejected.decision,
+            roomeq_model::CorrectionDecision::Rejected
+        );
+        finalization::select(
+            &mut result,
+            &captures,
+            &HashMap::new(),
+            &config,
+            48_000.0,
+            dir.path(),
+            &autoeq_artifacts::MemoryArtifactStore::new(),
+        )
+        .unwrap();
+        let report = result.metadata.correction_acceptance.as_ref().unwrap();
+        if correction_possible {
+            assert_eq!(
+                report.outcome,
+                roomeq_model::RoomEqOutcome::Accepted,
+                "{report:?}"
+            );
+            assert!(!result.channel_results["L"].biquads.is_empty());
+            assert!(
+                result.channel_results["L"]
+                    .biquads
+                    .iter()
+                    .all(|filter| { filter.db_gain < 0.0 && filter.db_gain > -24.0 })
+            );
+        } else {
+            assert_eq!(
+                report.outcome,
+                roomeq_model::RoomEqOutcome::Unchanged,
+                "{report:?}"
+            );
+            assert!(!report.accepted);
+            assert!(result.channel_results["L"].biquads.is_empty());
+            assert!(result.channels["L"].plugins.is_empty());
+        }
+        assert!(
+            finalization::assess_delivered_epa(&mut result, &config)
+                .iter()
+                .all(|check| check.passed)
+        );
+    }
+}
 
 #[test]
 fn routed_safety_replay_restores_the_last_known_safe_dsp_chain() {
@@ -409,6 +830,7 @@ fn routed_safety_replay_restores_the_last_known_safe_dsp_chain() {
         runtime_policy: None,
         decision: roomeq_model::CorrectionDecision::Accepted,
         accepted: true,
+        outcome: roomeq_model::RoomEqOutcome::Accepted,
         metrics: roomeq_model::CorrectionMetricSummary {
             auditory_frequency_measure: String::from("test-measure"),
             pre_target_weighted_rms_db: 4.0,
@@ -421,6 +843,9 @@ fn routed_safety_replay_restores_the_last_known_safe_dsp_chain() {
             max_abs_correction_db: 2.0,
         },
         violations: Vec::new(),
+        realized_processing: None,
+        processing_fallback: None,
+        observations: Vec::new(),
         reverted_stages: Vec::new(),
         acoustic_quality: None,
         realization_quality: None,
@@ -442,11 +867,23 @@ fn routed_safety_replay_restores_the_last_known_safe_dsp_chain() {
         Err(AutoeqError::OptimizationFailed {
             message: "final routed crossover underfill exceeds 3 dB".to_string(),
         }),
-    ).unwrap_err();
-    assert!(error.to_string().contains("restored pre-gate DSP is not accepted"));
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("restored pre-gate DSP is not accepted")
+    );
     assert!(error.to_string().contains("safety_changed_playback=true"));
-    assert_eq!(post_safety.metadata.correction_acceptance.as_ref().unwrap().decision,
-        roomeq_model::CorrectionDecision::Rejected);
+    assert_eq!(
+        post_safety
+            .metadata
+            .correction_acceptance
+            .as_ref()
+            .unwrap()
+            .decision,
+        roomeq_model::CorrectionDecision::Rejected
+    );
 
     assert_eq!(
         post_safety.channels["L"].plugins.len(),
@@ -492,7 +929,10 @@ fn routed_safety_replay_publishes_fresh_curve_after_correction_reversion() {
     let mut initial = before.channel_results["L"].initial_curve.clone();
     initial.phase = Some(Array1::zeros(initial.freq.len()));
     let chain = before.channels.get_mut("L").unwrap();
-    chain.plugins = vec![output::create_gain_plugin(-6.0), output::create_gain_plugin(12.0)];
+    chain.plugins = vec![
+        output::create_gain_plugin(-6.0),
+        output::create_gain_plugin(12.0),
+    ];
     let old_curve = crate::ctc::apply_channel_dsp_chain_to_curve(chain, &initial, 48000.0).unwrap();
     before.deployed_source_curves = HashMap::from([("L".into(), old_curve.clone())]);
     let old_deployed = before.deployed_source_curves.clone();
@@ -500,23 +940,42 @@ fn routed_safety_replay_publishes_fresh_curve_after_correction_reversion() {
     // Model the state handed to the production commit path after correction
     // rollback: retain required -6 dB gain, remove only the +12 dB correction.
     after.channels.get_mut("L").unwrap().plugins.pop();
-    let fresh = crate::ctc::apply_channel_dsp_chain_to_curve(
-        &after.channels["L"], &initial, 48000.0,
-    ).unwrap();
+    let fresh =
+        crate::ctc::apply_channel_dsp_chain_to_curve(&after.channels["L"], &initial, 48000.0)
+            .unwrap();
     after.channels.get_mut("L").unwrap().final_curve = Some((&fresh).into());
     after.channel_results.get_mut("L").unwrap().final_curve = fresh.clone();
     assert!((old_curve.spl[0] - fresh.spl[0] - 12.0).abs() < 1e-9);
     commit_or_restore_routed_safety_replay(
-        &mut after, before, old_deployed, Ok(HashMap::from([("L".into(), fresh)])),
-    ).unwrap();
+        &mut after,
+        before,
+        old_deployed,
+        Ok(HashMap::from([("L".into(), fresh)])),
+    )
+    .unwrap();
     let published = after.to_dsp_chain_output();
     assert_eq!(published.channels["L"].plugins.len(), 1);
-    assert_eq!(published.channels["L"].plugins[0].parameters["gain_db"], -6.0);
-    for (reported, original) in published.deployed_source_curves["L"].spl.iter().zip(initial.spl.iter()) {
-        assert!((reported - (original - 6.0)).abs() < 1e-9,
-            "serialized deployed curve retained removed correction");
+    assert_eq!(
+        published.channels["L"].plugins[0].parameters["gain_db"],
+        -6.0
+    );
+    for (reported, original) in published.deployed_source_curves["L"]
+        .spl
+        .iter()
+        .zip(initial.spl.iter())
+    {
+        assert!(
+            (reported - (original - 6.0)).abs() < 1e-9,
+            "serialized deployed curve retained removed correction"
+        );
     }
-    assert_eq!(published.deployed_source_curves["L"].phase.as_ref().unwrap(), &vec![0.0; initial.freq.len()]);
+    assert_eq!(
+        published.deployed_source_curves["L"]
+            .phase
+            .as_ref()
+            .unwrap(),
+        &vec![0.0; initial.freq.len()]
+    );
 }
 
 fn flat_curve() -> roomeq_model::Curve {
@@ -554,7 +1013,9 @@ fn minimal_room_config(processing_mode: ProcessingMode) -> RoomConfig {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }
@@ -570,7 +1031,9 @@ fn optimize_room_empty_speakers_fails_validation() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -674,6 +1137,7 @@ fn phase_correction_precedes_downstream_phase_alignment_for_multisub() {
                 MeasurementSource::InMemory(phased),
             ],
             allpass_optimization: false,
+            joint_optimization: false,
         }),
     );
     config.optimizer.phase_alignment = Some(Default::default());
@@ -682,6 +1146,8 @@ fn phase_correction_precedes_downstream_phase_alignment_for_multisub() {
         pre_ringing_threshold_db: -30.0,
         min_spatial_depth: 0.5,
         phase_smoothing_octaves: 1.0 / 6.0,
+        assessment: Default::default(),
+        max_correction_latency_ms: None,
     });
     config.optimizer.allow_delay = Some(true);
 
@@ -795,12 +1261,12 @@ fn topology_stereo_route_records_probe_arrival_overrides() {
     config.system = Some(SystemConfig {
         model: SystemModel::Stereo,
         speakers: HashMap::from([
-            ("Left".to_string(), "left".to_string()),
-            ("Right".to_string(), "right".to_string()),
+            ("L".to_string(), "left".to_string()),
+            ("R".to_string(), "right".to_string()),
         ]),
         ..Default::default()
     });
-    let arrivals = HashMap::from([("Left".to_string(), 5.0), ("Right".to_string(), 8.0)]);
+    let arrivals = HashMap::from([("L".to_string(), 5.0), ("R".to_string(), 8.0)]);
 
     let result =
         optimize_room_with_probe_arrivals(&config, 48_000.0, None, None, &arrivals).unwrap();
@@ -810,10 +1276,10 @@ fn topology_stereo_route_records_probe_arrival_overrides() {
         .expect("topology route must retain supplied probe arrivals");
     assert_eq!(timing.channels.len(), 2);
     assert!(timing.channels.iter().any(|channel| {
-        channel.name == "Left" && (channel.measured_arrival_ms - 5.0).abs() < 1e-9
+        channel.name == "L" && (channel.measured_arrival_ms - 5.0).abs() < 1e-9
     }));
     assert!(timing.channels.iter().any(|channel| {
-        channel.name == "Right" && (channel.measured_arrival_ms - 8.0).abs() < 1e-9
+        channel.name == "R" && (channel.measured_arrival_ms - 8.0).abs() < 1e-9
     }));
     assert!(
         result.channels.values().all(|chain| {
@@ -926,8 +1392,8 @@ fn optimize_room_stereo_2_0_workflow() {
         system: Some(SystemConfig {
             model: SystemModel::Stereo,
             speakers: HashMap::from([
-                ("Left".to_string(), "left".to_string()),
-                ("Right".to_string(), "right".to_string()),
+                ("L".to_string(), "left".to_string()),
+                ("R".to_string(), "right".to_string()),
             ]),
             subwoofers: None,
             bass_management: None,
@@ -949,7 +1415,9 @@ fn optimize_room_stereo_2_0_workflow() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -1018,7 +1486,9 @@ fn base_room_config(
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }

@@ -1,16 +1,52 @@
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
+  "measured_impulse_responses": {
+    "L": {
+      "path": "measured_ir/Left_speaker__ir.csv",
+      "sample_rate_hz": 48000
+    },
+    "R": {
+      "path": "measured_ir/Right_speaker__ir.csv",
+      "sample_rate_hz": 48000
+    },
+    "subs_1": {
+      "path": "measured_ir/left_sub__ir.csv",
+      "sample_rate_hz": 3000,
+      "output_channel": "Sub1",
+      "driver": "Sub1",
+      "timing_reference_id": "sigberg1-mlp-session-1"
+    },
+    "subs_2": {
+      "path": "measured_ir/right_sub__ir.csv",
+      "sample_rate_hz": 3000,
+      "output_channel": "Sub1",
+      "driver": "Sub2",
+      "timing_reference_id": "sigberg1-mlp-session-1"
+    }
+  },
   "system": {
     "model": "stereo",
     "speakers": {
       "L": "L",
-      "R": "R",
-      "LFE": "subs"
+      "R": "R"
     },
     "subwoofers": {
-      "config": "mso",
-      "crossover": ["bass_xover1", "bass_xover2"],
-      "subs": "L"
+      "strategy": "mso",
+      "routing": "optimize",
+      "outputs": [
+        {
+          "id": "Sub1",
+          "speaker": "subs_1"
+        },
+        {
+          "id": "Sub2",
+          "speaker": "subs_2"
+        }
+      ],
+      "crossover": [
+        "bass_xover1",
+        "bass_xover2"
+      ]
     }
   },
   "speakers": {
@@ -22,29 +58,41 @@
       "path": "right.csv",
       "name": "Right"
     },
-    "subs": {
-      "name": "Two subs",
-      "subwoofers": [
-        {
-          "path": "left_sub.csv",
-          "name": "Left Sub"
-        },
-        {
-          "path": "right_sub.csv",
-          "name": "Right Sub"
-        }
-      ],
-      "allpass_optimization": false
+    "subs_1": {
+      "path": "left_sub.csv",
+      "name": "Main listening position",
+      "speaker_name": "Left Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "sigberg1-mlp-session-1",
+        "has_measured_spl": true
+      }
+    },
+    "subs_2": {
+      "path": "right_sub.csv",
+      "name": "Main listening position",
+      "speaker_name": "Right Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "sigberg1-mlp-session-1",
+        "has_measured_spl": true
+      }
     }
   },
   "crossovers": {
     "bass_xover1": {
       "type": "LR24",
-      "frequency_range": [40.0, 130.0]
+      "frequency_range": [
+        40.0,
+        130.0
+      ]
     },
     "bass_xover2": {
       "type": "LR24",
-      "frequency_range": [40.0, 130.0]
+      "frequency_range": [
+        40.0,
+        130.0
+      ]
     }
   },
   "optimizer": {

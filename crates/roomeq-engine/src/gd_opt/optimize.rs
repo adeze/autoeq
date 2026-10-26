@@ -16,6 +16,36 @@ use super::types::normalize_per_channel_controls;
 use autoeq_optim::optim::scalar::{ScalarOptimConfig, optimize_bounded_scalar};
 use roomeq_model::{MixedModeConfig, ProcessingMode};
 
+/// Numerical support does not qualify timing or phase accuracy.
+fn resolution_bounded_config<'a>(
+    inputs: impl IntoIterator<Item = &'a ChannelMeasurementInput>,
+    config: &GdOptConfig,
+) -> GdOptConfig {
+    let mut bounded = config.clone();
+    if bounded.ap_per_channel == 0 {
+        return bounded;
+    }
+    let cap = ChannelMeasurementInput::combined_resolution(inputs).and_then(|support| {
+        let [low, high] = support.support_band_hz()?;
+        bounded.ap_min_freq = bounded.ap_min_freq.max(low);
+        bounded.ap_max_freq = bounded.ap_max_freq.min(high);
+        let width = support.max_width_octaves([bounded.ap_min_freq, bounded.ap_max_freq])?;
+        support.max_peak_q(bounded.ap_max_freq, bounded.sample_rate, width)
+    });
+    match cap.filter(|q| *q >= bounded.ap_min_q) {
+        Some(q) if bounded.ap_max_q >= bounded.ap_min_q => {
+            bounded.ap_max_q = bounded.ap_max_q.min(q);
+        }
+        _ => {
+            bounded.ap_per_channel = 0;
+            log::warn!(
+                "GD all-pass filters disabled: original sampling/smoothing support cannot satisfy the requested band and Q floor; delay/polarity remain available"
+            );
+        }
+    }
+    bounded
+}
+
 fn bootstrap_improvement_is_significant(mean_improvement: f64, sigma: f64) -> bool {
     mean_improvement > 0.0
         && (sigma <= 1e-15 || (mean_improvement / sigma) > BOOTSTRAP_SIGMA_THRESHOLD)
@@ -61,6 +91,9 @@ fn optimize_group_delay_with_initial(
             ));
         }
     }
+
+    let bounded_config = resolution_bounded_config(channels, config);
+    let config = &bounded_config;
 
     // Find indices within band
     let band_indices: Vec<usize> = (0..n_freq)
@@ -142,6 +175,12 @@ fn optimize_group_delay_with_initial(
 
     let best_params = report.x.as_slice();
 
+    // Acceptance-side budget record: the emitted delays/polarity/all-pass
+    // controls must honor the search budgets.
+    let (lower, upper): (Vec<f64>, Vec<f64>) = bounds.iter().copied().unzip();
+    autoeq_optim::optim::verify_joint_budgets("group-delay", best_params, &lower, &upper)
+        .map_err(|reason| format!("group-delay candidate refused at emission: {reason}"))?;
+
     // Compute post-optimisation sum GD RMS
     let sum_gd_post_rms_ms = compute_sum_gd_rms(channels, best_params, &band_indices, config);
 
@@ -191,6 +230,13 @@ pub fn optimize_group_delay_adaptive(
             sweep_realisations.len()
         );
     }
+
+    // Use every fitting and bootstrap capture before deciding trial dimensions.
+    let bounded_config = resolution_bounded_config(
+        channels.iter().chain(sweep_realisations.iter().flatten()),
+        config,
+    );
+    let config = &bounded_config;
 
     // Start with delay-only (0 APs)
     let mut best_config = GdOptConfig {
@@ -309,5 +355,101 @@ mod significance_tests {
         assert!(bootstrap_improvement_is_significant(0.25, 0.0));
         assert!(!bootstrap_improvement_is_significant(0.0, 0.0));
         assert!(!bootstrap_improvement_is_significant(-0.25, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use ndarray::Array1;
+
+    fn source_input() -> ChannelMeasurementInput {
+        let source = autoeq_core::Curve {
+            freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: Array1::zeros(5),
+            ..Default::default()
+        };
+        let dense = autoeq_core::interpolate_response(&Array1::linspace(20.0, 200.0, 128), &source);
+        ChannelMeasurementInput {
+            freq: dense.freq,
+            spl: dense.spl,
+            phase: Array1::zeros(128),
+            coherence: Array1::ones(128),
+            resolution: dense.resolution,
+        }
+    }
+
+    #[test]
+    fn original_support_bounds_gd_allpass_search_and_emission() {
+        let channels = vec![source_input(); 2];
+        let config = GdOptConfig {
+            ap_per_channel: 1,
+            max_iter: 20,
+            popsize: 4,
+            seed: Some(84),
+            ..Default::default()
+        };
+        let bounded = resolution_bounded_config(&channels, &config);
+        assert_eq!(bounded.ap_max_freq, 200.0);
+        assert!(bounded.ap_max_q < 0.67);
+        assert_eq!(bounded.ap_per_channel, 1);
+        let result = optimize_group_delay(&channels, (20.0, 200.0), &config).unwrap();
+        for channel in &result.per_channel {
+            assert_eq!(channel.ap_filters.len(), 1);
+            for ap in &channel.ap_filters {
+                assert!(ap.q <= bounded.ap_max_q);
+                assert!((20.0..=200.0).contains(&ap.freq));
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_smoothing_floor_disables_gd_allpass_trials() {
+        let channels = vec![source_input(); 2];
+        let mut sweeps = vec![channels.clone(); 2];
+        let support = sweeps[1][1].resolution.as_ref().unwrap();
+        sweeps[1][1].resolution = support.with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+        let config = GdOptConfig {
+            ap_per_channel: 2,
+            max_iter: 20,
+            popsize: 4,
+            seed: Some(84),
+            ..Default::default()
+        };
+        let bounded =
+            resolution_bounded_config(channels.iter().chain(sweeps.iter().flatten()), &config);
+        assert_eq!(bounded.ap_per_channel, 0);
+        assert_eq!(bounded.max_delay_ms, config.max_delay_ms);
+        assert_eq!(bounded.optimize_polarity, config.optimize_polarity);
+        let result =
+            optimize_group_delay_adaptive(&channels, &sweeps, (20.0, 200.0), &config).unwrap();
+        assert!(
+            result
+                .per_channel
+                .iter()
+                .all(|channel| channel.ap_filters.is_empty())
+        );
+    }
+
+    #[test]
+    fn fir_alignment_target_does_not_invent_unemitted_sections() {
+        let channels = vec![source_input(); 2];
+        let config = GdOptConfig {
+            ap_per_channel: 0,
+            max_iter: 20,
+            popsize: 4,
+            seed: Some(84),
+            ..Default::default()
+        };
+        let result = optimize_group_delay(&channels, (20.0, 200.0), &config).unwrap();
+        let actual = super::super::build::build_gd_alignment_target(&channels, &result, &config);
+        let requested = GdOptConfig {
+            ap_per_channel: 2,
+            ..config
+        };
+        let target = super::super::build::build_gd_alignment_target(&channels, &result, &requested);
+        assert!(!target.sum_gd_reference_ms.is_empty());
+        assert_eq!(actual.sum_gd_reference_ms, target.sum_gd_reference_ms);
+        assert_eq!(actual.freq, target.freq);
     }
 }

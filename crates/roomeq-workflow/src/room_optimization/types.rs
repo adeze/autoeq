@@ -28,6 +28,9 @@ pub(super) type SpeakerProcessResult = std::result::Result<
         Option<f64>,
         Option<Vec<f64>>,
         Vec<roomeq_engine::OptimizerRunEvidence>,
+        Vec<roomeq_model::FilterVetoVerdict>,
+        Option<roomeq_model::VetoAdjudicationReport>,
+        Option<roomeq_engine::channel_measurements::MeasurementConditioningReceipt>,
     ),
     AutoeqError,
 >;
@@ -40,6 +43,7 @@ pub(super) struct GenericChannelCollection {
     pub(super) curves: HashMap<String, roomeq_model::Curve>,
     pub(super) channel_means: HashMap<String, f64>,
     pub(super) channel_arrivals: HashMap<String, f64>,
+    pub(super) provisional_decisions: Vec<roomeq_model::decision_ledger::DecisionRecord>,
 }
 
 /// Result type for mixed mode processing
@@ -55,6 +59,10 @@ pub(super) type MixedModeResult = (
     Option<f64>,
     Option<Vec<f64>>,
     Vec<roomeq_engine::OptimizerRunEvidence>,
+    Vec<roomeq_model::FilterVetoVerdict>,
+    Option<roomeq_model::VetoAdjudicationReport>,
+    Option<roomeq_engine::channel_measurements::MeasurementConditioningReceipt>,
+    Option<roomeq_engine::segment_support::SegmentSupportReport>,
 );
 
 /// Action to take after progress callback
@@ -117,6 +125,7 @@ pub(super) fn collect_generic_channel_results(
     let mut curves: HashMap<String, roomeq_model::Curve> = HashMap::new();
     let mut channel_means: HashMap<String, f64> = HashMap::new();
     let mut channel_arrivals: HashMap<String, f64> = HashMap::new();
+    let mut provisional_decisions = Vec::new();
 
     for res in results {
         let (
@@ -131,6 +140,9 @@ pub(super) fn collect_generic_channel_results(
             arrival_time_ms,
             fir_coeffs,
             optimizer_evidence,
+            audibility_veto,
+            veto_adjudication,
+            measurement_conditioning,
         ) = res?;
 
         let physical_fir = config
@@ -144,8 +156,14 @@ pub(super) fn collect_generic_channel_results(
                 .is_some_and(|drivers| !drivers.is_empty())
             && config.optimizer.processing_mode != ProcessingMode::LowLatency;
         if physical_fir {
-            final_curve =
-                super::per_driver_fir::generate(&mut chain, config, sample_rate, output_dir)?;
+            let (curve, decisions) = super::per_driver_fir::generate_recorded(
+                &mut chain,
+                config,
+                sample_rate,
+                output_dir,
+            )?;
+            final_curve = curve;
+            provisional_decisions.extend(decisions);
         }
         channel_chains.insert(channel_name.clone(), chain);
         curves.insert(channel_name.clone(), final_curve.clone());
@@ -168,6 +186,7 @@ pub(super) fn collect_generic_channel_results(
                 PipelineStepId::FirGeneration,
                 PipelineStepStatus::Started,
                 &RoomOptimizationProgress {
+                    response: None,
                     current_speaker: format!("FIR: {}", channel_name),
                     speaker_index: 0,
                     total_speakers,
@@ -184,32 +203,30 @@ pub(super) fn collect_generic_channel_results(
                     step_status: None,
                 },
             )?;
-            let generated = if matches!(
-                config.optimizer.processing_mode,
-                ProcessingMode::MixedPhase
-            ) {
-                match post_generate_mixed_phase_fir(
-                    &channel_name,
-                    &initial_curve,
-                    &config.optimizer,
-                    sample_rate,
-                    output_dir,
-                ) {
-                    Ok(generated) => generated,
-                    Err(MixedPhasePostError::Artifact(message)) => {
-                        return Err(AutoeqError::OptimizationFailed { message });
+            let generated =
+                if matches!(config.optimizer.processing_mode, ProcessingMode::MixedPhase) {
+                    match post_generate_mixed_phase_fir(
+                        &channel_name,
+                        &initial_curve,
+                        &config.optimizer,
+                        sample_rate,
+                        output_dir,
+                    ) {
+                        Ok(generated) => generated,
+                        Err(MixedPhasePostError::Artifact(message)) => {
+                            return Err(AutoeqError::OptimizationFailed { message });
+                        }
+                        Err(MixedPhasePostError::Candidate(error)) => {
+                            log::warn!(
+                                "Mixed-phase FIR candidate rejected for '{}': {}",
+                                channel_name,
+                                error
+                            );
+                            None
+                        }
                     }
-                    Err(MixedPhasePostError::Candidate(error)) => {
-                        log::warn!(
-                            "Mixed-phase FIR candidate rejected for '{}': {}",
-                            channel_name,
-                            error
-                        );
-                        None
-                    }
-                }
-            } else {
-                Some(
+                } else {
+                    Some(
                     post_generate_fir(
                         &channel_name,
                         &initial_curve,
@@ -226,7 +243,7 @@ pub(super) fn collect_generic_channel_results(
                         ),
                     })?,
                 )
-            };
+                };
             post_generated_fir = generated.clone();
             generated.map(|generated| generated.coeffs)
         } else {
@@ -244,6 +261,9 @@ pub(super) fn collect_generic_channel_results(
                 biquads,
                 fir_coeffs,
                 optimizer_evidence,
+                audibility_veto,
+                veto_adjudication,
+                measurement_conditioning,
             },
         );
 
@@ -278,5 +298,6 @@ pub(super) fn collect_generic_channel_results(
         post_scores,
         channel_means,
         channel_arrivals,
+        provisional_decisions,
     })
 }

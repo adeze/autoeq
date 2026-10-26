@@ -8,6 +8,7 @@ fn sample_single_source(path: &str, speaker_name: Option<&str>) -> MeasurementSo
     MeasurementSource::Single(MeasurementSingle {
         measurement: MeasurementRef::Path(path.into()),
         speaker_name: speaker_name.map(|s| s.to_string()),
+        provenance: Default::default(),
     })
 }
 
@@ -30,7 +31,10 @@ fn room_config_resolve_paths_makes_relative_base_absolute() {
     let MeasurementRef::Path(path) = &source.measurement else {
         panic!("expected resolved path");
     };
-    assert!(path.is_absolute(), "resolved path is still relative: {path:?}");
+    assert!(
+        path.is_absolute(),
+        "resolved path is still relative: {path:?}"
+    );
     assert_eq!(
         path,
         &std::env::current_dir()
@@ -52,7 +56,10 @@ fn documented_legacy_mode_and_target_csv_are_not_silently_ignored() {
     )
     .expect("documented compatibility input must deserialize");
 
-    assert_eq!(config.optimizer.processing_mode, ProcessingMode::PhaseLinear);
+    assert_eq!(
+        config.optimizer.processing_mode,
+        ProcessingMode::PhaseLinear
+    );
     assert!(matches!(
         config.target_curve,
         Some(TargetCurveConfig::Path(path))
@@ -78,12 +85,24 @@ fn partial_optimizer_policy_blocks_inherit_their_defaults() {
     let epa = config.optimizer.epa_config.expect("EPA configuration");
     assert_eq!(epa.listening_level_phon, 70.0);
     assert_eq!(epa.target_sharpness, EpaConfig::default().target_sharpness);
-    let smoothing = config.optimizer.psychoacoustic_smoothing.expect("smoothing");
+    let smoothing = config
+        .optimizer
+        .psychoacoustic_smoothing
+        .expect("smoothing");
     assert_eq!(smoothing.high_freq_n, 12);
-    assert_eq!(smoothing.low_freq_n, PsychoacousticSmoothingConfig::default().low_freq_n);
-    let asymmetric = config.optimizer.asymmetric_loss_config.expect("asymmetric loss");
+    assert_eq!(
+        smoothing.low_freq_n,
+        PsychoacousticSmoothingConfig::default().low_freq_n
+    );
+    let asymmetric = config
+        .optimizer
+        .asymmetric_loss_config
+        .expect("asymmetric loss");
     assert_eq!(asymmetric.peak_weight, 3.0);
-    assert_eq!(asymmetric.bass_peak_weight, AsymmetricLossConfig::default().bass_peak_weight);
+    assert_eq!(
+        asymmetric.bass_peak_weight,
+        AsymmetricLossConfig::default().bass_peak_weight
+    );
 }
 
 #[test]
@@ -297,6 +316,7 @@ fn multi_sub_group_roundtrip_and_resolve_paths() {
             sample_single_source("sub2.csv", None),
         ],
         allpass_optimization: true,
+        joint_optimization: false,
     };
 
     let json = serde_json::to_string(&cfg).unwrap();
@@ -480,6 +500,7 @@ fn speaker_config_multi_sub_roundtrip_and_resolve_paths() {
         speaker_name: Some("Sub".into()),
         subwoofers: vec![sample_single_source("sub.csv", None)],
         allpass_optimization: false,
+        joint_optimization: false,
     };
     let cfg = SpeakerConfig::MultiSub(multi);
     let json = serde_json::to_string(&cfg).unwrap();
@@ -583,7 +604,9 @@ fn room_config_roundtrip_and_resolve_paths() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: Some(CtcConfig::default()),
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -647,10 +670,7 @@ fn subwoofer_crossover_ref_parses_per_sub_list_form() {
         serde_json::from_str("[\"bass_xover1\", \"bass_xover2\"]").unwrap();
     assert_eq!(
         parsed,
-        SubwooferCrossoverRef::PerSub(vec![
-            "bass_xover1".to_string(),
-            "bass_xover2".to_string(),
-        ])
+        SubwooferCrossoverRef::PerSub(vec!["bass_xover1".to_string(), "bass_xover2".to_string(),])
     );
     assert_eq!(parsed.as_list(), vec!["bass_xover1", "bass_xover2"]);
     assert_eq!(parsed.primary(), "bass_xover1");
@@ -661,15 +681,16 @@ fn subwoofer_crossover_ref_shared_serializes_as_plain_string() {
     // Backward compatibility: the shared form must keep the exact legacy
     // single-string JSON shape.
     let shared = SubwooferCrossoverRef::Shared("bass_xover".to_string());
-    assert_eq!(
-        serde_json::to_string(&shared).unwrap(),
-        "\"bass_xover\""
-    );
+    assert_eq!(serde_json::to_string(&shared).unwrap(), "\"bass_xover\"");
 
     let system = SubwooferSystemConfig {
         config: SubwooferStrategy::Mso,
+        routing: Default::default(),
+        outputs: vec![crate::SubwooferOutput {
+            id: "Sub1".to_string(),
+            speaker: "subs".to_string(),
+        }],
         crossover: Some(shared),
-        mapping: HashMap::from([("subs".to_string(), "L".to_string())]),
     };
     let value = serde_json::to_value(&system).unwrap();
     assert_eq!(value["crossover"], serde_json::json!("bass_xover"));
@@ -683,10 +704,8 @@ fn subwoofer_crossover_ref_shared_serializes_as_plain_string() {
 
 #[test]
 fn subwoofer_crossover_ref_per_sub_roundtrip_and_legacy_accessors() {
-    let per_sub = SubwooferCrossoverRef::PerSub(vec![
-        "bass_xover1".to_string(),
-        "bass_xover2".to_string(),
-    ]);
+    let per_sub =
+        SubwooferCrossoverRef::PerSub(vec!["bass_xover1".to_string(), "bass_xover2".to_string()]);
     let json = serde_json::to_string(&per_sub).unwrap();
     let back: SubwooferCrossoverRef = serde_json::from_str(&json).unwrap();
     assert_eq!(back, per_sub);
@@ -704,8 +723,12 @@ fn subwoofer_crossover_ref_per_sub_roundtrip_and_legacy_accessors() {
     // Legacy single-key consumers resolve the primary key through deref.
     let system = SubwooferSystemConfig {
         config: SubwooferStrategy::Mso,
+        routing: Default::default(),
+        outputs: vec![crate::SubwooferOutput {
+            id: "Sub1".to_string(),
+            speaker: "subs".to_string(),
+        }],
         crossover: Some(per_sub),
-        mapping: HashMap::from([("subs".to_string(), "L".to_string())]),
     };
     assert_eq!(system.crossover.as_deref(), Some("bass_xover1"));
 }

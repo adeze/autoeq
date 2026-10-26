@@ -11,7 +11,7 @@ ensure-venv:
 		echo "Creating Python venv..."
 		python3 -m venv ./venv
 	fi
-	if ! ./venv/bin/python3 -c "import plotly" 2>/dev/null; then
+	if ! ./venv/bin/python3 -c "import numpy" 2>/dev/null; then
 		echo "Installing Python dependencies..."
 		./venv/bin/pip install -r ./scripts/requirements.txt
 	fi
@@ -119,7 +119,7 @@ qa-export-camilladsp:
 		exit 1
 	fi
 	ROOMEQ_CAMILLADSP_VALIDATE_CMD="$validator --check {config}" \
-		cargo nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/camilladsp/)'
+		{{cargo}} nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/camilladsp/)'
 
 [group('qa-export')]
 qa-export-portable:
@@ -128,7 +128,7 @@ qa-export-portable:
 	# Roon and Wavelet have no supported headless importer. These tests parse each
 	# generated artifact independently and reconstruct its frequency response;
 	# optional application validators remain available through ROOMEQ_*_VALIDATE_CMD.
-	cargo nextest run --release -p roomeq-export --lib --no-tests fail \
+	{{cargo}} nextest run --release -p roomeq-export --lib --no-tests fail \
 		-E 'test(/equalizer_apo|easyeffects|wavelet|roon/)'
 
 [group('qa-export')]
@@ -160,7 +160,7 @@ qa-export-equalizer-apo:
 		Darwin)
 			runner="$(pwd)/scripts/run-equalizer-apo-utm.sh"
 			ROOMEQ_EQUALIZER_APO_PCM_CMD="bash '$runner' '{config}' '{input}' '{output}'" \
-				cargo nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/equalizer_apo/)'
+				{{cargo}} nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/equalizer_apo/)'
 			;;
 		MINGW*|MSYS*|CYGWIN*)
 			benchmark="${ROOMEQ_EQUALIZER_APO_BENCHMARK:-C:\\Program Files\\EqualizerAPO\\Benchmark.exe}"
@@ -170,7 +170,7 @@ qa-export-equalizer-apo:
 				exit 1
 			fi
 			ROOMEQ_EQUALIZER_APO_PCM_CMD="powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-equalizer-apo-benchmark.ps1 -Benchmark '$benchmark' -Config '{config}' -InputFile '{input}' -OutputFile '{output}'" \
-				cargo nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/equalizer_apo/)'
+				{{cargo}} nextest run --release -p roomeq-export --lib --no-tests fail -E 'test(/equalizer_apo/)'
 			;;
 		*)
 			echo "Equalizer APO engine QA requires Windows or macOS with a Windows UTM VM." >&2
@@ -191,30 +191,44 @@ qa-export-pipewire:
 		exit 1
 	fi
 	requested_base_image="${AUTOEQ_PIPEWIRE_BASE_IMAGE:-math-audio-base-linux-arm64:latest}"
-	if [[ -z "$(docker image ls "$requested_base_image" -q | head -n 1)" ]]; then
+	if ! docker image inspect "$requested_base_image" >/dev/null 2>&1; then
 		echo "AutoEQ Linux test base image not found: $requested_base_image" >&2
 		echo "Set AUTOEQ_PIPEWIRE_BASE_IMAGE to an existing Linux test image." >&2
 		exit 1
 	fi
 	base_image="$requested_base_image"
-	toolchain="$(docker run --rm --entrypoint bash "$base_image" -lc 'rustup toolchain list | sed -n "s/ (active.*//p" | head -n 1')"
+	# Cargo path dependencies resolve against the pinned sibling checkouts.
+	checkout_root="$(cd .. && pwd)"
+	if [[ "$(pwd)" != "$checkout_root/autoeq" || ! -f "$checkout_root/scripts/release/sources.json" ]]; then
+		echo "PipeWire export QA requires the pinned all_of_sotf sibling checkout." >&2
+		exit 1
+	fi
+	toolchain="$(docker run --rm --entrypoint bash "$base_image" -c 'rustup toolchain list | sed -n "s/ (active.*//p" | head -n 1')"
 	if [[ -z "$toolchain" ]]; then
 		echo "Could not determine the active Rust toolchain in $base_image." >&2
 		exit 1
 	fi
-	docker build --build-arg BASE_IMAGE="$base_image" -t autoeq-qa-pipewire -f builds/qa/Dockerfile.pipewire .
+	if [[ "${AUTOEQ_PIPEWIRE_BASE_READY:-0}" == 1 ]]; then
+		# The dedicated release image already has PipeWire; use its immutable ID.
+		qa_image="$base_image"
+	else
+		image_id_file="$(mktemp)"
+		trap 'rm -f "$image_id_file"' EXIT
+		docker build --build-arg BASE_IMAGE="$base_image" --iidfile "$image_id_file" -f builds/qa/Dockerfile.pipewire .
+		qa_image="$(cat "$image_id_file")"
+	fi
 	docker run --rm \
-		-v "$(pwd)":/workspace \
+		-v "$checkout_root":/all_of_sotf \
 		-v autoeq-pipewire-cargo-registry:/root/.cargo/registry \
 		-v autoeq-pipewire-cargo-git:/root/.cargo/git \
 		-v autoeq-pipewire-target:/target \
-		-w /workspace \
+		-w /all_of_sotf/autoeq \
 		-e CARGO_TARGET_DIR=/target \
 		-e RUSTUP_TOOLCHAIN="$toolchain" \
 		-e CARGO_HTTP_MULTIPLEXING=false \
 		-e CARGO_NET_RETRY=10 \
-		autoeq-qa-pipewire \
-		bash -lc 'ROOMEQ_PIPEWIRE_VALIDATE_CMD="bash scripts/validate-pipewire-config.sh {config}" bash scripts/run-pipewire-export-tests.sh'
+		"$qa_image" \
+		bash -c 'ROOMEQ_PIPEWIRE_VALIDATE_CMD="bash scripts/validate-pipewire-config.sh {config}" bash scripts/run-pipewire-export-tests.sh'
 
 # Backend semantic/PCM validation. External backends are mandatory here so a
 # release cannot silently skip correctness checks.

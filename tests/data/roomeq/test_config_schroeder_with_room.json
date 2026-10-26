@@ -1,8 +1,15 @@
 {
-  "version": "1.2.0",
+  "version": "3.0.0",
   "speakers": {
     "left": "test_speaker_left.csv",
     "right": "test_speaker_right.csv"
+  },
+  "recording_config": {
+    "room_dimensions": {
+      "length": 5.0,
+      "width": 4.0,
+      "height": 2.5
+    }
   },
   "optimizer": {
     "algorithm": "autoeq:de",
@@ -18,11 +25,6 @@
     "refine": true,
     "schroeder_split": {
       "enabled": true,
-      "room_dimensions": {
-        "length": 5.0,
-        "width": 4.0,
-        "height": 2.5
-      },
       "low_freq_config": {
         "max_q": 12.0,
         "min_q": 0.5,

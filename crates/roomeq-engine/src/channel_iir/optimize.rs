@@ -7,6 +7,13 @@ use roomeq_model::OptimizerConfig;
 use crate::PreparedChannelInput;
 use crate::eq::{self, EqResources};
 
+type IirOptimizationResult = (
+    Vec<Biquad>,
+    Vec<OptimizerRunEvidence>,
+    Vec<roomeq_model::FilterVetoVerdict>,
+    Option<roomeq_model::VetoAdjudicationReport>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn optimize_iir_eq(
     channel_name: &str,
@@ -17,10 +24,50 @@ pub(super) fn optimize_iir_eq(
     sample_rate: f64,
     callback: Option<OptimProgressCallback>,
     target_tilt_curve: Option<&Curve>,
-) -> Result<(Vec<Biquad>, Vec<OptimizerRunEvidence>)> {
+) -> Result<IirOptimizationResult> {
+    optimize_iir_eq_with_exact_checkpoint(
+        channel_name,
+        prepared,
+        optimization_curve,
+        optimizer_config,
+        eq_resources,
+        sample_rate,
+        callback,
+        target_tilt_curve,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn optimize_iir_eq_with_exact_checkpoint(
+    channel_name: &str,
+    prepared: &PreparedChannelInput,
+    optimization_curve: &Curve,
+    optimizer_config: &OptimizerConfig,
+    eq_resources: &EqResources,
+    sample_rate: f64,
+    callback: Option<OptimProgressCallback>,
+    target_tilt_curve: Option<&Curve>,
+    exact: Option<crate::eq::exact_recovery::ExactDERecoveryOptions>,
+) -> Result<IirOptimizationResult> {
+    if exact.is_some() && optimizer_config.num_filters == 0 {
+        return Err(AutoeqError::InvalidConfiguration {
+            message: "exact DE recovery requires at least one PEQ filter".into(),
+        });
+    }
+    if exact.is_some()
+        && optimizer_config
+            .schroeder_split
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+    {
+        return Err(AutoeqError::InvalidConfiguration {
+            message: "exact DE recovery does not support a Schroeder split".into(),
+        });
+    }
     if optimizer_config.num_filters == 0 {
         info!("  Skipping PEQ optimization because num_filters is 0");
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), None));
     }
 
     if optimizer_config.multi_measurement.is_some()
@@ -73,10 +120,15 @@ pub(super) fn optimize_iir_eq(
             "  Schroeder split: {} low-freq filters + {} high-freq filters",
             low_filter_count, high_filter_count
         );
-        return Ok((filters, result.optimizer_evidence));
+        return Ok((
+            filters,
+            result.optimizer_evidence,
+            result.audibility_veto,
+            result.veto_adjudication,
+        ));
     }
 
-    let result = crate::channel_optimizer::optimize_maybe_multi(
+    let result = crate::channel_optimizer::optimize_maybe_multi_with_exact_checkpoint(
         channel_name,
         prepared,
         optimization_curve,
@@ -85,6 +137,16 @@ pub(super) fn optimize_iir_eq(
         sample_rate,
         callback,
         target_tilt_curve,
+        exact,
     )?;
-    Ok((result.filters, result.optimizer_evidence))
+    let veto_adjudication = result
+        .veto_adjudication
+        .as_ref()
+        .map(crate::eq::audibility_veto::VetoAdjudicationSummary::to_report);
+    Ok((
+        result.filters,
+        result.optimizer_evidence,
+        result.audibility_veto,
+        veto_adjudication,
+    ))
 }

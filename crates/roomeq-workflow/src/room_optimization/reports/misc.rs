@@ -176,6 +176,23 @@ pub(in super::super) fn generate_validation_bundle_report(
     }
     advisories.push("program_material_required_for_wav_assets".to_string());
 
+    // The reference is known before writing; include it in the bound payload.
+    // Adding it after reconciliation would invalidate the delivered ledger.
+    result.metadata.validation_bundle = Some(roomeq_model::ValidationBundleReport {
+        artifact: artifact_path.to_string_lossy().to_string(),
+        target_lufs: bundle.target_lufs,
+        abx: bundle.abx,
+        mushra: bundle.mushra,
+        perceptual_regression_summary: bundle.perceptual_regression_summary,
+        advisories: advisories.clone(),
+    });
+    if result.finalized_decisions.is_some() {
+        let processing = crate::final_ledger::processing_snapshot(result)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+        crate::final_ledger::finalize_result_ledger(result, &processing, sample_rate)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    }
+
     let payload = serde_json::json!({
         "version": "roomeq-validation-bundle-v1",
         // Snapshot the same final object returned to the caller, after final-seat
@@ -209,14 +226,6 @@ pub(in super::super) fn generate_validation_bundle_report(
     });
     store.write(&artifact_path, &serde_json::to_vec_pretty(&payload)?)?;
 
-    result.metadata.validation_bundle = Some(roomeq_model::ValidationBundleReport {
-        artifact: artifact_path.to_string_lossy().to_string(),
-        target_lufs: bundle.target_lufs,
-        abx: bundle.abx,
-        mushra: bundle.mushra,
-        perceptual_regression_summary: bundle.perceptual_regression_summary,
-        advisories,
-    });
     Ok(())
 }
 
@@ -366,11 +375,15 @@ pub(super) fn max_optional(values: impl Iterator<Item = f64>) -> Option<f64> {
 pub(in super::super) fn bass_consistency_rms_db(
     channels: &HashMap<String, ChannelDspChain>,
 ) -> Option<f64> {
-    let bass_channels: Vec<&ChannelDspChain> = channels
-        .iter()
-        .filter_map(|(name, chain)| {
+    // Canonical order: the RMS summation below is sensitive to member
+    // order at the last ulp, so collect bass channels by sorted name.
+    let mut names: Vec<&String> = channels.keys().collect();
+    names.sort();
+    let bass_channels: Vec<&ChannelDspChain> = names
+        .into_iter()
+        .filter_map(|name| {
             if roomeq_engine::home_cinema::role_for_channel(name).is_sub_or_lfe() {
-                Some(chain)
+                Some(&channels[name])
             } else {
                 None
             }
@@ -516,16 +529,22 @@ pub(in super::super) fn apply_channel_matching_correction(
 
         if let Some(chain) = result.channels.get_mut(&correction.channel_name) {
             let mut plugin = roomeq_engine::output::create_labeled_eq_plugin(
-                &correction.filters, "channel_matching",
+                &correction.filters,
+                "channel_matching",
             );
             // Matching is designed from logical-source responses. It must act
             // before a routed source splits into mains and redirected bass.
             plugin.parameters["room_eq_stage"] = serde_json::json!("pre_route");
             chain.plugins.push(plugin);
         }
-        if let Some(deployed) = result.deployed_source_curves.get_mut(&correction.channel_name) {
+        if let Some(deployed) = result
+            .deployed_source_curves
+            .get_mut(&correction.channel_name)
+        {
             let response = roomeq_engine::response::compute_peq_complex_response(
-                &correction.filters, &deployed.freq, sample_rate,
+                &correction.filters,
+                &deployed.freq,
+                sample_rate,
             );
             *deployed = roomeq_engine::response::apply_complex_response(deployed, &response);
         }
@@ -588,6 +607,7 @@ mod tests {
             spl: curve.spl.to_vec(),
             phase: curve.phase.as_ref().map(|p| p.to_vec()),
             norm_range: None,
+            ..Default::default()
         }
     }
 
@@ -604,7 +624,9 @@ mod tests {
             },
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -619,7 +641,9 @@ mod tests {
             optimizer: OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -627,6 +651,7 @@ mod tests {
     fn single_channel_result(name: &str) -> (ChannelOptimizationResult, ChannelDspChain) {
         let curve = small_curve();
         let ch = ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: name.to_string(),
             pre_score: 0.5,
             post_score: 0.1,
@@ -635,8 +660,11 @@ mod tests {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         };
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: name.to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -648,6 +676,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         (ch, chain)
     }
@@ -655,6 +691,7 @@ mod tests {
     fn result_with_channel(name: &str) -> RoomOptimizationResult {
         let (ch, chain) = single_channel_result(name);
         RoomOptimizationResult {
+            finalized_decisions: None,
             channels: HashMap::from([(name.to_string(), chain)]),
             channel_results: HashMap::from([(name.to_string(), ch)]),
             deployed_source_curves: HashMap::new(),
@@ -866,6 +903,7 @@ mod tests {
             spl: vec![0.0, 5.0, 0.0, 5.0, 0.0],
             phase: None,
             norm_range: None,
+            ..Default::default()
         };
         let rough = curve_roughness_rms_db(&curve, (300.0, 4_000.0)).unwrap();
         assert!(rough > 0.0);
@@ -874,6 +912,7 @@ mod tests {
     #[test]
     fn headroom_peak_boost_db_reads_gain_and_eq() {
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![
                 PluginConfigWrapper {
@@ -894,6 +933,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         assert_eq!(
             headroom_peak_boost_db(&HashMap::from([("left".to_string(), chain)])),
@@ -904,6 +951,7 @@ mod tests {
     #[test]
     fn headroom_peak_boost_db_no_plugins_none() {
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -915,6 +963,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         assert!(headroom_peak_boost_db(&HashMap::from([("left".to_string(), chain)])).is_none());
     }
@@ -924,6 +980,7 @@ mod tests {
         let curve = small_curve();
         let data = curve_data_from(&curve);
         let lfe = ChannelDspChain {
+            physical_correction_target: None,
             channel: "lfe".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -935,6 +992,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let sub = ChannelDspChain {
             channel: "sub".to_string(),
@@ -954,8 +1019,10 @@ mod tests {
             spl: vec![0.0, 5.0, 0.0, 5.0, 0.0],
             phase: None,
             norm_range: None,
+            ..Default::default()
         };
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: "center".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -967,6 +1034,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let rough = dialog_band_roughness_rms_db(&HashMap::from([("center".to_string(), chain)]));
         assert!(rough.is_some_and(|v| v > 0.0));
@@ -977,6 +1052,7 @@ mod tests {
         let curve = small_curve();
         let data = curve_data_from(&curve);
         let a = ChannelDspChain {
+            physical_correction_target: None,
             channel: "a".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -988,6 +1064,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let b = ChannelDspChain {
             channel: "b".to_string(),
@@ -1000,6 +1084,7 @@ mod tests {
     #[test]
     fn group_mean_deviation_rms_db_mismatched_grids_none() {
         let a = ChannelDspChain {
+            physical_correction_target: None,
             channel: "a".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -1009,6 +1094,7 @@ mod tests {
                 spl: vec![80.0, 80.0],
                 phase: None,
                 norm_range: None,
+                ..Default::default()
             }),
             eq_response: None,
             target_curve: None,
@@ -1016,8 +1102,17 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let b = ChannelDspChain {
+            physical_correction_target: None,
             channel: "b".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -1027,6 +1122,7 @@ mod tests {
                 spl: vec![80.0, 80.0, 80.0],
                 phase: None,
                 norm_range: None,
+                ..Default::default()
             }),
             eq_response: None,
             target_curve: None,
@@ -1034,6 +1130,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let rms = group_mean_deviation_rms_db(&[&a, &b], (20.0, 20_000.0));
         assert!(rms.is_none());
@@ -1045,7 +1149,9 @@ mod tests {
         let mut deployed = result.channel_results["left"].final_curve.clone();
         deployed.spl.mapv_inplace(|level| level + 7.0);
         let deployed_before = deployed.spl[10];
-        result.deployed_source_curves.insert("left".into(), deployed);
+        result
+            .deployed_source_curves
+            .insert("left".into(), deployed);
         let filter = Biquad::new(BiquadFilterType::Peak, 1000.0, 48_000.0, 1.0, 3.0);
         let correction = ChannelMatchingResult {
             channel_name: "left".to_string(),
@@ -1059,13 +1165,21 @@ mod tests {
             "curve should change after applying filter"
         );
         assert_eq!(result.channels["left"].plugins.len(), 1);
-        assert_eq!(result.channels["left"].plugins[0].parameters["room_eq_stage"], "pre_route");
-        assert!((result.deployed_source_curves["left"].spl[10] - deployed_before - (after - before)).abs() < 1e-10);
+        assert_eq!(
+            result.channels["left"].plugins[0].parameters["room_eq_stage"],
+            "pre_route"
+        );
+        assert!(
+            (result.deployed_source_curves["left"].spl[10] - deployed_before - (after - before))
+                .abs()
+                < 1e-10
+        );
     }
 
     #[test]
     fn generate_validation_bundle_report_creates_json() {
         let mut result = RoomOptimizationResult {
+            finalized_decisions: None,
             channels: HashMap::new(),
             channel_results: HashMap::new(),
             deployed_source_curves: HashMap::new(),
@@ -1096,7 +1210,8 @@ mod tests {
         let dir = Path::new("reports/test");
         let config = room_config_with_validation_bundle();
         let store = autoeq_artifacts::MemoryArtifactStore::new();
-        generate_validation_bundle_report(&mut result, &config, Some(dir), &store, 48_000.0).unwrap();
+        generate_validation_bundle_report(&mut result, &config, Some(dir), &store, 48_000.0)
+            .unwrap();
         assert!(result.metadata.validation_bundle.is_some());
         let bundle = result.metadata.validation_bundle.as_ref().unwrap();
         assert!(
@@ -1118,6 +1233,7 @@ mod tests {
     #[test]
     fn generate_validation_bundle_report_disabled_clears_metadata() {
         let mut result = RoomOptimizationResult {
+            finalized_decisions: None,
             channels: HashMap::new(),
             channel_results: HashMap::new(),
             deployed_source_curves: HashMap::new(),
@@ -1143,14 +1259,17 @@ mod tests {
         let mut config = room_config_default();
         config.system = Some(roomeq_model::SystemConfig {
             model: roomeq_model::SystemModel::Stereo,
-            speakers: HashMap::from([
-                ("L".to_string(), "left".to_string()),
-                ("LFE".to_string(), "sub".to_string()),
-            ]),
+            speakers: HashMap::from([("L".to_string(), "left".to_string())]),
             subwoofers: Some(roomeq_model::SubwooferSystemConfig {
                 config: roomeq_model::SubwooferStrategy::Single,
-                crossover: Some("first".to_string().into()),
-                mapping: HashMap::from([("sub".to_string(), "L".to_string())]),
+                crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec![
+                    "first".to_string(),
+                ])),
+                routing: Default::default(),
+                outputs: vec![roomeq_model::SubwooferOutput {
+                    id: "sub".to_string(),
+                    speaker: "sub".to_string(),
+                }],
             }),
             ..Default::default()
         });
@@ -1204,6 +1323,7 @@ mod tests {
         optimized_crossover_hz: Option<f64>,
     ) -> roomeq_model::BassManagementOptimizationReport {
         roomeq_model::BassManagementOptimizationReport {
+            crossover_cancellation: None,
             applied: true,
             phase_required: true,
             phase_available: true,
@@ -1224,6 +1344,7 @@ mod tests {
             group_results: Vec::new(),
             source_results: Vec::new(),
             sub_output_results: Vec::new(),
+            stereo_routing: None,
             advisories: Vec::new(),
         }
     }
@@ -1232,20 +1353,24 @@ mod tests {
         optimization: Option<roomeq_model::BassManagementOptimizationReport>,
     ) -> roomeq_model::BassManagementReport {
         roomeq_model::BassManagementReport {
+            crossover_cancellation: Vec::new(),
+            routing_title: "Home-Cinema Bass Management Routing".to_string(),
             enabled: true,
             crossover_type: "LR48".to_string(),
             crossover_frequency_hz: None,
             redirected_bass_enabled: true,
-            lfe_channel: "LFE".to_string(),
-            lfe_playback_gain_db: 0.0,
-            lfe_low_pass_hz: 120.0,
-            lfe_gain_applied_to_chain: false,
+            lfe: Some(roomeq_model::LfeBassManagementReport {
+                input_channel: "LFE".to_string(),
+                playback_gain_db: 0.0,
+                low_pass_hz: 120.0,
+                gain_applied_to_chain: false,
+            }),
             sub_trim_db: 0.0,
             max_sub_boost_db: 0.0,
             headroom_margin_db: 0.0,
             applied_sub_gain_db: None,
             gain_limited: false,
-            physical_sub_output: "LFE".to_string(),
+            physical_sub_outputs: vec!["LFE".to_string()],
             redirected_bass_channel_count: 1,
             main_high_pass_hz: None,
             sub_low_pass_hz: None,
@@ -1264,6 +1389,7 @@ mod tests {
     #[test]
     fn excursion_hpf_hz_from_chain_reads_labeled_plugin() {
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![
                 PluginConfigWrapper {
@@ -1289,6 +1415,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         assert_eq!(excursion_hpf_hz_from_chain(&chain), Some(85.0));
     }
@@ -1296,6 +1430,7 @@ mod tests {
     #[test]
     fn excursion_hpf_hz_from_chain_none_without_labeled_plugin() {
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "eq".to_string(),
@@ -1312,6 +1447,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         assert_eq!(excursion_hpf_hz_from_chain(&chain), None);
     }

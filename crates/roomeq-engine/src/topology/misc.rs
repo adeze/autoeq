@@ -1,24 +1,14 @@
-use autoeq_core::{Curve, interpolate_log_space, response};
+use autoeq_core::{Curve, interpolate_log_space};
 use log::info;
 use math_audio_dsp::analysis::compute_average_response;
-use math_audio_iir_fir::Biquad;
 use std::collections::HashMap;
 
-pub fn compute_crossover_complex_response(
-    type_str: &str,
-    freq: f64,
-    sample_rate: f64,
-    is_lowpass: bool,
-    freqs: &ndarray::Array1<f64>,
-) -> Vec<num_complex::Complex64> {
-    if is_linear_phase_crossover_type(type_str) {
-        let coeffs = linear_phase_crossover_coefficients(freq, sample_rate, is_lowpass);
-        response::compute_fir_complex_response(&coeffs, freqs, sample_rate)
-    } else {
-        let filters = create_crossover_filters(type_str, freq, sample_rate, is_lowpass);
-        response::compute_peq_complex_response(&filters, freqs, sample_rate)
-    }
-}
+#[doc(inline)]
+#[doc(inline)]
+pub use autoeq_core::crossover::{
+    compute_crossover_complex_response, create_crossover_filters, is_linear_phase_crossover_type,
+    linear_phase_crossover_coefficients,
+};
 
 /// Align channel levels by normalizing down to the lowest level.
 pub fn align_channels_to_lowest(
@@ -126,6 +116,8 @@ pub fn average_mains_magnitude(curves: &[&Curve]) -> Curve {
     }
 }
 
+/// Check numerical phase availability, not measurement confidence or timing.
+/// Band-specific coherent processing must also assess the raw quality evidence.
 pub fn curve_has_usable_phase(curve: &Curve) -> bool {
     curve
         .phase
@@ -140,93 +132,6 @@ pub fn normalize_crossover_delays(main_delay_ms: f64, sub_delay_ms: f64) -> (f64
         main_delay_ms - common_delay_ms,
         sub_delay_ms - common_delay_ms,
     )
-}
-
-pub fn create_crossover_filters(
-    type_str: &str,
-    freq: f64,
-    sample_rate: f64,
-    is_lowpass: bool,
-) -> Vec<Biquad> {
-    use math_audio_iir_fir::*;
-    if is_linear_phase_crossover_type(type_str) {
-        return Vec::new();
-    }
-    let crossover_type = type_str.parse::<roomeq_model::CrossoverType>();
-    let peq = match crossover_type {
-        Ok(roomeq_model::CrossoverType::LinkwitzRiley2) => {
-            if is_lowpass {
-                peq_linkwitzriley_lowpass(2, freq, sample_rate)
-            } else {
-                peq_linkwitzriley_highpass(2, freq, sample_rate)
-            }
-        }
-        Ok(roomeq_model::CrossoverType::LinkwitzRiley4) => {
-            if is_lowpass {
-                peq_linkwitzriley_lowpass(4, freq, sample_rate)
-            } else {
-                peq_linkwitzriley_highpass(4, freq, sample_rate)
-            }
-        }
-        Ok(roomeq_model::CrossoverType::LinkwitzRiley8) => {
-            if is_lowpass {
-                peq_linkwitzriley_lowpass(8, freq, sample_rate)
-            } else {
-                peq_linkwitzriley_highpass(8, freq, sample_rate)
-            }
-        }
-        Ok(roomeq_model::CrossoverType::Butterworth2) => {
-            if is_lowpass {
-                peq_butterworth_lowpass(2, freq, sample_rate)
-            } else {
-                peq_butterworth_highpass(2, freq, sample_rate)
-            }
-        }
-        Ok(roomeq_model::CrossoverType::Butterworth4) => {
-            if is_lowpass {
-                peq_butterworth_lowpass(4, freq, sample_rate)
-            } else {
-                peq_butterworth_highpass(4, freq, sample_rate)
-            }
-        }
-        Ok(roomeq_model::CrossoverType::LinearPhase | roomeq_model::CrossoverType::None) => {
-            Vec::new()
-        }
-        Err(_) => {
-            log::warn!("Unknown crossover type '{}', defaulting to LR24", type_str);
-            if is_lowpass {
-                peq_linkwitzriley_lowpass(4, freq, sample_rate)
-            } else {
-                peq_linkwitzriley_highpass(4, freq, sample_rate)
-            }
-        }
-    };
-    peq.into_iter().map(|(_, b)| b).collect()
-}
-
-pub fn is_linear_phase_crossover_type(type_str: &str) -> bool {
-    matches!(
-        type_str.to_ascii_lowercase().as_str(),
-        "linearphase" | "linear_phase" | "linear-phase" | "linearphasefir" | "fir" | "lpfir"
-    )
-}
-
-pub fn linear_phase_crossover_coefficients(
-    freq: f64,
-    sample_rate: f64,
-    is_lowpass: bool,
-) -> Vec<f64> {
-    let crossover = math_audio_iir_fir::FirCrossover::new(
-        freq,
-        sample_rate,
-        1,
-        math_audio_iir_fir::DEFAULT_FIR_CROSSOVER_TAPS,
-    );
-    if is_lowpass {
-        crossover.lowpass_coefficients().to_vec()
-    } else {
-        crossover.highpass_coefficients()
-    }
 }
 
 #[cfg(test)]
@@ -369,8 +274,15 @@ mod crossover_response_tests {
         for rate in [44_100.0, 48_000.0, 96_000.0] {
             for (kind, order) in [("LR24", 4), ("LR48", 8)] {
                 let frequencies = ndarray::Array1::from_vec(vec![30.0, 60.0, 120.0]);
-                let low = super::compute_crossover_complex_response(kind, 60.0, rate, true, &frequencies);
-                let high = super::compute_crossover_complex_response(kind, 60.0, rate, false, &frequencies);
+                let low =
+                    super::compute_crossover_complex_response(kind, 60.0, rate, true, &frequencies);
+                let high = super::compute_crossover_complex_response(
+                    kind,
+                    60.0,
+                    rate,
+                    false,
+                    &frequencies,
+                );
                 for (index, frequency) in frequencies.iter().enumerate() {
                     let x = (std::f64::consts::PI * frequency / rate).tan()
                         / (std::f64::consts::PI * 60.0 / rate).tan();

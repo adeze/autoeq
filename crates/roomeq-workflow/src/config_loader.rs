@@ -1,11 +1,12 @@
 //! RoomEQ configuration-file loading and application path resolution.
 
 use crate::measurement::{
-    DEFAULT_FREQUENCY_SAMPLES, load_source_individual_with_frequency_samples,
+    DEFAULT_FREQUENCY_SAMPLES, load_source_with_individual_with_frequency_samples,
 };
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use roomeq_engine::provenance::validate_provenance_references;
 use roomeq_model::validation_rules::{
     RoomValidationContext, collect_sources, validate_room_config_staged,
 };
@@ -76,11 +77,23 @@ fn migrate_legacy_optimizer_mode(config: &mut serde_json::Value) {
 /// untagged and one system map uses `flatten`; a strict boundary gives JSON
 /// files the desired typo protection without changing programmatic model
 /// construction or the representation of those compatibility types.
-pub fn deserialize_room_config_strict(config: serde_json::Value) -> Result<RoomConfig> {
+pub fn deserialize_room_config_strict(mut config: serde_json::Value) -> Result<RoomConfig> {
+    if let Some(version) = config.get("version").and_then(serde_json::Value::as_str) {
+        roomeq_model::validate_config_version(version).map_err(anyhow::Error::msg)?;
+    }
+    // Legacy authored configurations use a top-level prose label. It has no
+    // processing semantics, but is an explicitly accepted input field rather
+    // than a typo that should disable strict validation for other fields.
+    if let Some(root) = config.as_object_mut()
+        && let Some(description) = root.remove("description")
+        && !description.is_string()
+    {
+        bail!("RoomEQ config description must be a string");
+    }
     let encoded = serde_json::to_vec(&config).context("Failed to encode merged config JSON")?;
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     let mut unknown_fields = Vec::new();
-    let room_config: RoomConfig = serde_ignored::deserialize(&mut deserializer, |path| {
+    let mut room_config: RoomConfig = serde_ignored::deserialize(&mut deserializer, |path| {
         unknown_fields.push(path.to_string());
     })
     .context("Failed to deserialize merged config into RoomConfig")?;
@@ -95,6 +108,7 @@ pub fn deserialize_room_config_strict(config: serde_json::Value) -> Result<RoomC
         );
     }
 
+    room_config.resolve_room_dimensions();
     Ok(room_config)
 }
 
@@ -145,12 +159,23 @@ pub fn load_merged_config_strict(
         .with_context(|| format!("Failed to read config: {base_config_path:?}"))?;
     let mut config_value: serde_json::Value =
         serde_json::from_str(&config_json).context("Failed to parse config JSON")?;
+    let capture_handoff =
+        crate::capture_handoff::verify_capture_handoff(base_config_path, config_json.as_bytes())?;
 
     if let Some(override_path) = override_config_path {
         let override_json = std::fs::read_to_string(override_path)
             .with_context(|| format!("Failed to read override config: {override_path:?}"))?;
         let override_value: serde_json::Value =
             serde_json::from_str(&override_json).context("Failed to parse override config JSON")?;
+        if capture_handoff.is_some()
+            && ["speakers", "recording_config", "provenance", "version"]
+                .iter()
+                .any(|key| override_value.get(key).is_some())
+        {
+            bail!(
+                "capture handoff overrides cannot replace acquisition identities or measurements"
+            );
+        }
         merge_json_objects(&mut config_value, &override_value);
     }
     migrate_legacy_optimizer_mode(&mut config_value);
@@ -162,6 +187,30 @@ pub fn load_merged_config_strict(
     let mut room_config = deserialize_room_config_strict(config_value)?;
 
     room_config.validate_version().map_err(anyhow::Error::msg)?;
+    let declared_handoff = room_config
+        .recording_config
+        .as_ref()
+        .and_then(|recording| recording.capture_handoff_file.as_deref());
+    if declared_handoff
+        .is_some_and(|name| name != autoeq_core::capture_handoff::CAPTURE_HANDOFF_FILENAME)
+    {
+        bail!("unsupported capture handoff filename; expected capture-handoff.json");
+    }
+    if declared_handoff.is_some() && capture_handoff.is_none() {
+        bail!(
+            "required capture handoff is missing; restore the acquisition bundle before correction"
+        );
+    }
+    if capture_handoff.is_some() && declared_handoff.is_none() {
+        bail!("capture configuration is missing its required handoff declaration");
+    }
+    if let Some(handoff) = &capture_handoff {
+        crate::capture_handoff::freeze_capture_responses(
+            &mut room_config,
+            base_config_path,
+            handoff,
+        )?;
+    }
     room_config.resolve_paths(&config_dir);
     Ok((room_config, config_dir))
 }
@@ -191,8 +240,12 @@ pub fn validate_room_config_for_workflow_with_frequency_samples(
     let mut errors = Vec::new();
     for (speaker_name, speaker) in &config.speakers {
         for (source_index, source) in collect_sources(speaker).into_iter().enumerate() {
-            match load_source_individual_with_frequency_samples(source, frequency_samples) {
-                Ok(curves) if curves.is_empty() => errors.push(format!(
+            // Support-aware loading: disjoint sources condition each segment
+            // independently and retain gap display samples. Averaging paths
+            // (group/multisub/home-cinema) keep their own curve-only refusal
+            // until they consume per-band authorization.
+            match load_source_with_individual_with_frequency_samples(source, frequency_samples) {
+                Ok((_, individual)) if individual.is_empty() => errors.push(format!(
                     "speaker '{speaker_name}' source {source_index} produced no measurement curves"
                 )),
                 Ok(_) => {}
@@ -203,6 +256,24 @@ pub fn validate_room_config_for_workflow_with_frequency_samples(
         }
     }
     report.record(ValidationStage::Acoustic, errors, Vec::new());
+    let provenance = validate_provenance_references(config);
+    if !provenance.errors.is_empty() || !provenance.warnings.is_empty() {
+        let mut resolved_errors = report
+            .stage(ValidationStage::ResolvedResource)
+            .errors
+            .clone();
+        let mut resolved_warnings = report
+            .stage(ValidationStage::ResolvedResource)
+            .warnings
+            .clone();
+        resolved_errors.extend(provenance.errors);
+        resolved_warnings.extend(provenance.warnings);
+        report.record(
+            ValidationStage::ResolvedResource,
+            resolved_errors,
+            resolved_warnings,
+        );
+    }
     report
 }
 
@@ -275,13 +346,50 @@ mod sample_rate_tests {
 mod tests {
     use super::*;
     use roomeq_model::{
-        InlineMeasurement, MeasurementRef, MeasurementSingle, MeasurementSource, SpeakerConfig,
+        InlineMeasurement, MeasurementProvenanceReference, MeasurementRef, MeasurementSingle,
+        MeasurementSource, ProvenanceValidationMode, SpeakerConfig,
     };
 
     fn write_config(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
         let path = dir.path().join(name);
         std::fs::write(&path, content).expect("write config");
         path
+    }
+
+    #[test]
+    fn strict_loader_resolves_canonical_room_dimensions() {
+        let config = deserialize_room_config_strict(serde_json::json!({
+            "speakers": {},
+            "recording_config": {"room_dimensions": {"length": 5, "width": 4, "height": 2.5}},
+            "optimizer": {"schroeder_split": {"enabled": true}, "decomposed_correction": {}}
+        }))
+        .unwrap();
+        assert_eq!(
+            config
+                .optimizer
+                .schroeder_split
+                .unwrap()
+                .room_dimensions
+                .unwrap()
+                .length,
+            5.0
+        );
+        assert_eq!(
+            config
+                .optimizer
+                .decomposed_correction
+                .unwrap()
+                .room_dimensions
+                .unwrap()
+                .height,
+            2.5
+        );
+        for mode in ["schroeder_split", "decomposed_correction"] {
+            let error = deserialize_room_config_strict(serde_json::json!({
+                "speakers": {}, "optimizer": {mode: {"room_dimensions": {"length": 5, "width": 4, "height": 2.5}}}
+            })).unwrap_err();
+            assert!(format!("{error:#}").contains("recording_config.room_dimensions"));
+        }
     }
 
     #[test]
@@ -359,7 +467,7 @@ mod tests {
     #[test]
     fn strict_deserializer_rejects_unknown_root_and_nested_fields() {
         let root_error = deserialize_room_config_strict(serde_json::json!({
-            "version": "1.0.0",
+            "version": "3.0.0",
             "speakers": {},
             "optimizer": {},
             "optimiser": {}
@@ -368,7 +476,7 @@ mod tests {
         assert!(root_error.to_string().contains("optimiser"));
 
         let nested_error = deserialize_room_config_strict(serde_json::json!({
-            "version": "1.0.0",
+            "version": "3.0.0",
             "speakers": {},
             "optimizer": { "target_tilt": { "slope": -0.8 } }
         }))
@@ -377,12 +485,46 @@ mod tests {
     }
 
     #[test]
+    fn strict_deserializer_accepts_legacy_descriptions_without_opening_unknown_fields() {
+        for fixture in [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/data/roomeq/test_config_scenario_a_full.json"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/data/roomeq/test_config_scenario_b_full.json"
+            )),
+        ] {
+            let value = serde_json::from_str(fixture).unwrap();
+            assert!(deserialize_room_config_strict(value).is_ok());
+        }
+        assert!(
+            deserialize_room_config_strict(serde_json::json!({
+                "version": "3.0.0",
+                "description": 42,
+                "speakers": {}
+            }))
+            .is_err()
+        );
+        assert!(
+            deserialize_room_config_strict(serde_json::json!({
+                "version": "3.0.0",
+                "description": "legacy label",
+                "speakers": {},
+                "optimiser": {}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn load_config_reads_base_and_override() {
         let dir = tempfile::TempDir::new().expect("temp config directory");
         let base = write_config(
             &dir,
             "base.json",
-            r#"{"version":"1.0.0","speakers":{},"optimizer":{"min_freq":20.0,"max_freq":20000.0}}"#,
+            r#"{"version":"3.0.0","speakers":{},"optimizer":{"min_freq":20.0,"max_freq":20000.0}}"#,
         );
         let override_path = write_config(
             &dir,
@@ -418,7 +560,7 @@ mod tests {
         let path = write_config(
             &dir,
             "room.json",
-            r#"{"version":"1.0.0","speakers":{"left":"broken.csv"},"optimizer":{}}"#,
+            r#"{"version":"3.0.0","speakers":{"left":"broken.csv"},"optimizer":{}}"#,
         );
 
         let (_, _, validation) = load_config(&path, None).expect("deserialize config");
@@ -449,6 +591,7 @@ mod tests {
                     csv_path: Some("missing.csv".to_string()),
                 }),
                 speaker_name: None,
+                provenance: Default::default(),
             })),
         );
         config.resolve_paths(dir.path());
@@ -465,12 +608,37 @@ mod tests {
     }
 
     #[test]
+    fn workflow_validation_records_provenance_warning_and_strict_error() {
+        for (mode, expect_error) in [
+            (ProvenanceValidationMode::Warn, false),
+            (ProvenanceValidationMode::Strict, true),
+        ] {
+            let mut config = RoomConfig::default();
+            config.provenance.validation_mode = mode;
+            config.provenance.measurements.insert(
+                "left".to_string(),
+                MeasurementProvenanceReference {
+                    record_id: "record".to_string(),
+                    content_hash: "hash".to_string(),
+                    schema_version: 1,
+                    sidecar_path: Some("/path/that/does/not/exist".into()),
+                },
+            );
+            let report =
+                validate_room_config_for_workflow(&config, RoomValidationContext::structural());
+            let stage = report.stage(ValidationStage::ResolvedResource);
+            assert_eq!(stage.errors.is_empty(), !expect_error);
+            assert_eq!(stage.warnings.is_empty(), expect_error);
+        }
+    }
+
+    #[test]
     fn load_config_rejects_unsupported_version() {
         let dir = tempfile::TempDir::new().expect("temp config directory");
         let path = write_config(
             &dir,
             "future.json",
-            r#"{"version":"3.0.0","speakers":{},"optimizer":{}}"#,
+            r#"{"version":"4.0.0","speakers":{},"optimizer":{}}"#,
         );
 
         let error = load_config(&path, None).expect_err("future config must be rejected");

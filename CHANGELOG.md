@@ -1,4 +1,1641 @@
-# Unreleased
+# 0.5.77
+
+- Upgrade optional Rerun telemetry to compatible 0.40.0 SDK requirements. The
+  direct-callback source trial retains identical solver coefficients and losses;
+  calibration generation and installed receiver state are unchanged.
+
+- Add display-only fractional-octave and psychoacoustic smoothing with Swift-compatible
+  mode names, versioned log-frequency cell-overlap semantics and shared public reference
+  vectors. Optimizer smoothing and scores remain unchanged; see `docs/DISPLAY_SMOOTHING.md`.
+
+- Extract native Designer correction-limit validation into lightweight
+  `roomeq_model::DesignerLimits` for native and independent offline command hosts.
+  Existing finite bounds, band ordering, Nyquist and no-op rejection are retained;
+  the shared floating-point sample-rate input additionally rejects invalid rates.
+
+- Add opt-in `rerun-telemetry` CLI feature: direct exact-DE generation callbacks
+  record objective/candidate history and existing PEQ response calculations to
+  non-overwriting RRD files, optionally streaming to a loopback viewer. Default
+  builds remain SDK-free. Initial support requires explicit seed, `pk` layout,
+  single-curve AutoEQ DE and no local refinement. Predictions remain distinct
+  from measurements; full-resolution float64 arrays retain the canonical grid.
+
+- Allow browser report bundles to bootstrap without recursively embedding their own WASM assets. Native report assembly still requires the generated bundles; wasm32 callers must provide explicit shell assets.
+
+- Preserve native DE convergence, generations, and fitness counts through the
+  EPA progress callback path. Callback stops retain user-stop classification;
+  ordinary native generation limits remain distinct from strict run budgets.
+
+- Refine automatic stereo input-level alignment with correction strength, while
+  preserving manual calibration and safety gains. Structural fallback removes
+  that derived alignment together with the discarded correction.
+
+- Apply declared input-peak bounds to the programme headroom model using a
+  conservative maximum across logical inputs. Reconcile fallback outcomes after
+  attaching the frozen configured comparison; changed processing requires passed
+  native replay and hard safety evidence before receiving `safe_fallback`.
+
+- Align synthetic QA with subwoofer-only attenuation exemptions and whole-part
+  Hybrid selection: require genuine main-output reserve refusals and validate
+  each accepted Hybrid winner against both standalone configured-reference scores.
+
+- Compare Hybrid safe fallbacks and unchanged results with independently validated
+  standalone parts under the original safety budgets. A numerical zero RMS can
+  certify the lower bound without additional searches. Bind validation bundle
+  references before publishing their final playback snapshot.
+
+- Retain original runtime refusal measurements before rollback refreshes the
+  delivered graph's metrics. Reconcile Hybrid selection diagnostics for API
+  results as well as exported graphs.
+
+- Preserve unrouted PEQ/FIR kernels rejected by an early safety pass as an
+  explicitly rejected refinement seed. Finalization can test bounded strengths;
+  each candidate must still pass all final safety and physical-seat checks.
+
+- Align delivered EPA acceptance with the optimizer's spectral-flatness model
+  on each configured seat's frozen grid, target and level reference. Preserve
+  composite transfer-spectrum preference as a diagnostic, retain explicit
+  unavailable evidence, and keep boost, pre-ringing and headroom limits intact.
+
+- Preserve optimizer run history when publishing a structural fallback, while
+  clearing selection flags for discarded corrections and refreshing the exported
+  confidence summary. Keep each run's convergence status and evaluation count.
+
+- Retain runtime and new safety/structural checks when finalization trials fail
+  before seat replay, including refusals after level recalibration. Preserve
+  numeric margins, exclude historical stage checks, and deduplicate receipts.
+
+- Share the fixed 1–2 kHz pressure-energy reference used by delivered EPA
+  diagnostics. Reject incomplete reference grids and inconsistent channel data;
+  exclude zero-weight LFE channels from the numerical energy anchor.
+
+- Reuse complete unchanged MDAT exports in no-clobber mode using capture and
+  converter SHA-256 plus timing-option/catalogue checks. Preserve edited exports;
+  missing derivatives, source changes or converter updates trigger conversion.
+
+- Preserve original numerical sampling/smoothing support through DBA array sums
+  and front/rear combination. Retain all operand support when removing routing
+  before residual FIR design.
+
+- Retain original driver sampling/smoothing support when forming crossover
+  and level-aligned combined curves, so subsequent shared PEQ cannot infer
+  measurement resolution from a derived response grid.
+
+- Avoid resending comparison impulse-response views already carried by the
+  prepared graph. Preserve context overrides and computed L+R views; graph
+  identity and evidence bindings remain unchanged.
+
+- Resolve multi-seat and continuous-area all-pass numerical Q bounds from all
+  original captures before interpolation. Remove unsupported all-pass dimensions
+  while retaining gain/delay/polarity searches and their existing budgets.
+
+- Replace quadratic report-only triangular octave smoothing with compensated
+  prefix sums over the full captured grid. Preserve existing smoothing windows
+  and direct fallback for numerical edge cases; keep raw evidence unchanged.
+
+- Build and freeze the native report producer beside each measured suite binary,
+  recording its SHA-256. HTML rendering no longer invokes Cargo inside the
+  transport timeout or changes producer implementation during concurrent builds.
+
+- Bound legacy multi-sub all-pass Q by retained numerical sampling/smoothing
+  support and configured rails during both search and emission. Keep explicit
+  gain-only fallback when no supported Q remains; timing qualification is separate.
+
+- Cap positive single-channel FIR magnitude coefficients over complete supported
+  features wherever measured null/reliability masks prohibit boost. Reapply
+  whole-support bounds after Kirkeby regularization, preserving cuts and phase.
+
+- Preserve adaptive warm-start filter topology across growing models and changing
+  frequency boxes. Initialize new free slots as neutral peaks; report mandatory
+  pass additions or bounded changes instead of treating zero gain as identity.
+
+- Retain original numerical sampling grids and applied smoothing widths through
+  RoomEQ interpolation and magnitude aggregation. Project active peak-filter
+  bandwidth consistently during prepared PEQ search and final emission; retain
+  uncorrected playback and the failed optimizer receipt when the configured
+  minimum Q cannot be supported. Sampling support does not authenticate capture
+  resolution or establish listener benefit.
+
+- Constrain prepared single-channel FIR magnitude proposals on retained original
+  sampling/smoothing support, including Kirkeby magnitude after regularization
+  without changing its phase calculation or pre-ringing processing. Repair the
+  composite PEQ boost ceiling after bandwidth projection and verify the unchanged
+  strict ceiling on the emitted parameters.
+
+- Restrict per-driver magnitude FIR to broad log-frequency basis functions on
+  retained original sampling/smoothing support. Apply null/remaining-boost caps
+  over whole functions, omit functions overlapping crossover stopbands, and
+  retain source support through the combined response. Realized safety gates
+  remain enforced; minimum-phase realization preserves causal leading energy.
+
+- Propagate captured-noise stopping floors into bootstrap minimax and CVaR
+  flat-loss searches using a per-frequency source perturbation envelope. Extra
+  resamples or duplicate draws cannot reduce the capture-noise floor; absent
+  capture companions remain explicitly unavailable.
+
+- Make adaptive variance-penalized/spatial-risk flat searches noise-aware using
+  original captured loss bounds and actual candidate seat-loss dispersion.
+  Include nonlinear/quadratic sensitivity, charge validation through normal
+  budget gates, and retain the preceding qualified count if assessment fails.
+
+- Preserve captured-noise stopping bounds through fixed nonnegative power-weighted
+  RIR prototype collapse without inventing averaged phase/noise companions.
+  One active prototype contributes no seat-variance noise term, and unknown
+  capture evidence remains unavailable.
+
+- Close single-channel FIR band-edge resolution gaps with full-support broad
+  log-frequency magnitude basis functions. Sample linear/minimum designs on
+  their actual FFT bins, keep boundary/DC gain neutral, and apply boost caps
+  before projection. Kirkeby retains phase and pre-ringing processing.
+
+- Remove quadratic FIR log-frequency resampling in the shared math-audio
+  interpolator by using binary search on ordered source grids. Dense analytic
+  FFT sampling now preserves boundary constraints without repeated full scans.
+
+- Extend prepared measurement-bandwidth projection to standard Q-controlled
+  pass/notch/all-pass biquads, including zero-gain fields that do not make those
+  filters neutral. Match model-specific Q lower bounds and configured upper
+  rails before search/emission; fixed-slope shelves remain Q-independent.
+
+- Qualify matched-pole peaks from actual transfer extrema/half-gain widths,
+  broadening Q only within configured bounds while preserving topology/gain.
+  Refuse unrealizable numerator fallbacks; include matched peaks in the same
+  Q-rail complexity cost and record explicit family coverage in provenance.
+
+- Reject final correction candidates with regressing level-matched EPA
+  diagnostics on assessed configured-baseline seats or reported channels and
+  aggregate. Retain matching receipts and explicit unavailable assessments;
+  existing protected fallback selection remains available.
+
+- Require shared stationary timing evidence and phase on every input before
+  coherent legacy multi-seat MSO dispatch, including non-joint, non-all-pass
+  groups. Refuse unqualified capture matrices before per-sub EQ or array search.
+
+- Penalize baseline-relative EPA spectral-error regression in RoomEQ flat
+  PEQ and realized FIR objectives. Cache integration weights and each seat's
+  baseline, retain unsuppressed residuals, and include the term in noise-aware
+  stopping and optimizer provenance. This soft spectral cost is separate from
+  the reported EPA preference diagnostic and does not prove listener benefit.
+
+- Enforce the measured suite report's comparison-evidence check in the shell
+  runner. Successful native/display/audit stages no longer produce an overall
+  success when cross-mode controls or Hybrid comparison proof fail; reports
+  and the terminal failure manifest are still written.
+
+- Add a soft Q-rail cost to RoomEQ flat objectives: active peak filters pay
+  `0.02 * |gain_db| * (Q / max_q)^4`, once per shared filter chain. Record the
+  policy in optimizer provenance and preserve shelves, neutral filters, and
+  supported narrow corrections. This engineering regularizer does not establish
+  listener audibility or replace measurement-resolution and native safety gates.
+
+- Compare corrected Hybrid playback with complete standalone IIR/FIR trials on
+  the frozen input snapshot. Reapply the requested Hybrid safety limits, select
+  the better qualified whole graph, retain numeric comparison gaps, and return
+  the protected baseline when comparison evidence is incomplete. Preserve
+  cancellation across trials and publish only the selected validation bundle.
+
+- Require accepted Hybrid measured results to match or beat the best standalone
+  IIR/FIR result on the mean configured-reference training error. Record the
+  numeric gap, reject missing or mismatched proof in `--check`, and keep flagged
+  fallbacks diagnostic. This suite gate does not select a different runtime graph.
+
+- Stop adaptive flat-loss filter-count search above a captured-noise perturbation
+  floor when valid noise companions are available. Preserve fixed-count requests,
+  use the largest input floor for norm-based seat aggregation, and disclose
+  unavailable estimates without inventing statistical or audibility confidence.
+
+- Jointly select per-sub low-pass, physical delay, and polarity on combined
+  responses using actual matrix weights and per-source controls. Preserve gains
+  and DBA steering, enforce every-input and cancellation checks, and retain
+  the previous sweep budget with delay and bounded-underfill regularization.
+
+- Compete independently checked configured-control and optimized structural
+  fallbacks on frozen realized scores. Restore configured crossover/routing
+  controls and measurement-derived carriers, retain failed safety diagnostics,
+  and refuse promotion when comparison or safety evidence is incomplete.
+  Preserve original input-conditioning receipts, independently recheck restored
+  routed crossovers, and enforce the configured benefit floor after pruning.
+
+- Rank finalization candidates and apply the meaningful-benefit floor on complete
+  configured-reference realized scores. Cache raw baseline replay across trials,
+  retain direct absolute targets, and keep every native safety veto independent.
+- Rebuild configured comparison crossovers from explicit driver topology and
+  acoustic-band order. Record reference and delivered branch memberships
+  separately so optimized routing remains scoreable against one fixed baseline.
+- Add whole-playback fixed-grid comparison receipts against unprocessed captures
+  and configured routing. Candidate-selected crossovers, delays, polarity, and
+  safety attenuation no longer enter this comparison baseline. Preserve the
+  existing native safety replay and disclose unavailable comparison evidence.
+- Record a canonical relative-target level reference for fixed-grid comparisons,
+  preserving the original target hash and fitted offset. Constant relative
+  target offsets no longer masquerade as different conditioning; absolute
+  targets, shape changes, and all native safety scores retain their treatment.
+  Comparison shape hashes use an explicit 10⁻⁹ dB resolution to remove f64
+  roundoff from fitted constants; raw hashes and scoring remain full precision.
+- Judge phase requirements from proven plugin-free identity playback, retaining
+  requested numeric safety budgets and explicit missing measurement phase.
+  Processing, driver branches, routing, and global CTC remain ineligible.
+- Match physical-driver output safety gains on both sides of final-seat replay,
+  including legacy untagged driver controls. Shared untagged and explicit
+  pre-route attenuation remain charged to the candidate.
+- Inspect retained diagnostic DSP attempts after measured native refusals,
+  preserving native failure status and separate HTML/audit receipts.
+- Freeze bass-managed main targets from aligned raw measurements before any
+  mode-specific correction. Final routed target and physical-main target now
+  retain the same level and grid instead of refitting the processed route sum.
+- Penalize positive correction at detected narrow nulls in RoomEQ flat and
+  asymmetric objectives, using the same perceptual integration and dB scale.
+  Realized FIR scoring now shares the prepared masked loss with PEQ scoring;
+  cuts and broad correctable dips retain their existing treatment.
+- Add explicit level-matched EPA diagnostics on a frozen baseline grid. Match
+  pressure energy over 1–2 kHz and retain gain offsets; multichannel comparisons
+  use one whole-set offset to preserve channel balance. Missing band/support
+  stays unassessed. Measured audits and summaries retain EPA and pre-ring evidence.
+- Preserve completed routed replay refusals and their numeric native evidence;
+  incomplete replay still defers acceptance. Fresh replay clears the previous
+  graph's refusal marker before evaluating its own evidence.
+- Flag a correction-free baseline changed by channel alignment as `safe_fallback`
+  when every final-seat gate and independent safety check passes. Retain rejection
+  when that alignment exceeds a seat or output-loss budget, then retry without
+  optional alignment. A safe correction-free fallback can retain the original
+  channel imbalance only with a frozen same-band reference and verified
+  all-seat non-regression; worsening imbalance remains rejected.
+- Report fixed pre/target-grid residual comparisons with hashed baseline,
+  target, grid, and level references alongside exhaustive native-grid safety
+  scores. Missing candidate support stays unassessed. Measured comparisons
+  check complete recorded bases and label legacy scalar-only comparisons.
+- Freeze acoustic residual normalization to the uncorrected measurement's
+  level reference for both pre and post, retaining broadband loss in scoring.
+  Physical targets keep their calibrated absolute level through runtime and
+  native replay gates; permitted gain remains explicit.
+- Retain structured numeric gate margins for rejected finalization trials,
+  including runtime safety, useful-output loss, primary benefit, and every-seat
+  uncertainty floors. Missing evidence remains unavailable rather than a zero margin.
+- Capture verified FIR taps for shared and global convolution stages as well
+  as physical drivers, fixing measured multi-sub HTML failures without omitting
+  deployed filters. Measured suites freeze their executable for the entire run.
+- Bound IR display CSVs and embedded waveform plots to 4096 original samples,
+  retaining extrema and exact peak times. Long IRs use compact, lossless IR64
+  sidecars for full-rate phase/timing analysis; native and Python bundle readers
+  also retain legacy CSV support. Display decimation does not alter acoustic evidence.
+- Evaluate RoomEQ finalization strengths in bounded parallel coarse-to-fine
+  batches, sharing each prepared graph across attenuation alternatives. Keep
+  the full-strength early exit, deterministic tie order, every safety gate, and
+  serial diagnostic capture with the same trial history. Atomically reserve
+  refined FIR sidecars and retain only the winning full graph between batches.
+- Warm-start adaptive PEQ passes from the selected previous solution, retaining
+  tilt shelves and adding neutral peaks. Ordinary CMA-ES and COBYLA refinement
+  share each pass's evaluation budget, with local capacity reserved for refinement.
+- Require nonidentity RoomEQ candidates to clear the configurable aggregate
+  realized-improvement floor (`finalization.min_primary_improvement_db`, default
+  0.25 dB); tiny gains return the protected baseline. The floor is an engineering
+  selection policy, with every-seat uncertainty and safety gates retained.
+- Preserve typed convergence and actual evaluation counts in ordinary RoomEQ
+  CMA-ES/COBYLA dispatch, while retaining custom backend dispatch contracts.
+  Callback stops remain user stops even when the native solver reports success.
+- Return an explicitly flagged `safe_fallback` for a correction-free baseline
+  requiring bounded safety attenuation. Playback still requires acoustic boost,
+  pre-ringing, headroom, and final electrical safety evidence; excess attenuation
+  budgets remain rejected. Final-seat replay retains its measured temporal evidence.
+- Allow the common cut-only spectral headroom candidate in Hybrid mode. Its
+  identical transfer precedes every branch; final acoustic and temporal gates remain enforced.
+- Enforce the realized acoustic boost backstop in every RoomEQ mode, even
+  when the electrical filter gain is within its independent limit. Acoustic
+  excess near a baseline null is now a veto rather than an observation.
+- Report all 22 measured scenarios, including badroom runs, using the run's
+  saved matrix. Run acoustic audits independently of HTML rendering, retain
+  display/audit logs, and record separate stage exit codes for each combination.
+- Preserve configured targets in mixed-phase and frequency-split Hybrid
+  assembly so final replay does not silently score these modes against flat.
+- Fix mixed-mode group-delay rejections on sparse FIR grids: the
+  acceptance replay evaluated induced group delay with a zero bulk-delay
+  prior, so unwrapping read 10-25 ms of spurious GD at every strength
+  against the 10 ms Hybrid limit. The replay now carries each branch's
+  deployed FIR latency prior (mirroring the runtime temporal evidence),
+  restoring mixed-mode acceptance on 2.2 sigberg/unknown rooms.
+- Fix a 5.48 dB useful-output transplant loss on routed graphs: staged
+  `final_channel_level_alignment` was folded into `input_trim_db` by the
+  post-DSP recalibration and then overwritten by the final alignment,
+  leaving a net cut. Recalibration now strips the stale staged
+  alignment before re-deriving trims.
+- Fix Hybrid-stage reverts leaving orphaned FIR state: a reverted
+  branch kept its FIR coefficients and temporal masking with no
+  convolution, failing downstream evidence gates. Reverts now release
+  both, and the orphaned branch rejoins its crossover partner's
+  surviving bulk with a standalone latency alignment that tracks the
+  live gap across gates (unmarked installs never count as bulk on
+  either side, so partner strips cannot strand a stale delay).
+- Refresh `Cargo.lock` for `math-dsp`'s `serde_json` dependency (stale
+  lock entry; `--locked` builds fail without it).
+- Regenerate the measured-suite expectations
+  (`data_tests/roomeq/measured/expected_outcomes.json`) from the fixed
+  pipeline: 14 combos flip from rejected/error to accepted/unchanged
+  with positive (or clean-zero) improvement, all audits pass, and the 5
+  remaining exit-1s are clean `Rejected` verdicts (exit 1 on rejected
+  is the documented playback-approval contract; the report can only
+  see them as `error`, so they are now expected as such, matching the
+  pre-existing 5.1.4 precedent). `roomeq_suite_report.py --expect`
+  passes on the fresh sweep.
+
+# 0.5.76
+
+- Fix report graph decimation on log-frequency axes: the WASM renderer
+  bucketed traces on linear Hz, starving low frequencies of vertices
+  (faceted Before-EQ mains next to full-resolution subs). Buckets now
+  follow `ln(x)` on log axes so vertices spread evenly across pixels.
+  Rebuilt `dist/` bundles (`report2d`, `reportgpui`).
+- Move `autoeq-report-wasm` to path-based `gpui-d3rs 0.10`
+  (`math-delaunay` resolves from the sibling math-audio checkout);
+  the git-source form cannot see workspace-inherited path dependencies.
+- Add fail-fast RoomEQ round-trip QA (`just qa-roomeq-roundtrip`, first in
+  `qa-roomeq-pr`): each case starts from a known-perfect response, deforms
+  it with a few parametric peaks plus light noise
+  (`crates/roomeq-synthetic/src/roundtrip.rs`), runs the production
+  optimizer once with a fixed seed, and asserts the corrected response
+  reconstructs the ideal plus filter attribution
+  (`crates/roomeq-qa/src/synthetic/roundtrip.rs`). Covers 2.0, 2.1, 2.2
+  MSO, 5.1, multi-seat minimax, identity, and crossed-mains stereo, with
+  two guard-of-the-guard negative controls. ~5s for the full set.
+- Fix the DT1990 Pro flat QA recipe by using seeded native DE, whose
+  convergence evidence satisfies the strict QA gate; PSO only reports budget
+  completion. Keep the spacing and score-improvement checks unchanged.
+- Fix the remaining `mh:rga` QA recipes (DT1990 Pro score and both Edifier
+  W830NB runs) the same way, using seeded native DE; MH backends only
+  report budget completion. Rename the Edifier recipes to match the backend
+  they now exercise, keeping thresholds and tolerances unchanged.
+- Carry CMA-ES and ISRES solver convergence through the optimizer dispatch
+  so stagnation stops report `converged` instead of best-effort; budget
+  stops keep the legacy classification. Extends the typed-completion gate
+  previously added for COBYLA.
+- Fix the RoomEQ run manifest to own the files inside bundle
+  subdirectories (e.g. rebased FIR `resources/`) instead of the directory
+  itself, so completed FIR/mixed runs pass the measured-result audit.
+- Clamp the bass-managed main pre-EQ band at the realized crossover
+  estimate so mains stop burning headroom below the splice; the
+  configured band is preserved when it does not overlap the crossover.
+- Cap each optimized channel EQ stack at 9.0 dB total positive gain
+  with direction-preserving scale-down, keeping stacked boosts clear
+  of the 12.5 dB electrical backstop on rooms with deep nulls.
+- Stop the bass-management route optimizer chasing unfixable nulls:
+  dip depth beyond the 6 dB correctable bound keeps a plateaued
+  penalty instead of an unbounded one, so trim, delay, and polarity
+  no longer rail for partial shaves of deep cancellations while
+  complete splice fixes keep their full reward.
+- Regularize route actuation jointly: trim deviations past 1 dB from
+  the measured level-difference anchor and relative delays past one
+  crossover cycle pay quadratic penalties, keeping the optimizer on
+  sane routings instead of arbitraging between railed actuators.
+- Keep deployed headroom safety in the frozen replay baseline so
+  acceptance judges the correction's marginal damage instead of
+  charging it for deployment headroom the target requires; trial
+  candidates still pay for correction-forced additional safety.
+- Match each trial's post-route safety onto the replay baseline so
+  pre/post deployment is identical (input-level common safety stays
+  judged); zero-strength trials no longer read their own deployment
+  attenuation as regression or loss.
+- Fall back to magnitude-only Kirkeby FIR inversion (with a warning)
+  when excess-phase correction is requested but the measurement has no
+  phase data, instead of failing the channel. The fallback keys on the
+  pre-IIR measurement so IIR-only residual phase is never mistaken for
+  acoustic phase; corrupt phase data still errors.
+- Repair pinned minimum-spacing projections with a greedy earliest
+  placement before declaring infeasibility, and let the adaptive EQ
+  search back off to fewer filters when a count provably cannot fit
+  instead of discarding the smaller-count winners. Fixed-count passes
+  keep the strict projection error.
+- Wire (but calibrate off) a soft joint-pool overrun price in the
+  route optimizer: positive weights tip genelec-fir into identity
+  while unknown needs pool dominance to move, so enforcement stays
+  off pending true-headroom pools spanning route and FIR.
+- Fix the DT1990 Pro flat QA recipe by using seeded native DE, whose
+  convergence evidence satisfies the strict QA gate; PSO only reports budget
+  completion. Keep the spacing and score-improvement checks unchanged.
+- Add measured-IR full indirect Speech Transmission Index and per-octave modulation
+  tables to RoomEQ reports using the IEC 60268-16:2020 model in `math-rir`.
+- Require `math-rir` 0.5.12 and the updated RoomEQ STI output contracts.
+
+# 0.5.75
+
+- Move RoomEQ signal supervision and runtime startup into the CLI crate,
+  keeping the root binary as a compatibility launcher.
+
+- Share serialized plugin-chain evaluation between playback and native/WASM reports,
+  including FIR gain/mix, validated band reconstruction and limiter latency.
+- Assemble single-dataset report channel blocks in the shared report library.
+
+- Expose canonical RoomEQ dashboard JSON without loading renderer assets; native consumers assemble it through the shared Rust/WASM library.
+- Preserve additive payload metadata through the shared capture-quality augmentation API, with validation before mutation.
+
+- Add a versioned, renderer-neutral capture-quality report input and shared
+  Rust/WASM section builder. Preserve source, stimulus, policy and unavailable
+  evidence without requiring an app-specific dashboard renderer.
+- Keep report headers and dashboard controls within narrow viewports, and
+  escape embedded JSON at the shared HTML assembly boundary.
+
+- Move RoomEQ signal supervision and runtime startup into the CLI crate,
+  keeping the root binary as a compatibility launcher.
+
+- Keep local GPUI demos in a separate workspace so backend source installs
+  resolve without sibling GPUI checkouts; preserve the existing demo recipes.
+
+- Fix non-routed channel-level alignment reading a stale pre-headroom cache:
+  response refresh now republishes the just-replayed channel curves as the
+  deployed source curves, so the final alignment pass sees differential
+  per-output headroom gains and the delivered-spread gate (previously
+  routed-only) verifies plain channel graphs too. Shipped stereo graphs no
+  longer carry the full pre-DSP imbalance the report used to show.
+- Redefine the report relative-level compensation as the remaining
+  downstream trim measured on the predicted post-DSP curves, and include
+  it in the post-DSP offset and balance columns so the balance verifies
+  the loop closes near zero instead of echoing the input imbalance.
+- Drop the remaining `Section 1` / `Section 3` headings in the Acoustics
+  analysis report (`Results summary`, `Time of flight`) and color the
+  `T60 within ITU recommendation (%)` column green/yellow/red with the
+  same >80 / ≥50 thresholds as the flatness column.
+- Fix `convert-recording --help` and `--version` to exit before file access;
+  reject unknown options and excess paths before conversion.
+
+- Add `autoeq:cobra` / `cobra` for RoomEQ constrained surrogate optimization,
+  with seeded search, native inequalities, evaluation accounting and callbacks.
+
+- Add explicit speaker/headphone source, target, rig compatibility and per-machine
+  device profiles, with verified Equalizer APO serialization and preset provenance.
+- Publish native RoomEQ bundles through recoverable staging, validate immutable
+  resource hashes, and keep fallback attempts private until selection.
+- Reject nonfinite optimizer candidates and invalid bounds, malformed joint-sub
+  measurements, incompatible shared-EQ grids, and invalid or nonfinite FIR
+  designs before accepting correction results.
+- Reject incomplete or ambiguous independent-reference approvals and invalid
+  observed error magnitudes before perceptual evidence can pass its gate.
+- Add an optimizer tilt stage: `optimizer.tilt_stage` appends an
+  optimizer-driven low-shelf plus high-shelf pair at the end of the DSP
+  chain (new `pk-ls-hs` layout) to fit broadband bass/treble tilt. The pair
+  extends `num_filters` by two, uses the existing shelf limits, and requires
+  `peq_model: "pk"`. Hinge bands default to geometric halves of the
+  correction band and can be pinned per shelf.
+- Fix the +/− Zoom toolbar on the DSP signal-flow Sankey (and bar charts):
+  cards without a data viewport now magnify geometrically (0.5–4x crisp
+  re-render with card scrolling) instead of ignoring the click, and the
+  viewport-only Move toggle is hidden there.
+- Size the report graph preset buttons (20–200, 20–20k, 20 dB, 50 dB) to
+  the gpui-toolkit button-set xs spec (12 px text, 2 px / 6 px padding).
+- Raise report graph axis text (tick labels, axis titles, bar category
+  labels, spectrogram axes and colorbar scale) from 12 px to 14 px;
+  figure titles and series legends are unchanged.
+- Drop the legacy section number from the relative-level heading and spell
+  out that the compensation proposal is not added to the post-DSP columns,
+  which read the delivered chain's predicted curve as-is.
+- Fix the Details per speaker EQ second axis to the same 50 dB span as SPL.
+- Stack the report frequency-axis presets vertically and add 20 dB / 50 dB
+  vertical-span buttons at the top-left of SPL graphs, centered on the
+  current view.
+- Drop the legacy section numbers from the Acoustics tabs (Summary, Details
+  per speaker, Time of Flight, Symmetric monitors, Time domain analysis)
+  and lead the Details tab with the relative-level table instead of
+  trailing it at the end of Summary.
+- Anchor report target overlays to the measured per-channel mean of the L/R
+  pair over 100 Hz–10 kHz: the single report now shifts serialized absolute
+  targets by one global offset (previously plotted verbatim), and per-channel
+  comparison tabs sit at per-channel level instead of the L+R sum level
+  (+3–6 dB too hot). The L+R tab keeps its sum-matched target; legacy
+  relative targets keep their per-channel fit.
+- Cap RoomEQ report graphs at 800 px wide, centered; table wrappers that
+  share the plot card styling still fill their card.
+- Label the DSP signal-flow tab without its legacy section number.
+- Render the RoomEQ report buckets as a centered tab bar in the channel-tab
+  style, and give multi-section buckets their own sub-tabs (DSP analysis
+  switches between the rationale and the signal flow; Acoustics analysis
+  across its five sections) instead of stacked headings.
+- Regroup the RoomEQ report into three centered tabs — DSP analysis (why
+  this correction, DSP signal flow), Acoustics analysis (summary, speakers,
+  time of flight, symmetric monitors, time domain), and Psychoacoustic
+  report (EPA scores) — with the playback verdict pinned above the tabs.
+  Inside each tab the flow is flat: subheads are plain headings and every
+  table or graph sits in exactly one card (producer grouping wrappers and
+  the verdict frame no longer nest cards inside cards).
+- Split the RoomEQ report playback verdict into three boxes — recorded
+  eligibility, delivered-payload binding, and playback approval — each with
+  its own severity, so a stale payload no longer hides a recorded acceptance
+  (or vice versa). The report header now shows the RoomEQ version, the DSP
+  data date, and the render date above the renderer status, and the
+  stale-payload message names its remedy (re-finalize before playback).
+- Reorganize Python tooling: `python/` is now `ui/` (report viewer at
+  `ui/display-roomeq`, GUIs at `ui/roomeq-gui` and `ui/recording-gui`)
+  and the REW converters moved to `utils/` (`utils/mdat2csv.py`,
+  `utils/msop2csv.py`, contracts in `tests/test_mdat2csv.py`); Justfile,
+  QA recipes, shell scripts, and docs point at the new paths.
+- Adapt `ui/roomeq-gui` to the new gpui-toolkit: review curves move
+  from the removed `charts.line(id, x, y, ...)` call to the `ChartBuilder`
+  + `Dataset` API with `app.resources` binding (log frequency axis), and
+  corrupt preference files now fall back to defaults (`StateError` is
+  caught). Adds a host-free IR regression test (`test_app_ir.py`).
+- Add `ui/recording-gui` (`just recording-gui`, `just
+  test-recording-gui`): recording wizard mirroring the sotf-capture
+  workflow (devices & setup, SPL, capture, probe, bass anchor,
+  evaluating, saving) with fake + `sotf-capture`-CLI backends.
+- Harden early-vs-late band-energy figures: data where Full sits below Early
+  or Late in any band is refused (the cell stays pending) instead of plotting
+  impossible physics, and the Full envelope trace is drawn slightly heavier
+  so it stays readable where the parts converge onto it.
+- Run `roomeq-qa-synthetic` matrix phases on a bounded worker pool (default:
+  half the CPUs, shared with `roomeq-qa-quality`; `--jobs N` overrides,
+  `--jobs 1` restores serial execution). Single-speaker combos stay serial
+  inside each difficulty/target/mode group so baseline post-score reuse is
+  unchanged; indexed outputs restore deterministic summaries and artifacts.
+- Redraw waterfall surfaces REW-style: time-slice contours with hidden-line
+  removal are now the default, with a Surface toggle, a Contours toggle, and
+  a d3rs colormap dropdown (Turbo, Viridis, Plasma, Inferno, Magma, Rainbow)
+  for the opt-in filled surface; coloured ridge lines trace exported
+  resonance candidates over the slices.
+- Redraw symmetric-monitor pair graphs with three traces: the absolute
+  (magnitude) sum, the coherent complex sum from measured phase, and their
+  difference (cancellation loss) on a secondary axis capped at 40 dB. Without
+  finite phase on both members the figure shows the absolute sum alone.
+- Trim duplicated report blocks: channel tabs reuse the room-level T60 block
+  (per-driver tabs keep their unique measured-acoustics T60), Section 3 keeps
+  the time-of-flight table without the before/after bar charts, and the
+  Section 4 header drops its repeated title and nested boxes.
+- Refresh RoomEQ report graphs: every SPL-vs-frequency plot spans 50 dB with
+  a horizontal gridline every dB (labelled every 5 dB); comparison targets are
+  level-matched so the target mean equals the measured L+R mean over
+  100 Hz–10 kHz; left-drag crops a zoom box, Shift/right-drag pans,
+  double-click resets, and 20–200 / 20–20k overlay presets jump the frequency
+  axis; the smoothing menu adds 1/3, 1/2, 1/1 octave plus REW-style Var,
+  Psychoacoustic and ERB modes; the wavelet spectrogram overlays a cyan dashed
+  peak-energy-time ridge per frequency column.
+- Import six native 48 kHz L/R IRs for the three Ascilab position cases and link
+  them in their local recordings configs. Export the two magnitude-only MMM
+  curves with local L/R configuration and IIR/FIR/hybrid presets, without
+  fabricated phase or IR data.
+- Add a final collapsible DSP signal-flow report section, with an All channels
+  overview and individual output selectors,
+  ordered plugin nodes, routed input sums, and expandable saved parameters.
+  Keep d3rs flow labels inside the canvas and allow wide diagrams to scroll.
+- Extract matching native room IRs from measured-case MDAT files and link all
+  physical captures in the parent configs. Support native 3 kHz sub captures
+  and explicit per-driver acoustic sidecars without mislabeling parent sums.
+  Independent capture diagnostics need no fabricated shared-clock identity;
+  unavailable high-frequency bands stay unassessed.
+
+- Use one Room EQ report layout with automatic WebGPU surface acceleration
+  and a Canvas fallback. Both use the same d3rs/WASM geometry, axes, legends,
+  and rotation controls. Remove the separate GPUI statistics-view toggle.
+
+- Organize the Room EQ report into collapsible evidence and six numbered
+  sections, with independent speaker/group selectors. Combine each speaker's
+  before/EQ/after curves, retain landmark and filter details, and separate EPA.
+- Add mouse-controlled d3rs waterfall rotation and retain unpooled positive
+  FFT bins and 2 ms frames in measured-IR exports. Sample wavelets at 48 points
+  per octave and 0.1 ms through the first 15 ms (1 ms thereafter). Development
+  builds use matching sibling math-dsp/math-iir-fir patches until upstream is pinned.
+
+- Add a separate Section 1 T60-within-ITU-recommendation percentage using
+  eight octave centers (63 Hz–8 kHz) and the recorded room volume. Missing
+  dimensions or incomplete band fits remain unassessed, not passing.
+
+- Plot the ITU-R BS.1116-3 frequency-dependent T60 envelope on room and
+  speaker graphs, using recorded room volume where available. Label the
+  measured-midband fallback explicitly; retain tables and octave steps.
+
+- Limit the symmetric-pair plot's initial vertical view to 50 dB, preserving
+  underlying difference data without letting near-zero differences stretch axes.
+
+- Use `recording_config.room_dimensions` as the single RoomEQ room-size input.
+  Resolve it for both correction modes on file load and workflow entry; reject
+  obsolete optimizer-local copies with migration guidance. Validate dimensions
+  and document the recording configuration and migration.
+
+- Render all RoomEQ report graphs with d3rs through WASM, including capture
+  diagnostics. Add filled waterfall surfaces, labelled wavelet heatmaps,
+  shared resonance highlights and an all-speaker resonance summary table.
+
+- Keep a room/speaker octave T60 table next to the room-average plot. Draw
+  octave estimates as steps with the summary's fixed flatness bounds, and add
+  decade-subdivision grids to logarithmic report plots.
+
+- Fix logarithmic report autoranges and zoom initialization with log-space
+  padding. Keep octave T60 tables with interactive graphs below them. Replace
+  unlabelled reflection SVGs with standard axes, clickable legends and plot
+  controls; explain empty candidate lists without drawing empty plots.
+
+- Clarify predicted versus measured report waveforms and distinguish post-DSP
+  level offset from channel balance. Add landmark plots, place arrival plots
+  below their table, and number symmetric monitors as section 4. Rust exports
+  magnitude-domain monitor sums on shared frequency support in the measurement
+  index; the Python report renders those curves without summing mismatched grids.
+
+- `mdat2csv.py` exports stored REW impulse responses as `__ir.csv` files,
+  preserving sample amplitudes and the original time grid. Use
+  `--timing-reference-id` to bind them into `recordings.json`. IR decoding
+  requires `javaobj-py3`; unsupported or derived IR storage is reported explicitly.
+
+- RoomEQ finalization exempts physical subwoofer-only attenuation from the main
+  attenuation budget, preserves electrical ceilings, and names constrained outputs.
+- Speed up mixed/FIR finalization waveform and electrical replay with exact FFT-grid FIR
+  evaluation and reuse of unchanged temporal evidence across safety checks.
+  Preserve all taps, routing, and candidate acceptance requirements. Report
+  candidate counts and elapsed time, including progress for slow warning-only runs.
+- Accept routed main Post-EQ when target shortfall is at most 3.05 dB, or
+  improves by at least 20% and 1 dB against the immediate input. Protect the
+  main's requested target above twice crossover, and check incremental
+  cancellation without blaming common EQ for an inherited null. Final
+  selection compares candidates with and without optional main Post-EQ under
+  the existing electrical, output-loss, timing, and per-seat requirements.
+- Identify stereo bass management correctly in workflow logs. Post-EQ
+  diagnostics now compare target shortfall, main/sub cancellation, and scores
+  with and without the pass, distinguish the configured baseline, and list
+  every active failed acceptance check.
+- Resolve parallel waveform timing against every declared physical sub output
+  when bass management groups separate measurements. Preserve branch identity
+  and shared capture timing checks, suppress unchanged waveform warnings, and
+  remove duplicate temporal-evidence refreshes during finalization.
+- Fix flaky `just ntest` (`cargo test --release`) failures: split the 2D
+  renderer WASM exports out of `autoeq-report-wasm` into the new
+  `cdylib`-only `autoeq-report-wasm-shell` crate. The release profile sets
+  `panic = "abort"` while test targets use `unwind`, so the old
+  `cdylib` + `rlib` crate was built twice with identical output filenames
+  and parallel rustc invocations raced on them (cargo#6313), surfacing as
+  `E0277`/`E0463`/panic-strategy errors. `just report-dist` now builds the
+  shell crate; the checked-in `report2d` bundle exports are unchanged.
+- Fix three `roomeq_admission_correction` failures hidden behind that
+  flake: their report assertions searched rendered HTML for literal
+  `<section class="...">` markers, but reports embed sections as a JSON
+  payload (quotes escaped) since the Plotly→WASM migration. The scripts
+  now decode the embedded `report-payload` JSON (the `SCHEMA.md`
+  contract, same pattern as `scripts/test_report.py`) and assert
+  section order/content on the decoded sections.
+- Add claim-level reporting to every RoomEQ output bundle:
+  `metadata.playback_summary` restates the shipped outcome, the
+  training-seat counts behind it, the worst seat, the modeled
+  latency/headroom cost, the correction family actually present, the
+  limits in force, and deterministic headline sentences — a pure
+  projection of the acceptance report with no new judgment.
+  `metadata.epa_provenance` labels all EPA numbers a configured
+  model prediction (`predicted_not_measured`), with the
+  EPA-vs-acceptance disagreement explained in
+  `docs/ROOMEQ_OUTPUT_FORMAT.md`. New user-side handoff docs
+  `docs/ROOMEQ_MEASUREMENT_PLAN.md` and
+  `docs/ROOMEQ_LISTENING_PLAN.md` define the capture protocol, the
+  controlled listening protocol, and the claim wording each
+  evidence level supports.
+- Add the benefit floor `optimizer.finalization.min_improvement_lower_bound_db`
+  (default `0.0`): every training seat's uncertainty-adjusted improvement
+  must exceed it or the candidate is rejected as showing no demonstrated
+  benefit. Identity candidates (no meaningful correction) skip the floor
+  and flow through as the protected baseline. The default is the
+  measurement-uncertainty boundary, not a perceptual threshold; raising it
+  needs repeat-capture and listening evidence.
+- Report requested-vs-realized correction family on the acceptance record
+  (`realized_processing` votes IIR/FIR plugins in the shipped graph;
+  `processing_fallback` names requested/realized divergence, e.g. a
+  mixed-phase request that shipped IIR-only). Fallback is audit labeling,
+  never a verdict change.
+- Mark delay padding appended by causal compilation with the
+  `delay_compile_common_latency` label and strip it during baseline
+  restoration, so refused graphs carry no compile-derived timing claims.
+  The ledger attach check now runs after all derived output fields are
+  computed, keeping delivery claims bound to the exact shipped payload.
+- Bound the inferred subwoofer stopband from the measured rolloff instead of
+  a flat peak-hold: when the last measured half-octave falls, the unmeasured
+  tail continues at its fitted dB-per-octave slope (recorded as
+  `measured_subwoofer_stopband_rolloff` with the new optional
+  `rolloff_db_per_oct` on `UpperBandAcousticBound`); rising tails keep the
+  flat peak-hold form. Explicit declarations stay flat caps unless they carry
+  a non-positive `rolloff_db_per_oct`, and rising slopes are rejected. The
+  0.1 dB omission budget still gates every summation.
+- Accept measured room impulse responses per channel
+  (`measured_impulse_responses` in the RoomEQ input config): declared
+  `time_ms,amplitude` CSVs are validated (uniform grid, declared-rate
+  agreement, shared timing across channels) and attached as the chain's
+  measured `pre_ir` at finalization, before extraction and ledger binding.
+  The R1–R5 acoustic analyses (band-limited reflection table, early/late
+  curves, nine-band octave T60, STFT waterfall with resonance decays,
+  three-cycle wavelet) run on measured IRs only, each gated against the
+  viewer contract; channels without a declaration keep synthesized IRs and
+  their report cells stay pending.
+- Rework the `display-roomeq` HTML report layout: the 2D/GPUI toggle sits at
+  the end of the title line and always shows (GPUI falls back to 2D without
+  a WebGPU adapter); the channel tab bar moved below the summary sections.
+  The combined overview is now three stacked panels sharing the frequency
+  axis (Before EQ + dotted targets, all EQ shaping curves, Corrected +
+  dotted targets) with per-panel legends and a shared Before/Corrected SPL
+  range. **All EQ Filters** renders channels as a button set. Section 1
+  operational share derives from legacy final ledger decisions when
+  `channel_summaries` is absent; level residuals are predicted from the
+  post-DSP curve; a new frequency-landmarks table reports per-speaker
+  peaks, notches and −6 dB LF extension. Both renderers consume the same
+  `autoeq-report-data-v1` payload, so 2D and GPUI views stay in parity.
+
+- Replace Plotly report rendering with the HTML-shell + WebAssembly plot
+  stack (migration plan `reviews/WASM_PLOT_MIGRATION_PLAN.md`, step 1):
+  `crates/autoeq-plot` and `scripts/src/figures.py` emit versioned
+  render-only section JSON (`autoeq-report-data-v1`, see
+  `crates/autoeq-report-wasm/SCHEMA.md`) instead of Plotly figures; both the
+  Rust CLI and `scripts/display-roomeq.py` assemble self-contained HTML
+  reports (2D canvas WASM renderer embedded, no CDN, no Plotly install).
+  Browsers with WebGPU get a GPUI viewer toggle (`autoeq-report-gpui`,
+  nightly build). Plotly dropdowns became static default-smoothed curves,
+  subplot grids became one section per panel, and Sankey hover text was
+  dropped (the schema has no hover channel; driver alignment already lives
+  in the per-driver Sub DSP Chain tables). No `plotly` crate remains in
+  `Cargo.lock` and no `plotly` import remains in `scripts/src/`.
+- Report the quasi-anechoic `valid_lower_hz` as the raw gate-physics bound
+  (`cycles/gate`) instead of clamping it to the requested band floor, per
+  the Wolfram RA10 oracle; the requested band stays carried on the upper
+  edge with the band/window relationship explicit in the detail grade and
+  `short_gate_band_limit` reason. Band-segmented callers
+  (`assess_direct_capture`) clamp explicitly to their assessment band, so
+  admission behavior is unchanged.
+- Write RoomEQ native outputs as a small JSON plus a sibling assets
+  directory (`dsp.json` + `dsp_files/`, generally `<stem>_files/`): all
+  generated WAV sidecars, extracted measurement curves/CSVs with a
+  `measurements_index.json` map, diagnostic grids, the run manifest, and a
+  `roomeq.log` summary now live in the assets directory and nothing is
+  written to the process working directory. The saved JSON keeps the
+  `DspGraph` schema with DSP data (plugins, metadata, ledger) minus the
+  heavy measurement blobs; the Python viewer re-injects them from the
+  sibling directory and legacy embedded outputs keep loading unchanged.
+- Optimize disjoint measurement support end to end (F05): declared
+  `valid_bands_hz` segments are conditioned independently with gap retention,
+  the engine optimizes and scores the union of measured segments (gap display
+  samples never fitted or scored), PEQ centers in an unmeasured gap refuse the
+  channel, and a per-channel segment report records per-segment pre/post
+  flatness plus observed PEQ+FIR gap leakage (no invented inaudibility
+  threshold; per-segment scores gate acceptance). Curve-only single-curve and
+  averaging loaders still refuse disjoint support; config validation and the
+  support-aware conditioning path accept it.
+- Emit per-channel `early_late_curves` (report R2) from the optimization-time
+  measured room IR: third-octave full/early/late band energies with the
+  shared-reference `incoherent_band_energy` method, `full_peak_band`
+  reference, `third_octave` smoothing, and 20 ms split (120 Hz lowpass
+  envelope-peak reference for subwoofer/LFE). Incomplete IRs leave the field
+  absent and the report cell pending. Output schema regenerated (additive).
+- Emit per-channel `early_reflections` (R1) and `t60_octaves` (R3) from the
+  optimization-time measured room IR with the capture-verification
+  vocabulary: band-limited 1–8 kHz reflection table at −15 dBFS/15 ms window
+  (pre-correction side only; `post` stays empty until a post-correction IR is
+  measured) and nine-band Schroeder octave T60 with the fit-range + `min_r2`
+  policy (EDT-only fits stay invalid; unfittable IRs report invalid rows
+  with reasons, never fabricated values). Output schema regenerated
+  (additive).
+- Emit per-channel `waterfall` + `resonance_decays` (report R4) and
+  `wavelet` (report R5) from the optimization-time measured room IR, and
+  render them in the HTML report: Hann-STFT waterfall grid (−5…500 ms,
+  32 ms window, 2 ms hop, ≤100×64, own-grid-peak reference) with 60 ms
+  resonance slices and fitted decay times, plus the three-cycle
+  complex-Morlet heatmap (−30…0 dB, 6 centres/octave). IRs without a
+  complete 500 ms post-peak window leave the fields absent and the report
+  cells pending. Output schema regenerated (additive for the new fields).
+- Cover the phase-gated group-crossover no-improvement revert with
+  deterministic unit tests: the revert decision is now a pure helper
+  (`revert_group_crossover_if_no_improvement`) tested for tie/worse/strictly-
+  better/None orderings, replacing the ignored placeholder stub. Call-site
+  semantics are unchanged.
+- Fix the routed realized-transfer reference for redirected inputs with no
+  input-side chain (e.g. LFE feeding a sub output): the reference treats the
+  missing chain as unity response with zero delay instead of panicking, so
+  the 16-row CamillaDSP matrix-backend replay passes on actual PCM
+  execution.
+- Carry the enforced user-target identity on every reconciled target-band
+  decision row (`evidence_refs`), owned by target reconciliation instead of
+  two post-hoc call-site pushes, so the respected target stays identifiable
+  without inferring it from bands or reasons. Rows without a named target
+  invent no identity.
+- Accept an explicit `reporting.t60_flatness_tolerance_s` input policy
+  (finite, positive) and carry it into output
+  `metadata.t60_flatness_tolerance_s` on every topology path. When absent,
+  the viewer applies the ITU-R BS.1116-2 §8.2.3.1 Fig. 1 midband default of
+  ±0.05 s (labeled as default, overridable), so the report Section 1 T60
+  flatness cell can render once nine valid measured fits exist. The knob
+  changes no acceptance math.
+- Emit per-channel `correction_decisions.channel_summaries` with
+  `operational_response_pct` (report Section 1 "Operational room response"):
+  the share of decided final `equalize` scope delivered per physical output
+  (`applied`/`already_acceptable`/`constrained` over decided, superseded
+  records excluded, provisional history never counted). Empty scope has no
+  entry and renders pending, never 100%; viewer colours follow the
+  feat-report thresholds (>90 green, 80–90 yellow, <80 red).
+- Freeze V3 listening setups under a separate hash covering the protocol,
+  chain/stimulus binding, population, absolute level, matching method,
+  programme classes and predeclared holdouts. Real trial claim qualification
+  now requires a setup-bound import; a protocol-only verdict stays software
+  evidence even if its counts meet the statistical rule.
+- Revalidate imported listening protocols against their full preregistration
+  rules before scoring, including unique condition IDs, design/intent agreement,
+  attainable ABX alpha and declared power. A matching hash alone cannot make
+  an invalid imported rule scoreable.
+- Represent disjoint measurement support with ordered `valid_bands_hz`
+  intervals, align usable segments independently, and retain internal gaps in
+  loader and final-seat masks. Single-channel correction dispatch now consumes
+  band-specific authorization (see the F05 entry above); curve-only
+  single-curve and averaging loaders still refuse disjoint support.
+- Declare a −20 dBFS programme peak for positive synthetic multisub and
+  multichannel QA fixtures. The separate full-scale parameter matrix still
+  exercises expected safety refusals at the unchanged 12 dB attenuation cap.
+- Keep G7 listening conclusions intent-specific: ABX correct-response scoring
+  separates detectability from an exact-binomial equivalence rule with a
+  numeric preregistered detection bound and a declared alternative that
+  must attain the target power. An all-success detection battery
+  cannot satisfy equivalence, and synthetic equivalence rows cannot promote.
+  Real ABX imports now require a balanced, seed-derived answer key and
+  presentation mapping, with raw responses checked against that frozen key.
+- Register the three Ascilab held-out acoustic corpus cases in the embedded
+  RoomEQ QA inventory, keeping case order aligned with the corpus manifest.
+- Bind generated FEM held-out curves across channels with explicit synthetic
+  position IDs and generate held-out responses for every declared physical sub
+  output so coherent replay does not infer seats from list order or broadcast
+  one sub capture; keep real-capture claims separate from virtual positions.
+- Keep a correction-free structural fallback available when its optional final
+  channel-level alignment fails an acoustic check. The failed alignment runs
+  on a disposable graph copy and remains a degraded stage. A later finite
+  delivered-level spread over the unchanged limit also stays visible as a
+  rejected fallback check; electrical and final-seat checks still decide
+  whether the fallback can be published.
+- Keep the escaped-defect mutation runner compatible with cargo-mutants 25.x
+  argument forwarding and retarget its registered source diffs after code
+  movement; each scoped diff still discovers exactly one mutant.
+- Generate RoomEQ measurement-source schemas from the actual accepted JSON
+  forms, including legacy path strings and flat path/provenance objects; reject
+  malformed source fields while keeping the input/output schema baselines in
+  sync. Update the RW01 QA caller for the optional capture validity mask.
+- Accept legacy top-level RoomEQ `description` strings through the strict
+  config loader and generated schemas while continuing to reject misspelled
+  configuration fields and non-string descriptions.
+- Add `autoeq-qa`: Wolfram Engine cross-validation harness mirroring
+  `math-qa` (oracle `.wls` + versioned golden + comparison test +
+  manifest + `QA_RESULT:` record). Initial smoke cases cover catalogue
+  families C01 (PEQ/FIR complex transfer), C03 (log-frequency
+  interpolation) and C06 (ERB quadrature and timing conversion), with a
+  strict missing-reference gate that fails instead of passing zero
+  comparisons. Recipes: `just qa-wolfram[-smoke|-contract|-goldens]`.
+- Require shared labeled stationary timing provenance before legacy MSO can
+  optimize phase-dependent sub delays. Unknown-timing phase arrays now use
+  gain-only optimization and cannot supply invented coherent shared-EQ seats;
+  explicit advisories identify both limitations. Unchanged routed safety
+  gates pass all five canonical synthetic MSO seeds, and a public workflow
+  regression checks delivered zero-delay physical routes.
+- Cover 5 and 10 ms PhaseLinear FIR channel designs with a fast direct
+  coefficient-response check and required convolution sidecar assertions.
+- Split synthetic parameter QA into explicit full-scale structural-headroom
+  refusal cases and a separately declared −20 dBFS input-peak processing
+  matrix, preserving the 12 dB safety-attenuation limit and output ceiling.
+  Phase-bearing analytic fixtures now declare and replay a common stationary
+  timing reference, allowing automatic crossover processing on aligned grids.
+- Compose all emitted serial FIR resources for temporal analysis instead of
+  selecting a single retained or longest kernel. Missing convolution evidence
+  no longer masquerades as safe IIR-only timing; parallel splits are not
+  incorrectly multiplied as serial FIR stages.
+- Add opt-in per-driver phase refusal handling that retains existing magnitude
+  processing and records insufficient evidence without generating phase FIRs.
+  Invalid capture timing, malformed inputs, and operational failures still abort.
+- Preserve configured physical-output aliases during calibrated joint-sub gain
+  refinement, validating their positional group mapping and canonical routing.
+  Apply refinement trims after the routing matrix without rewriting stage history.
+- Reopen nonreference joint-sub gains during opt-in calibrated full-graph
+  candidate selection. Evaluate bounded alternatives through the existing
+  electrical, physical, target, and protected-seat gates against a frozen
+  baseline; retain rejected trials and historical joint-stage diagnostics.
+- Keep final phase-decision FIR references synchronized with collision-safe
+  export sidecar names, including physical-driver bindings. Preserve original
+  provisional history and unrelated capture evidence.
+- Carry joint physical-FIR target/phase decisions through workflow assembly
+  into final reconciliation. Report the selected phase strength, keeping zero
+  selection unresolved rather than labeling it applied. Verify every referenced
+  FIR and its branch assignment before retaining a delivered phase claim.
+- Apply source-bound direct-sound target policy before joint physical-driver
+  excess-phase FIR design, checking all contributors including DBA cabinets.
+  Room-only upper-band requests refuse before sidecar writes or chain mutation;
+  independently selected magnitude-only design remains separate.
+- Require supported excess-phase assessment for every physical-driver capture
+  before mixed-phase or Kirkeby excess-phase FIR design. Use the assessed
+  correction target instead of an unassessed phase decomposition; missing or
+  inadequate SNR, poor coherence, and smoothing-sensitive phase refuse before
+  sidecar writes. Magnitude-only modes retain their separate behavior.
+- Preserve measured noise-floor and coherence arrays through `CurveData`
+  serialization and reconstruction, including physical-driver captures used
+  by FIR null protection. Legacy curves keep missing quality evidence absent.
+- Enforce shared source timing before joint per-driver FIR design and artifact
+  writes, reusing the report admission gate. Phase arrays without a compatible
+  acquisition/source mapping no longer authorize coherent filter generation.
+- Resolve main-role and sub-output aliases for waveform timing checks; cover
+  cardioid branches and every contributing DBA source behind its two aggregate
+  branches. Conflicting aliases or incorrect branch identities withhold the view.
+- Gate parallel-driver waveform reports on mapped source timing, matching seat
+  labels, and full-view band support. Missing evidence clears the summed
+  prediction and records a reason without discarding independent kernel metrics.
+- Treat blank and case-insensitive `unknown` timing-reference labels as absent
+  during measurement admission, matching joint-array timing requirements while
+  preserving the original serialized declaration for diagnostics.
+- Reject malformed or incomplete waveform diagnostic inventories in HTML reports
+  with an unavailable explanation instead of crashing or silently omitting views.
+- Persist per-channel waveform availability and failure reasons in stage outcomes,
+  replacing stale diagnostics on refresh. Main and comparison HTML reports show
+  these reasons separately from acoustic acceptance and recorded playback.
+- Replay non-FIR parallel waveform reports through each physical capture and
+  serialized branch/common processing, replacing the PEQ-summary shortcut.
+  Missing branch phase withholds the prediction instead of fabricating a trace.
+- Use one uncorrected peak reference for physical-driver FIR pre/post waveform
+  plots, preserving gain changes and polarity instead of normalizing them away.
+- Reject physical-driver coherent replay when any capture lacks valid phase,
+  instead of inventing zero phase. Failed replay clears the predicted post-IR
+  and logs the affected driver; independently valid reference/kernel views remain.
+- Preserve each output's sample rate when comparison reports reconstruct EQ;
+  summarize emitted EQ sections (including driver-local and zero-weight Kautz
+  sections) rather than counting each Kautz bank as a single PEQ.
+- Evaluate Python report EQ using serialized Kautz/warped topology, including
+  the Kautz unity path and ordered linear weights. Channel EQ figures use the
+  output sample rate; advanced-filter labels no longer present Kautz as PEQ dB.
+- Stop exposing Kautz linear weights as synthetic PEQ `Biquad` dB gains in
+  engine/workflow result caches. Serialized Kautz sections remain unchanged;
+  advanced-mode QA counts emitted sections rather than PEQ cache entries.
+- Reconstruct serial-channel waveform reports from the serialized complex DSP
+  transfer, including Kautz/warped topology, gain, and delay, instead of PEQ
+  summaries. Failed replay or missing phase clears the view; both waveforms
+  retain the same uncorrected peak reference.
+- Scale Kautz correction strength through its linear bank weights rather than
+  the unused top-level dB placeholder. Zero strength now realizes unity; poles,
+  section ordering, aliases, and the dry path remain intact.
+- Fit Kautz linear weights against the actual dry-plus-complex-bank magnitude,
+  honoring prepared targets and sampled composite gain bounds. The unchanged
+  multirate budget canary now passes; its unshifted modal quality result remains
+  slightly worse, so this is not a demonstrated correction-quality improvement.
+- Bound Kautz pole selection by the requested section count, correction band,
+  Nyquist, and supported Q range before fitting. Keep low-weight sections so
+  later allpass basis functions do not change after fitting.
+- Include the playback consumer's unity dry path in serialized Kautz evaluation;
+  zero-weight sections now remain unity. Preserve legacy section aliases and
+  single-section defaults, and reject malformed declarations.
+- Add separate hash-bound silent-playback noise capture and numeric pressure
+  calibration to capture diagnostics. Retain Welch PSD units, octave bin support,
+  calibration limitations, and unavailable states; protect both raw resources
+  against overwrite. Noise plots never promote acoustic acceptance.
+- Connect optional matched capture decay diagnostics through CLI import and HTML
+  reports: common-reference and normalized octave tails, explicit noise windows,
+  configurable fit budgets, and unavailable reasons. Fits remain finite-window
+  playback diagnostics, not passive-room RT, safety, or listening evidence.
+- Continue the opt-in parameter matrix after processing failures, retaining
+  per-row failure artifacts and all later results. Any failed row still makes
+  the command fail; safety limits and successful-output requirements are unchanged.
+- Publish an explicitly unverified structural baseline for routed main/sub
+  inputs without the phase needed for final coherent replay, matching the
+  existing grouped-driver fallback. Missing phase never passes acoustic validation.
+- Reject invalid directly constructed joint-sub weights and nonfinite derived
+  objective components, including arithmetic overflow, before accepting a score.
+
+- Restrict joint multi-sub search and its reported objective components to the
+  configured correction band. Preserve full-response protected-seat checks and
+  reject insufficient in-band support before running the optimizer.
+
+- Stop the backend-contract launcher's process group on timeout/interruption
+  and preserve partial timeout diagnostics in the failed QA artifact.
+
+- Make seven prerequisite-dependent CamillaDSP PCM tests explicitly ignored in
+  ordinary suites instead of passing without execution. Required-backend QA
+  opts them in, and explicit runs fail if the backend variable is missing.
+
+- Check final per-position conditioning identities, not just reachable hashes.
+  Missing positions, stale intermediate hashes, unsupported operation versions
+  and invalid attribution cannot pass the preparation stage.
+
+- Bind ordinary-channel conditioning roots to frozen parsed measurements in
+  source order, including logical channel mapping. Reordered roots and missing
+  snapshot attribution degrade the report; source files are not reopened.
+
+- Verify conditioning-ledger dependencies against loader-recorded native curve
+  roots; broken links, unreachable outputs and legacy missing roots degrade the
+  preparation report. Keep capture authentication and operation replay separate.
+- Synchronize output-schema capture-field compatibility and multi-sub timing
+  descriptions with the authoritative models and passing input baseline.
+
+- Record canonical hash-linked receipts for detailed source alignment,
+  spatial/coherent averaging, and ordinary-channel dense-grid preparation.
+  Prepared engine inputs and ordinary channel results retain the receipts;
+  final output includes a structural preparation stage with input-identity checks
+  and the opening explanation summarizes recorded operations. Unrecorded paths
+  remain explicitly unknown; these records do not authenticate acquisition.
+
+- Continue measurement-derived target-slope fallback past loadable sources
+  without regression support, instead of treating missing estimates as flat.
+  Keep genuine zero slopes, bed-channel priority, subwoofer exclusion, and
+  explicit overrides unchanged.
+
+- Bound intake assessment records by retained samples inside declared usable
+  bands, including declarations whose edges fall between bins. Reject fewer
+  than two retained samples; preserve the declaration separately from the
+  assessed range and keep excluded edge regions explicitly unsupported.
+
+- Isolate declared usable measurement bands before workflow dense-grid
+  reduction, smoothing, and phase reconstruction. Retain conditioned outer
+  response data for reporting and keep phase/coherence/noise arrays aligned.
+  Source loaders also align usable samples independently before spatial or
+  coherent averaging, rejecting sparse/disjoint usable support while preserving
+  native snapshots and loaded outer responses.
+
+- Honor declared usable bands when deriving shared room level and measured
+  target slope. Shared level comparisons require common loaded sample support;
+  disjoint or sparse overlap yields no shared reference.
+
+- Exclude loaded samples outside declared usable support from ordinary-channel
+  level/passband analysis and IIR/FIR design, including spatial objectives.
+  Retain raw curves for replay/reporting, slice measured metadata consistently,
+  and reject usable bands containing fewer than two loaded samples.
+
+- Scope magnitude, decay, and absolute-loudness intake assessments to declared
+  usable measurement support; report excluded measured bands as unsupported
+  without promoting unknown SNR or decay evidence into permission.
+
+- Carry declared measurement `valid_band_hz` into ordinary channel preparation
+  and intersect correction bounds with it; reject invalid or disjoint bands
+  while retaining the raw measurement and requested configuration.
+
+- Reject uncited direct-sound claims and malformed or mismatched phase
+  permission records before standalone FIR application; preserve magnitude
+  processing and report the refusal without claiming acquisition authentication.
+
+- Reject blank and case-insensitive unknown timing labels before joint MSO
+  search, using the same structural reference check as all-pass admission.
+
+- Require shared timing-reference evidence for measurement-backed all-pass MSO
+  in direct source-loading and grouped dispatch paths.
+
+- Refuse selected joint MSO when its seat matrix or timing evidence is missing;
+  do not bypass that refusal by running the detailed optimizer instead.
+
+- Preserve MSO gain-only fallback explanations through routed preprocessing
+  instead of dropping the engine's missing-phase advisory.
+
+- Preserve configured-primary-seat phase in home-cinema cancellation baselines
+  instead of using phase-free spatial averages. Reject unavailable seat indices;
+  keep magnitude averaging and final per-seat safety checks separate.
+
+- Publish validation bundles after final provenance and decision-ledger
+  attachment, so their playback snapshot matches the delivered result.
+- Rebuild retained serial biquad coefficients when final selection scales EQ
+  strength, keeping pruning/report metadata consistent with emitted filters.
+- Give the 5.1.4 throughput benchmark an explicit ten-input peak budget;
+  acoustic satellite rolloff is not electrical bass-bus attenuation.
+
+- Keep high-frequency Q guardrails local: applying guard or perceptual-policy
+  defaults no longer lowers the global bass Q cap. Existing optimizer bounds
+  and returned-candidate checks retain the treble cap and stricter global limits.
+
+- Reject target chains that place preference tilt or level compensation before
+  measured calibration. Preserve valid calibration-first chains and target
+  identities; this does not enable the outstanding magnitude-policy integration.
+
+- Add matched 500–4000 Hz capture ETC diagnostics over 0–40 ms using finite
+  analytic filters and linear convolution. Preserve common baseline references,
+  document analysis spreading/floors, refuse unsupported views, and render the
+  bound results without promoting them into acoustic or perceptual acceptance.
+
+- Import explicitly matched baseline IR captures for canonical before/after
+  raw IR/step diagnostics. Bind graph/settings/file identities, preserve synthetic
+  labels, refuse mismatches and raw-file overwrite, and render integrity-checked
+  capture views with `display-roomeq.py --capture-verification`.
+
+- Add opt-in final-graph physical-drive ranking from replayed declared demand,
+  with separately reported acoustic and utilization components. Positive weights
+  require physical declarations and cannot bypass electrical or acoustic gates.
+
+- Preserve actual per-objective normalization receipts for multi-measurement PEQ
+  and spatial linear/minimum-phase/Kirkeby FIR optimization. Retain objective
+  population labels through canonical workflow conditioning reports and update
+  the optional output schema; analysis offsets do not imply playback gain or SPL.
+
+- Shared single-channel EQ preparation now records its actual analysis
+  normalization offset, reference policy, and pre/post-normalization curve
+  identities. Ordinary/adaptive optimizer reports carry this evidence into a
+  canonical conditioning ledger. These are historical analysis gains, not DSP
+  playback trims or SPL calibration; unrecorded paths remain explicitly unknown.
+
+- The public RoomEQ workflow now freezes configured numerical measurement
+  responses before processing and reuses them for optimization and final replay.
+  Full curve fields and original metadata/provenance survive the internal
+  snapshot handoff; changing a source CSV mid-run cannot change its loaded data.
+  Malformed inline phase is rejected before freezing. Associated WAV/CEA/target
+  assets and subsequent conditioning are not covered by this snapshot contract.
+
+- Finalized results now retain native parsed final-seat inputs in a structural
+  `final_seat_input_retention` receipt, with separate training/held-out partitions,
+  response identities, declared provenance, and explicit acquisition limitations.
+  Timing declarations do not become shared timing/gain references, and these
+  receipts do not claim optimizer-wide conditioning or authenticated recordings.
+
+- Final-seat replay now retains each loaded response's native frequency grid,
+  support, levels, and auxiliary evidence before physical-branch summation.
+  Differently sampled seats are no longer pre-aligned or clipped during capture
+  retention. This does not authenticate raw recording or calibration provenance.
+
+- Final correction selection now includes declared physical-drive limits in
+  output/common/spectral attenuation candidates and structural fallback checks.
+  Candidates remain subject to the existing attenuation and acoustic-output
+  budgets; terminal sub limiters are preserved and never credited as linear
+  physical-demand reduction. The final post-pruning physical gate remains.
+
+- Final decision ledgers now explain delivered headroom and channel-alignment
+  gain stages on their actual input-to-physical-output branches. The report
+  retains signed dB values and distinguishes serialized DSP facts from acoustic
+  benefit or net parallel-path gain. Re-finalization rejects altered/stale
+  generated records and does not duplicate unchanged records.
+
+- Added opt-in `optimizer.finalization.physical_drive` declarations for sampled
+  steady-sine RMS voltage/current and peak excursion. The delivered serialized
+  graph is replayed after routed pruning, with independent-input peak bounds
+  and route gains counted once. Over-limit, out-of-linear-range, incomplete,
+  or incompatible declarations refuse delivery. Saved stage evidence retains
+  units, demand, limits, calibration/reference conditions, and scope. This is
+  not authenticated hardware evidence or transient/thermal/program capacity;
+  the joint optimizer's output-loss proxy is still not a physical-drive objective.
+
+- Final decision ledgers now retain joint-array and shared-EQ rejection history
+  per physical sub output. Single/comparison reports explain those decisions
+  immediately after the playback verdict, with assessed frequency support,
+  stage correction limits, and explicitly positional seat references. These
+  historical refusals are not promoted into final-route or playback approval.
+
+- Joint-sub shared EQ now checks each retained seat against the optimizer's
+  frozen target and level reference before graph construction. Rejected shared
+  filters are removed, identity loss is recomputed, and the stage diagnostics
+  retain `shared_eq_rejection_reason`. Target-grid alignment is explicit; seats
+  are never independently normalized for this guard.
+
+- Joint-sub array acceptance now checks every retained seat with the existing
+  runtime ERB-weighted target-error policy. A better aggregate objective cannot
+  authorize a regressing seat: the array controls and metrics revert together,
+  with `array_rejection_reason` retained in serialized stage diagnostics. This
+  does not certify later shared EQ, routed processing, or physical drive capacity.
+
+- Generated capture-prediction bundles now bind their processing graph, plans,
+  provenance, settings, and resource hashes with the existing typed SHA-256 codec.
+  Import rejects stale/edited bindings and contradictory evidence labels. Bundle
+  graph identity excludes decision metadata, matching finalization. Numerical
+  reports record the exact plan-file hash and refuse every occupied destination,
+  including hard-link aliases of raw recordings. Integrity is not acquisition
+  authentication or an acoustic/safety certificate.
+
+- RoomEQ can generate IR comparison predictions from an explicit hashed
+  physical-output-by-seat transfer matrix with `--verification-prediction-inputs`.
+  `--verification-graph` uses saved native DSP without another optimization run.
+  Existing path expansion handles independent/driver and bass-managed routes;
+  coherent trials retain declared signed input gains. Calibration, capture plane,
+  support, timing-grid/work budgets, and complete matrix coverage are checked.
+  Synthetic plant data cannot become recorded-playback approval. Bundle creation
+  never overwrites an existing destination and is not a playback/safety verdict.
+
+- Verification bundles sum all serial channel delay plugins instead of retaining
+  only the first. Delay checks reject stale snapshots, unknown ledger channels,
+  malformed/overflowing delays, and branch-local delays that cannot be represented
+  by a scalar channel snapshot. This does not measure FIR or routed-system latency.
+
+- Finalized RoomEQ output now carries independently bound acceptance diagnostics
+  in the decision ledger. Reports show computed 1/12- and 1/24-octave retained
+  magnitude predictions, serialized DSP controls, and explicit missing-capture,
+  noise, and physical-headroom reasons. Export packages attach diagnostics to
+  the rendered artifact's SHA-256 and reject mismatched analysis/export rates.
+  Resource renaming regenerates view identities. These are diagnostic views,
+  not recorded-playback or complete routed acoustic/safety acceptance.
+- Final response rebuilding now saves the exact pre-correction input alongside
+  its realized output, avoiding mismatched extended grids and normalization
+  metadata in before/after diagnostics.
+
+- Acceptance-bundle validation rejects malformed traces, mismatched provenance,
+  incomplete declared output coverage, blank calibration identities, and
+  non-finite computed headroom margins. DSP dispositions compose polarity
+  inversions and reject stale graph identity or overflowed controls. Acceptance
+  view binding now verifies actual payload digests and rejects duplicate names
+  and mixed graphs; legacy hash-only inputs remain readable but cannot bind.
+  These are internal validation improvements, not completed production
+  acceptance-view/report integration or acoustic certification.
+
+- Direct-sound intake now assesses gate/geometry, averaging, distinct angular
+  coverage, and acquisition bandwidth against an explicit quasi-anechoic policy.
+  A legacy angular boolean no longer authorizes detailed correction. Short gates
+  narrow phase/detail eligibility; missing or contradictory facts refuse those
+  claims while preserving independently supported magnitude processing. Coherent
+  crossover and joint-sub reference admission also check the requested band.
+
+- Successfully realized standalone phase FIRs now produce provisional target/phase
+  decisions with requested-band, evidence, magnitude, and latency observations.
+  Finalization detects FIR removal even before its processing snapshot: attempts
+  remain history with a bound phase reversion; replacement resources require
+  reassessment. No acoustic/perceptual success is inferred from FIR application.
+
+- Final decision ledgers now carry a portable payload digest, independently
+  recomputed by Python reports along with existing FIR resource hashes. Stale
+  or unbound records cannot become applied-delivery claims or green playback
+  banners. Export packaging rejects stale source claims before rebinding;
+  plot-only FIR caches no longer change serialized graph contents.
+
+- Capture verification now compares explicitly declared calibrated mono IRs
+  against source/seat predictions and numerical budgets through the CLI.
+  Incomplete metrics, mixed synthetic/acoustic evidence, or a failed required
+  route cannot become acoustic approval. Reports cannot replace input manifests
+  or comparison plans. Automatic prediction-plan generation remains pending.
+
+- Public RoomEQ workflow results now carry automatically finalized decision
+  ledgers. Ordinary selected PEQ stages produce records with objective scores
+  and requested frequency limits. Changed processing invalidates candidate
+  claims, and later payload mutations invalidate stored delivery bindings.
+
+- Standalone phase refusals now reach the workflow decision ledger, retaining
+  evidence scope, assessment reasons, and observed/configured phase budgets.
+  Failed FIR writes no longer append a convolution plugin or change predicted
+  responses. Identity fallback records say `reverted`, not `already_acceptable`.
+
+- Joint-sub diagnostics now survive generic and routed MSO output, retaining
+  per-seat stage responses, unnormalized levels, objective components, and
+  physical-output gain applications. Later control changes invalidate the
+  current-processing binding without discarding stage history. Fixed routed
+  joint dispatch/provenance transport, duplicate model-name output IDs, and
+  silent omission of small optimized multi-sub gains/delays.
+
+- RoomEQ audit corrections: explicit joint-sub selection now takes precedence
+  over legacy multi-seat dispatch; main/sub alignment and coherent route
+  searches require declared matching stationary capture references, including
+  grouped sub outputs. Main-sum cancellation is no longer labeled a missing
+  timing reference.
+
+- RoomEQ audit corrections: require continuous direct-evidence coverage for a
+  proposed phase band; bind perceptual reference approval to registry-owned
+  metric, tolerance, and coverage; enforce standalone phase latency against
+  generated FIR centering rather than acoustic propagation. These fixes do
+  not mark the broader roadmap complete.
+
+- RoomEQ roadmap `reviews/next-20260921.md` steps 1–9 (all changes uncommitted):
+  - Step 1: graded direct-sound evidence (capture facts, reflection-free
+    interval, valid-band bound, angular coverage; moving-microphone average
+    refused as phase source; unknown fails closed) with quasi-anechoic
+    validator (`DetailEligible`/`TonalOnly`/`Unsupported`).
+  - Step 2: crossover-overlap summation search over complex `Hsum`
+    (single-frequency match loses, 20 ms/50 Hz alias resolved by band
+    behavior, delay ledger in seconds+samples, per-seat combined replay).
+  - Step 3: joint multi-sub optimization (seat-variation / unnormalized
+    output-drive / target-error scalarization; per-seat retention, absolute
+    output deltas, worst-seat reporting; shared EQ on residual only).
+  - Step 4: principled excess-phase assessment (minimum-phase comparison
+    after coarse-to-fine bulk-delay removal; SNR and window-sensitivity
+    gates; caller-bounded unity-magnitude FIR with reported latency,
+    pre-ringing, and magnitude deviation; no hard-coded audibility limits).
+  - Step 5: target/transition architecture (smooth logistic handover, no
+    cutoff; separable calibration/tilt/level stages; damage guard;
+    user targets carried with explained limits).
+  - Step 6: validated-perception scaffolding (single pinned signal-pair
+    family, scale/edition purity, calibration and holdout gating, staged
+    promotion; live-model enforcement reports `blocked_external` until a
+    pinned implementation, reference vectors, and license land in-tree).
+  - Step 7: validated-listening battery (three separate conditions/materials,
+    level match at absolute levels, concealed randomization, preregistered
+    bounds, no equivalence on negatives; real-trial claims report
+    `blocked_external` until operator data exists).
+  - Step 8: converge/accept gate (six views under matched settings hashes
+    with per-view provenance; true-peak headroom; playback-vs-passive
+    separation; threshold-free T60 fits).
+  - Step 9: correction-depth DSP conventions plus reproduction-first
+    dispositions (convention checks, no silent limit relaxation; Kautz
+    cases repaired by method or closed with provenance).
+
+- Record the versioned K4 correction decision ledger (`correction_decisions`,
+  ledger `1.0.0`) in the generated output schema and the output format doc.
+  The field is optional so legacy outputs stay readable; status semantics
+  (`applied`, `already_acceptable`, `insufficient_evidence`, `outside_scope`,
+  `constrained`, `reverted`, `unresolved`, `advisory`) and version
+  compatibility are documented in `docs/ROOMEQ_OUTPUT_FORMAT.md`. The opening
+  explanation report renders final decision records (channel/output/seat,
+  interval-or-center, action, reason, confidence, observation/limit,
+  evidence) with provisional history in expandable details, keeps legacy
+  fallback with explicit "reason unavailable", and surfaces raw unnormalized
+  output-loss evidence. No acceptance limits or thresholds changed.
+- Release convergence QA job permits on early errors and panic unwinding.
+  Keep workflow errors inside the case-recording path so failed cases cannot
+  exhaust every permit and leave the runner waiting indefinitely.
+- Include each failed seed's cause in QA case errors, so concurrent run failures
+  remain attributable without relying on the shared seed-distribution artifact.
+  Seed selection, acceptance limits, and failure accounting are unchanged.
+- Report frequency support per logical input when aggregating final-seat
+  evidence. Independent mains/subwoofers may have disjoint bands; their aggregate
+  omits `measurement_overlap_hz` instead of inventing shared support or rejecting
+  otherwise valid per-input evidence. Seats of the same input still require
+  common support, and all numerical acceptance limits remain unchanged.
+- Resolve declared physical outputs to their owning DSP chain during non-routed
+  final-seat replay. Reject missing or ambiguous owners and incomplete seats.
+  Give the legacy FEM stereo driver-group fixture explicit driver IDs; all
+  three multi-measurement strategies now pass without changing measured data.
+- Preserve measured phase when preprocessing multi-seat cardioid pairs. Combine
+  front/rear drivers per seat, retain every seat for shared EQ, and use the
+  configured primary seat for routing. Reject unmatched seats or missing phase.
+  Repair the FEM cardioid declaration to include both outputs and all five
+  existing captures per driver; measured data and acceptance limits are unchanged.
+- Evaluate Kautz and warped-IIR reports from their serialized DSP topology,
+  fixing the 25.66 dB Kautz report/export mismatch in the regression fixture.
+  Kautz gain optimization remains experimental and fails the existing matched
+  gain-budget experiment; this reporting fix does not validate that optimizer.
+- Repair stale audibility QA selections after crate relocation and fail empty
+  selections explicitly. Add exported all-channel multi-seat pruning rows.
+
+- Add experimental frozen-F0 pruning across explicit seat/programme/level
+  spectra, with worst-condition incremental checks, sum/max cumulative budgets,
+  fixed level anchoring, and fail-closed handling of missing condition evidence.
+  Prevent adaptive report-only veto from deleting filters before adjudication;
+  raw nominations no longer authorize batch removal. Add the
+  `qa-roomeq-pruning-conditions` regression matrix. Native single/multiple-measurement
+  workflows accept versioned `pruning_budget.evaluation` programme/level
+  declarations over every supplied measurement, including zero-weight seats.
+  Export checks cover advisory and enforced modes, adaptive selection, and
+  local refinement, and Pareto NSGA-II selection. Enable exact JSON float
+  round-tripping for filter metadata. Hybrid serial/crossover export rows verify
+  FIR samples and IIR pruning; the crossover path now retains individual seats.
+  Final-seat phase evidence uses actual captures/replay instead of a power average.
+  Missing phase still prevents hybrid acceptance. Routed pruning runs after
+  final selection and checks complete delivered graphs across declared seats,
+  spectra, levels, and correlated inputs. Native export/replay rows cover
+  single and parallel two-sub playback; missing evidence retains F0.
+  Non-routed workflows with held-out captures also defer removal to the final
+  pass; complete held-out seats constrain pruning and incomplete seats retain F0.
+  No perceptual validation is claimed.
+- Fix virtual-LFE electrical replay when physical driver names differ from
+  stored logical channels. Preserve grouped subwoofer topology for explicit
+  physical outputs, and update synthetic QA fixtures to schema-v3 output and
+  crossover declarations.
+  Map each declared grouped output to its own capture branch, preserving
+  declaration order instead of duplicating the entire group under each ID.
+- Separate CLI integration coverage for magnitude-only multidriver diagnostic
+  rejection and known-phase synthetic multidriver playback. Do not approve
+  missing phase or label an unchanged flat system as improved.
+
+- Validate missing crossover references before phase-confidence assessment and
+  report the required `frequency`/`frequency_range` fields consistently.
+- Preserve measured RoomEQ grid endpoints without adding floating-point duplicate
+  bins that collapse to zero ERB width and invalidate cumulative acceptance.
+- Record the RoomEQ Stage 0 audibility acceptance contract in the tracked manual:
+  frozen references, all-condition acceptance requirements, conservative unknown
+  outcomes, and explicit model/calibration/listening-study deferrals. Replace the
+  input-format reference to an ignored contract document. No enforcement default
+  or threshold changes; schemas are synchronized.
+
+- Clarify RoomEQ FIR, MIXED/hybrid, and MIXED-PHASE mode names, phase and length controls, latency, and the distinction between correction bounds and processing/speaker crossovers.
+
+# 0.5.74
+
+## Package versions
+
+- Record numeric spectral headroom cut-budget margins in rejected candidate gate checks, including refusals before acoustic replay.
+
+- Preserve the native identity lane when original driver supports have no common band, keep exact spacing boundary admission despite inward numeric endpoints, and flag configured-playback changes in protected fallback classification.
+
+- Use validated frozen playback means in measured summary score columns; retain marginal/training diagnostics and reporter source hashes, preserving legacy expectation score semantics.
+
+- Clamp prepared PEQ/FIR correction to retained original support; retain a verified global PEQ candidate when local emission validation refuses refinement.
+
+- Retain original sampling/smoothing support in GD all-pass fitting and bootstrap inputs; intersect AP frequency/Q budgets and build FIR GD references from actual emitted sections.
+
+- autoeq 0.5.74, autoeq-core 0.5.12, roomeq-analysis 0.5.10, roomeq-cli 0.5.8, roomeq-engine 0.5.82, roomeq-export 0.5.8, roomeq-model 0.5.13, roomeq-workflow 0.5.33.
+
+## RoomEQ correctness and playback safety
+
+- Require G7 reference-vector files to match their SHA-256 declaration and carry edition/license metadata. Hold descriptive reference and trial records at unassessed in the QA release gate until approved numeric model evidence or verified real trial results exist.
+
+- Calculate the report's T60 flatness summary from all nine valid measured octave fits against a shared complete-channel room mean when an explicit time tolerance is supplied; leave incomplete or unbounded evidence pending.
+
+- Give the analytic all-pass multi-sub QA fixture an explicit shared synthetic timing reference and matching seat labels. Keep production phase provenance checks unchanged; the focused case passes, with useful output in one of five seeds.
+
+- Keep main/sub crossover alignment on the same configured primary seat while preserving all single-sub seats for spatial magnitude EQ. Check raw phase-quality evidence before sub-array processing, including per-group and per-sub crossover overrides. Reject known-bad coherence/SNR and report missing confidence metadata as unverified.
+
+
+- Add opt-in `optimizer.finalization.subwoofer_limiter` for native, post-sum
+  subwoofer limiting instead of static bass attenuation. Preserve main/sub
+  timing, disclose small-signal scoring and dynamic protection, and reject
+  external exports that cannot preserve the limiter. Enable it for Genelec/KEF IIR.
+- Expose channel, driver, and global gain plugins in HTML reports so safety cuts
+  and level trims remain visible even when the EQ-only response is flat. Match
+  named subwoofer-group SPL-budget exemptions in the independent artifact audit.
+- Measure routed main-speaker SPL loss on the physical main branch above its
+  structural crossover, separately from combined main/sub response quality.
+  Observe independent stereo speakers over their measured passbands so bass-only
+  correction bounds cannot hide an upper-band regression.
+
+- Exempt subwoofers from the main/surround/height SPL-loss allowance while retaining
+  their loss diagnostics and electrical/acoustic safety checks. Apply structural
+  fallback headroom attenuation per physical output instead of to every input.
+
+- Show playback verdicts and reduced input-peak conditions before HTML report
+  scores, including mode comparisons. Reject missing or excessive per-seat
+  useful-output evidence in the measured-result audit, and label requested
+  correction bounds separately from evaluated observation bounds.
+
+- Reuse cumulative log-frequency integrals for octave and psychoacoustic
+  smoothing, preserving native measurement grids and smoothing windows while
+  avoiding quadratic work during dense-measurement final-seat replay.
+
+- Make the useful-output-loss allowance configurable through
+  `optimizer.finalization.max_useful_output_loss_db` (default 3 dB), consistently
+  in home-cinema Post-EQ screening and final-seat replay. Keep it separate from
+  input-peak assumptions and electrical attenuation limits.
+
+- Keep home-cinema level calibration independent of bass-only correction bounds,
+  using a shared measured passband above crossover transitions. Check all main
+  channels together rather than only matching left/right pairs.
+- Use a common passband-aware target-reference rule for channel preprocessing,
+  ordinary IIR preparation, FIR targets, and Schroeder-split normalization so a bass-only
+  request does not normalize away the bass error or misreport target levels.
+- Detect measured passbands relative to the octave-smoothed peak rather than a
+  stopband-dominated average. Preserve prepared IIR target shapes in reports and
+  apply mains' physical calibration gains to their displayed targets.
+- Remove correction-derived spectral, alignment, and headroom trims on fallback,
+  and rebuild its channel-alignment evidence from the delivered graph.
+- Make the RoomEQ CLI return failure for rejected or unverified playback results;
+  retain native diagnostics with a rejected manifest and skip external export.
+- Validate routed playback over measured speaker passbands independently of
+  correction bounds, including damage outside a bass-only EQ band. Keep LFE
+  evaluation within its deployed low-pass band and verify final channel levels
+  by replaying the delivered graph rather than trusting cached alignment.
+
+- Include shared subwoofer correction in stereo routing candidate replay, matching the optimizer's phase model and preserving detailed rejection reasons when all candidates fail.
+
+- Align Post-EQ crossover screening to the receiving main's measurement grid
+  and require evidence for every source before accepting shared sub EQ. Missing
+  cancellation evidence no longer silently authorizes a harmful correction.
+- Restore the internal primary-subwoofer accessor from the canonical output
+  list when loading routing JSON, preserving physical ownership across save/load.
+- Use the configured baseline-aware cancellation policy in the route optimizer's
+  safety penalty, rather than penalizing every residual above 1 dB as unsafe.
+- Report all failing final-seat channels, and let a successful final graph replay
+  supersede historical stage-reversion verdicts while retaining their diagnostics.
+
+- Allow routed subwoofer replay beyond measured stopband support using a recorded tail-envelope assumption and the deployed low-pass, while retaining full-band main assessment and the 0.1 dB omission uncertainty limit.
+
+- Fix multi-sub physical routing when the shared processing channel uses its first driver's output name, while still rejecting separate channels that duplicate driver ownership.
+
+- Make coherent main/sub cancellation configurable through
+  `optimizer.max_crossover_cancellation_db` (default 3 dB). Accept above-limit
+  residuals only when they improve over the frozen pre-optimization baseline by
+  more than 0.05 dB, consistently through route optimization and final replay.
+  Report baseline/final cancellation evidence separately from target shortfall
+  and electrical headroom; advisory strings no longer authorize residual dips.
+
+- Fix final electrical headroom attenuation for the implicit RoomEQ v3 LFE input,
+  including frequency-selective safety correction, by creating its pre-route DSP
+  owner when needed instead of failing with "missing headroom input owner".
+- Update supporting-source stereo fixtures, home-cinema scaling benchmarks, and
+  strict-schema assertions to the RoomEQ v3 input contract so `just ntest` exercises
+  the current topology instead of failing on obsolete configuration assumptions.
+
+- Document the workspace architecture: per-crate `ARCHITECTURE.md` files plus
+  a high-level `docs/ARCHITECTURE.md` with crate map, RoomEQ/AutoEQ/QA data
+  flows, and pipeline stage order.
+
+- Introduce breaking RoomEQ input format 3.0.0: stereo exposes only `L`/`R`
+  programme inputs, home cinema gains an implicit canonical `LFE` input, and
+  measured physical subwoofers move to ordered `system.subwoofers.outputs`.
+  Routed stereo bass now records the evaluated matrix topology, coefficients,
+  objective evidence, correlated-peak-safe 2.1 mono fold, and candidate-level
+  serialized-graph acoustic-splice and electrical-headroom validation.
+
+- Preserve role-pair level balance through RoomEQ finalization by refreshing
+  realized non-routed curves and applying attenuation-only upper-band alignment
+  after per-output headroom gains, without extending the PEQ correction band.
+
+- Add nightly report-only `measured_stereo_ascilab1/2/3` scenarios to the
+  acoustic corpus for the three single-position AsciLab 2.0 captures.
+  They stay report-only until a second seat exists for held-out data.
+  Also fix the `measured_stereo_t7v` corpus paths after the
+  `2.0_t7v` → `2.0_t7v_2024` measurement rename.
+
+- Assess standalone subwoofer-group sums within their common measured band,
+  rather than requiring measurements up to the full-range optimizer ceiling.
+  Keep full-band acoustic-support checks for routed main/subwoofer sums.
+
+- Report partial channel rollback as `reverted_stage`, not whole-graph
+  `identity_fallback`, when final-seat replay retains nonzero correction benefit.
+  Keep insufficient-evidence outcomes and the strict identity artifact audit.
+
+- Preserve FIR magnitude correction when finite-tap excess-phase inversion
+  regresses its realized target response. FIR and mixed processing retain the
+  magnitude-only candidate in that case, without relaxing final acceptance limits.
+  Export Kirkeby's causal design delay for standalone and mixed FIRs so final
+  headroom selection can reduce correction strength instead of rejecting it.
+
+- Align mismatched multichannel EPA frequency grids in log-frequency over shared
+  support instead of skipping aggregation; preserve channel levels without extrapolation.
+
+## RoomEQ channel-matching safety
+
+- Constrain channel-matching PEQs to a broad Q≤1 default because matching lacks
+  repeated-seat evidence for narrow room features; high-Q modal cuts remain
+  owned by the room optimizer’s Schroeder-aware path.
+
+## RoomEQ measured replay edge handling
+
+- Accept a lower observation edge that is at most one native measurement bin
+  (and 1% of the edge) below a capture, hold the measured edge instead of
+  extrapolating it, and continue rejecting genuinely truncated captures.
+
+## RoomEQ measured recovery
+
+- Declare the user-approved 18 dB finalization attenuation allowance for the
+  Genelec 5.1.4 measured fixture only; retain unit-peak inputs, the 0 dBFS output
+  ceiling, and the acoustic output-loss gates.
+
+- Support routed per-driver FIR placement using a transfer-equivalent common
+  post-route kernel with unique physical-output artifacts; preserve pre-route
+  source ownership and label the constrained shared-kernel design explicitly.
+- Preflight every requested measured configuration and regenerate missing REW
+  CSV derivatives without overwriting existing exports. Correct the two 200 Hz
+  fixtures' hybrid processing splits and KEF's generated CSV filenames.
+
+- Require explicit acoustic bounds for unmeasured branch tails. An electrical
+  low-pass never supplies a fabricated -120 dB acoustic capability declaration.
+- Publish and replay the structural baseline when correction cannot be safely
+  accepted; discard rejected candidate metrics and report missing evidence.
+- Check useful-output metric fields individually so NaN cannot hide in a maximum.
+- Recheck electrical headroom after fallback; report necessary safety attenuation
+  instead of labelling a changed output unchanged. Identity is not an accepted
+  improvement, and runtime rejection reasons survive rollback.
+- Remove owned Hybrid split/filter/delay/merge stages atomically on fallback,
+  preserving explicit excursion protection and speaker arrival alignment.
+- Isolate measured IIR/FIR/mixed/mixed-phase artifacts by mode, retain run logs,
+  validate native manifests and FIR hashes, and support bounded scenario subsets.
+
+## RoomEQ quality ownership
+
+- Consolidate shared RMS and log-frequency weighted RMS kernels under
+  `roomeq-quality::metrics`; acceptance, quality, and oracle paths now use one
+  implementation, quality aggregation calls the shared percentile primitive,
+  and aligned-grid checks use one shared predicate without changing thresholds
+  or metric definitions.
+
+## RoomEQ explicit correction support
+
+- Add opt-in `optimizer.correction_band` to constrain active EQ while keeping
+  the observation band fixed. Natural source roll-off is allowed only when
+  explicitly declared and is reported separately from evaluated-band metrics;
+  the policy never installs an implicit high-pass or low-pass.
+
+## RoomEQ test recovery
+
+- Preserve observer cancellation diagnostics when a topology channel's optimizer
+  returns early, including the multi-seat retry path.
+- Preserve the underlying measurement-load error during raw seat capture so
+  missing-file diagnostics include the path that failed.
+- Retain supporting-source convolution taps exactly as written to the WAV;
+  normalization gain remains owned by its separate DSP plugin.
+
+## RoomEQ band-limited driver resampling
+
+- Stop slope-extrapolating band-limited drivers onto full-range grids: a
+  subwoofer measured to 200 Hz with one noisy edge bin reached 1004 dB at
+  20 kHz, dominating crossover sums, poisoning target references, and
+  diverging the R-specific global EQ (measured 2.2_sigberg3: R 6.10 -> 309.5
+  and reverted to no EQ; now 6.10 -> 2.03 with EQ kept). Crossover summation
+  (`prepare_driver_curves`, `DriversLossData::power_reference`) now holds
+  measured edge values outside the band; display extension
+  (`extend_curve_to_full_range`) follows a capped least-squares trend over
+  the edge octave instead of a single bin pair.
+- Tolerate sub-bin measurement/assessment endpoint mismatch in bounded final
+  replay (199.951 Hz capture against a round 200 Hz band edge); genuine
+  coverage gaps still require explicit upper-band declarations.
+- Defer cumulative final selection with a recorded skip while no
+  correction-acceptance report exists for the route (acceptance attachment is
+  still being wired); previously shippable runs no longer fail closed on the
+  missing report. The full selection engages unchanged once acceptance exists.
+- Record each topology driver's measured span (`measured_band_hz`) so plots
+  clip the raw measurement where display extension continues past it: the
+  left-sub trace no longer draws a line from its 199.95 Hz capture end to
+  20 kHz. Pure-DSP transfers (EQ responses) stay full-range.
+- A multi-sub group with a single subwoofer is now a configuration error
+  (MSO requires at least 2 subwoofers; use Single config) instead of
+  panicking later in multi-sub optimization.
+- Routed final-seat replay no longer compares single-position measurement
+  names as seat orders; only multi-seat label sequences must match
+  (measured 2.1_sigberg2 with Left/Right/Sub captures now replays).
+- Seat-replay useful-output loss no longer counts correction cuts that land
+  closer to the target than the baseline, even when they stop short of it;
+  only overshoot past the baseline's own distance from target counts as lost
+  output (the remaining shortfall stays advisory). Deep but target-directed
+  resonance cuts no longer force the strength search to mute the channel.
+- The single-channel optimizer now drops positive-gain filters centered
+  inside suppressed narrow nulls (mask < 0.5) instead of leaving the
+  free boost variables parked there: null-filling boosts waste headroom that
+  downstream gates read as lost output. Cuts are preserved.
+
+## Final electrical and cumulative correction selection
+
+- Preserve synchronous primary-seat complex measurements for normal MSO driver
+  records and main-channel route optimization/replay. Spatial EQ still uses all
+  configured measurements; magnitude-only seat averages no longer replace the
+  physical responses used for crossover timing.
+- Refine main and sub correction strengths separately, preserve fractional FIR
+  delay, bind refined WAV bytes through the artifact store, and recheck channel
+  alignment before final electrical and acoustic acceptance.
+
+- Add explicit logical-input peak assumptions, sampled output ceilings and an
+  attenuation search limit under `optimizer.finalization`.
+- Select complete delivered correction candidates after late DSP assembly,
+  checking electrical headroom, routed crossover safety and each available
+  physical seat together. Preserve a fixed structural baseline and include
+  correction-owned headroom attenuation in useful-output checks, including
+  single-seat systems. Missing evidence or no feasible candidate fails closed.
+- Preserve correction-owned physical-output gain through the shared routing
+  resolver, without duplicating structural driver gains already baked into routes.
 
 ## QA error causes and bounded Python comparison vectors
 

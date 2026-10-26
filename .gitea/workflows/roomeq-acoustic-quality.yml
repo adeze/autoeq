@@ -1,0 +1,119 @@
+# Private Gitea counterpart of the acoustic-quality workflow.
+# Sibling pins must match the shared report workspace dependency versions.
+# Uses the existing job token; WORKSPACE_READ_TOKEN can supply sibling read access.
+# Requires on the Gitea host: an Actions runner with the `ubuntu-latest`
+# label, `actions/*` fetched from github.com, and cache + artifact storage
+# enabled (Gitea >= 1.22).
+name: RoomEQ acoustic quality
+
+on:
+  pull_request:
+    paths:
+      - "crates/roomeq-*/**"
+      - "crates/autoeq-report-wasm/**"
+      - "scripts/src/**"
+      - "scripts/test_native_*.py"
+      - ".gitea/workflows/roomeq-acoustic-quality.yml"
+      - "crates/autoeq-core/**"
+      - "crates/autoeq-measurements/**"
+      - "crates/autoeq-optim/**"
+      - "src/roomeq/**"
+      - "data_tests/roomeq/**"
+      - "utils/mdat2csv.py"
+      - "tests/test_mdat2csv.py"
+      - "Justfile"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roomeq-acoustic-quality-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  acoustic-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: autoeq
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: autoeq
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/math-audio
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: 748192f93ddf66b063893c9d69333c1a09c117af
+          path: math-audio
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/gpui-toolkit
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: a1989afc2b070081763f9f888735ec51ee8a82b0
+          path: gpui-toolkit
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sofa-reader
+          github-server-url: ${{ github.server_url }}
+          token: ${{ secrets.WORKSPACE_READ_TOKEN || github.token }}
+          ref: 9b290c6b9384831bf2e6b76e005beff755fe32ca
+          path: sofa-reader
+
+      - name: Install Linux compiler and mold linker
+        run: sudo apt-get update && sudo apt-get install -y clang mold
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned Just
+        run: |
+          cargo install --locked --version 1.58.0 just
+          just --version
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.14"
+
+      - name: Install pinned MDAT Python dependencies
+        run: python3 -m pip install --requirement scripts/requirements.txt
+
+      - name: Shared serialized DSP and report contracts
+        run: |
+          cargo test -p autoeq-core serialized_dsp::tests --locked
+          cargo test -p autoeq-report-wasm --locked
+          cargo build -p autoeq-report-wasm --bin report-producer --locked
+          python3 -S -m unittest scripts.test_native_serialized_dsp scripts.test_dsp scripts.test_native_eq_figures scripts.test_native_target_csv
+      - name: REW MDAT converter contracts
+        run: just qa-roomeq-mdat
+      - name: PR acoustic gates and reports
+        if: github.event_name == 'pull_request'
+        run: just qa-roomeq-acoustic-report data_tests/roomeq/acoustic_corpus/baseline.linux-x86_64.json
+      - name: Nightly acoustic gates and reports
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p target/qa
+          cargo run --release --features qa --bin roomeq-qa-acoustic -- \
+            --tier nightly \
+            --baseline data_tests/roomeq/acoustic_corpus/baseline.linux-x86_64.json \
+            --output target/qa/roomeq-acoustic.json \
+            --markdown-output target/qa/roomeq-acoustic.md \
+            --history target/qa/roomeq-acoustic-history.ndjson \
+            --max-runtime-ms 900000 \
+            --max-peak-rss-kib 4194304
+      - name: RoomEQ subsystem coverage floors
+        run: just qa-roomeq-subsystem-coverage
+      - name: Deterministic RoomEQ mutation smoke
+        run: just qa-roomeq-mutation-smoke
+      - name: Upload acoustic trend artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roomeq-acoustic-quality
+          path: autoeq/target/qa/

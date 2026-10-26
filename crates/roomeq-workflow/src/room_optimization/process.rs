@@ -13,12 +13,49 @@ use crate::group_processing::{
     process_speaker_topology_with_callback_and_frequency_samples,
 };
 use log::info;
+use roomeq_engine::group_processing::GroupProcessingResult;
 use roomeq_engine::pipeline::{PipelineStepId, PipelineStepStatus};
 use roomeq_model::Result;
 use roomeq_model::{RoomConfig, SpeakerConfig};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+
+fn with_empty_veto(result: Result<GroupProcessingResult>) -> Result<MixedModeResult> {
+    result.map(
+        |(
+            chain,
+            pre_score,
+            post_score,
+            initial_curve,
+            final_curve,
+            biquads,
+            mean_spl,
+            arrival_time_ms,
+            fir_coeffs,
+            optimizer_evidence,
+        )| {
+            (
+                chain,
+                pre_score,
+                post_score,
+                initial_curve,
+                final_curve,
+                biquads,
+                mean_spl,
+                arrival_time_ms,
+                fir_coeffs,
+                optimizer_evidence,
+                Vec::new(),
+                None,
+                None,
+                // Group processing has no per-channel segment report; the
+                // engine still enforces single-band behavior unchanged.
+                None,
+            )
+        },
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_generic_channels(
@@ -30,6 +67,7 @@ pub(super) fn process_generic_channels(
     probe_arrival_overrides: Option<&HashMap<String, f64>>,
     observer_shared: &SharedPipelineObserver,
     frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
 ) -> Result<Vec<SpeakerProcessResult>> {
     let total_speakers = channels_to_process.len();
 
@@ -38,6 +76,7 @@ pub(super) fn process_generic_channels(
         PipelineStepId::GenericChannelOptimization,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: 0,
             total_speakers,
@@ -70,6 +109,7 @@ pub(super) fn process_generic_channels(
             PipelineStepId::GenericChannelOptimization,
             PipelineStepStatus::InProgress,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: channel_name.clone(),
                 speaker_index: speaker_idx,
                 total_speakers,
@@ -90,33 +130,36 @@ pub(super) fn process_generic_channels(
             let si = speaker_idx;
             let ts = total_speakers;
             let mi = max_iterations;
-            Some(Box::new(move |iter: usize, loss: f64, epa: Option<f64>| {
-                let base_progress = si as f64 / ts as f64;
-                let speaker_progress = if mi > 0 { iter as f64 / mi as f64 } else { 0.0 };
-                let overall = (base_progress + speaker_progress / ts as f64).min(1.0);
+            Some(Box::new(
+                move |iter: usize, loss: f64, epa: Option<f64>, response| {
+                    let base_progress = si as f64 / ts as f64;
+                    let speaker_progress = if mi > 0 { iter as f64 / mi as f64 } else { 0.0 };
+                    let overall = (base_progress + speaker_progress / ts as f64).min(1.0);
 
-                match send_progress(
-                    &observer,
-                    PipelineStepId::GenericChannelOptimization,
-                    PipelineStepStatus::InProgress,
-                    &RoomOptimizationProgress {
-                        current_speaker: name.clone(),
-                        speaker_index: si,
-                        total_speakers: ts,
-                        iteration: iter,
-                        max_iterations: mi,
-                        loss,
-                        overall_progress: overall,
-                        message: None,
-                        epa_preference: epa,
-                        step_id: None,
-                        step_status: None,
-                    },
-                ) {
-                    Ok(()) => roomeq_engine::CallbackAction::Continue,
-                    Err(_) => roomeq_engine::CallbackAction::Stop,
-                }
-            }))
+                    match send_progress(
+                        &observer,
+                        PipelineStepId::GenericChannelOptimization,
+                        PipelineStepStatus::InProgress,
+                        &RoomOptimizationProgress {
+                            response: response.clone(),
+                            current_speaker: name.clone(),
+                            speaker_index: si,
+                            total_speakers: ts,
+                            iteration: iter,
+                            max_iterations: mi,
+                            loss,
+                            overall_progress: overall,
+                            message: None,
+                            epa_preference: epa,
+                            step_id: None,
+                            step_status: None,
+                        },
+                    ) {
+                        Ok(()) => roomeq_engine::CallbackAction::Continue,
+                        Err(_) => roomeq_engine::CallbackAction::Stop,
+                    }
+                },
+            ))
         };
 
         let result = process_speaker_internal(
@@ -129,6 +172,7 @@ pub(super) fn process_generic_channels(
             shared_mean_spl,
             probe_arrival_overrides,
             frequency_samples,
+            recovery,
         );
 
         match result {
@@ -143,12 +187,20 @@ pub(super) fn process_generic_channels(
                 arrival_time_ms,
                 fir_coeffs,
                 optimizer_evidence,
+                audibility_veto,
+                veto_adjudication,
+                measurement_conditioning,
+                // Multi-segment authorization is enforced in-engine; the
+                // per-segment report is visible at the single-channel
+                // boundary and is not re-published down this chain.
+                _segment_support,
             )) => {
                 send_progress(
                     observer_shared,
                     PipelineStepId::GenericChannelOptimization,
                     PipelineStepStatus::InProgress,
                     &RoomOptimizationProgress {
+                        response: None,
                         current_speaker: channel_name.clone(),
                         speaker_index: speaker_idx,
                         total_speakers,
@@ -178,6 +230,9 @@ pub(super) fn process_generic_channels(
                     arrival_time_ms,
                     fir_coeffs,
                     optimizer_evidence,
+                    audibility_veto,
+                    veto_adjudication,
+                    measurement_conditioning,
                 )));
             }
             Err(e) => {
@@ -191,6 +246,7 @@ pub(super) fn process_generic_channels(
         PipelineStepId::GenericChannelOptimization,
         PipelineStepStatus::Completed,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: total_speakers,
             total_speakers,
@@ -227,6 +283,7 @@ pub(super) fn process_speaker_internal(
     shared_mean_spl: Option<f64>,
     probe_arrival_overrides: Option<&HashMap<String, f64>>,
     frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
 ) -> Result<MixedModeResult> {
     let output_dir = output_dir.unwrap_or(Path::new("."));
 
@@ -234,40 +291,39 @@ pub(super) fn process_speaker_internal(
         SpeakerConfig::Single(source) => {
             let probe_arrival_ms =
                 probe_arrival_overrides.and_then(|m| m.get(channel_name).copied());
-            process_single_channel_with_frequency_samples(
-                channel_name,
-                source,
-                room_config,
-                sample_rate,
-                output_dir,
-                callback,
-                probe_arrival_ms,
-                shared_mean_spl,
-                frequency_samples,
-            )
+            match recovery {
+                Some(recovery) => crate::channel::process_single_channel_with_recovery(
+                    channel_name,
+                    source,
+                    room_config,
+                    sample_rate,
+                    output_dir,
+                    callback,
+                    probe_arrival_ms,
+                    shared_mean_spl,
+                    frequency_samples,
+                    recovery,
+                ),
+                None => process_single_channel_with_frequency_samples(
+                    channel_name,
+                    source,
+                    room_config,
+                    sample_rate,
+                    output_dir,
+                    callback,
+                    probe_arrival_ms,
+                    shared_mean_spl,
+                    frequency_samples,
+                ),
+            }
         }
-        SpeakerConfig::Group(group) => process_speaker_group_with_callback_and_frequency_samples(
-            channel_name,
-            group,
-            room_config,
-            sample_rate,
-            output_dir,
-            callback,
-            frequency_samples,
-        ),
-        SpeakerConfig::Topology(topology) => {
-            process_speaker_topology_with_callback_and_frequency_samples(
-                channel_name,
-                topology,
-                room_config,
-                sample_rate,
-                output_dir,
-                callback,
-                frequency_samples,
-            )
-        }
-        SpeakerConfig::MultiSub(group) => {
-            process_multisub_group_with_callback_and_frequency_samples(
+        SpeakerConfig::Group(group) => {
+            if recovery.is_some() {
+                return Err(roomeq_model::AutoeqError::InvalidConfiguration {
+                    message: "exact recovery is unsupported for grouped channels".into(),
+                });
+            }
+            with_empty_veto(process_speaker_group_with_callback_and_frequency_samples(
                 channel_name,
                 group,
                 room_config,
@@ -275,26 +331,74 @@ pub(super) fn process_speaker_internal(
                 output_dir,
                 callback,
                 frequency_samples,
+            ))
+        }
+        SpeakerConfig::Topology(topology) => {
+            if recovery.is_some() {
+                return Err(roomeq_model::AutoeqError::InvalidConfiguration {
+                    message: "exact recovery is unsupported for topology channels".into(),
+                });
+            }
+            with_empty_veto(
+                process_speaker_topology_with_callback_and_frequency_samples(
+                    channel_name,
+                    topology,
+                    room_config,
+                    sample_rate,
+                    output_dir,
+                    callback,
+                    frequency_samples,
+                ),
             )
         }
-        SpeakerConfig::Dba(config) => process_dba_with_callback_and_frequency_samples(
-            channel_name,
-            config,
-            room_config,
-            sample_rate,
-            output_dir,
-            callback,
-            frequency_samples,
-        ),
-        SpeakerConfig::Cardioid(config) => process_cardioid_with_callback_and_frequency_samples(
-            channel_name,
-            config,
-            room_config,
-            sample_rate,
-            output_dir,
-            callback,
-            frequency_samples,
-        ),
+        SpeakerConfig::MultiSub(group) => {
+            if recovery.is_some() {
+                return Err(roomeq_model::AutoeqError::InvalidConfiguration {
+                    message: "exact recovery is unsupported for multi-sub channels".into(),
+                });
+            }
+            with_empty_veto(process_multisub_group_with_callback_and_frequency_samples(
+                channel_name,
+                group,
+                room_config,
+                sample_rate,
+                output_dir,
+                callback,
+                frequency_samples,
+            ))
+        }
+        SpeakerConfig::Dba(config) => {
+            if recovery.is_some() {
+                return Err(roomeq_model::AutoeqError::InvalidConfiguration {
+                    message: "exact recovery is unsupported for DBA channels".into(),
+                });
+            }
+            with_empty_veto(process_dba_with_callback_and_frequency_samples(
+                channel_name,
+                config,
+                room_config,
+                sample_rate,
+                output_dir,
+                callback,
+                frequency_samples,
+            ))
+        }
+        SpeakerConfig::Cardioid(config) => {
+            if recovery.is_some() {
+                return Err(roomeq_model::AutoeqError::InvalidConfiguration {
+                    message: "exact recovery is unsupported for cardioid channels".into(),
+                });
+            }
+            with_empty_veto(process_cardioid_with_callback_and_frequency_samples(
+                channel_name,
+                config,
+                room_config,
+                sample_rate,
+                output_dir,
+                callback,
+                frequency_samples,
+            ))
+        }
         SpeakerConfig::SupportingSource(_group) => {
             Err(roomeq_model::AutoeqError::InvalidConfiguration {
                 message: format!(

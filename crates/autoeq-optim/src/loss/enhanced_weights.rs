@@ -177,6 +177,77 @@ impl PreparedWeightedLoss {
         self.evaluate_weighted(error, erb_mix, band_mix, |_, _| 1.0)
     }
 
+    /// Evaluate after removing the ERB-weighted broadband offset.
+    ///
+    /// Spectral-shape scoring uses this so a common level shift is not
+    /// counted as shape error; callers gate broadband level separately.
+    pub fn evaluate_centered(&self, error: &Array1<f64>, erb_mix: f64, band_mix: f64) -> f64 {
+        if self.indices.is_empty() || self.erb_total <= 0.0 {
+            return self.evaluate(error, erb_mix, band_mix);
+        }
+        let mean = self
+            .indices
+            .iter()
+            .enumerate()
+            .map(|(active_index, &source_index)| {
+                error[source_index] * self.erb_weights[active_index]
+            })
+            .sum::<f64>()
+            / self.erb_total;
+        if !mean.is_finite() {
+            return f64::INFINITY;
+        }
+        let centered: Vec<f64> = error.iter().map(|value| value - mean).collect();
+        self.evaluate(&Array1::from(centered), erb_mix, band_mix)
+    }
+
+    /// Evaluate the combined loss while de-weighting only negative residuals
+    /// at detected narrow nulls. In the RoomEQ convention a negative residual
+    /// is a measured dip that would require an input boost; positive residuals
+    /// (peaks/cuts) remain fully scored. The mask is validated against the
+    /// native frequency grid and evaluation stays allocation-free.
+    pub fn evaluate_with_dip_suppression(
+        &self,
+        error: &Array1<f64>,
+        erb_mix: f64,
+        band_mix: f64,
+        null_suppression: &[f64],
+    ) -> f64 {
+        if null_suppression.len() != error.len() {
+            return f64::INFINITY;
+        }
+        self.evaluate_weighted(error, erb_mix, band_mix, |active_index, value| {
+            if value < 0.0 {
+                null_suppression[self.indices[active_index]].clamp(0.0, 1.0)
+            } else {
+                1.0
+            }
+        })
+    }
+
+    /// Penalize positive correction at detected nulls using the same integration.
+    pub(crate) fn evaluate_null_boost(
+        &self,
+        correction: &Array1<f64>,
+        erb_mix: f64,
+        band_mix: f64,
+        null_suppression: &[f64],
+    ) -> f64 {
+        if null_suppression.len() != correction.len()
+            || null_suppression.iter().any(|value| !value.is_finite())
+            || correction.iter().any(|value| !value.is_finite())
+        {
+            return f64::INFINITY;
+        }
+        self.evaluate_weighted(correction, erb_mix, band_mix, |active_index, value| {
+            if value > 0.0 {
+                1.0 - null_suppression[self.indices[active_index]].clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        })
+    }
+
     /// Evaluate with sign-dependent, precomputed per-sample multipliers.
     pub fn evaluate_asymmetric(
         &self,

@@ -3,6 +3,35 @@ use roomeq_model::{ChannelDspChain, RoomConfig};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// Prove that playback contains no processing or structural routing.
+pub(super) fn is_plugin_free_identity(result: &RoomOptimizationResult) -> bool {
+    !result.channels.is_empty()
+        && result.metadata.bass_management.is_none()
+        && result.metadata.ctc.is_none()
+        && result
+            .channels
+            .values()
+            .all(|chain| chain.plugins.is_empty() && chain.drivers.is_none())
+        && result
+            .channel_results
+            .values()
+            .all(|channel| channel.biquads.is_empty() && channel.fir_coeffs.is_none())
+}
+
+/// Apply identity evidence requirements while preserving every numeric budget.
+pub(super) fn policy_for_delivered_graph(
+    result: &RoomOptimizationResult,
+    mut policy: roomeq_model::RuntimeAcceptancePolicy,
+) -> roomeq_model::RuntimeAcceptancePolicy {
+    if is_plugin_free_identity(result) {
+        // No temporal transfer needs measurement phase. Keep missing phase
+        // explicit in the evidence and retain the requested safety thresholds.
+        // Unknown plugins, drivers, routing, and global CTC never qualify.
+        policy.output_class = roomeq_model::RuntimeOutputClass::LowLatencyIir;
+    }
+    policy
+}
+
 /// Names of all supporting-source output channels (primaries and supports).
 ///
 /// These are not correction channels: the support chain is designed to
@@ -13,7 +42,7 @@ use std::path::Path;
 /// convolution that implements the feature. These chains are bounded by
 /// construction (precedence limits, gain clamp, no-cancellation floor), so
 /// safety/acceptance gates skip them.
-fn supporting_source_output_names(result: &RoomOptimizationResult) -> BTreeSet<String> {
+pub(super) fn supporting_source_output_names(result: &RoomOptimizationResult) -> BTreeSet<String> {
     result
         .metadata
         .supporting_source
@@ -45,6 +74,7 @@ pub(super) fn apply_final_correction_safety_gate(
 ) {
     use roomeq_engine::quality::CorrectionDecision;
 
+    let captured_latency = capture_branch_latency(result);
     let optimizer_confidence = refresh_optimizer_evidence(result);
     let optimizer_rejected =
         optimizer_confidence == Some(roomeq_engine::OptimizerConfidence::Unusable);
@@ -59,14 +89,18 @@ pub(super) fn apply_final_correction_safety_gate(
         );
         refresh_combined_scores(result);
         if !reverted.is_empty() {
-            result.metadata.stage_outcomes.push(roomeq_model::StageOutcome {
-                checks: Vec::new(),
-                stage: "optimizer_confidence_correction_reversion".to_string(),
-                status: roomeq_model::StageStatus::Degraded,
-                advisories: reverted.iter().map(|stage| {
-                    format!("optimizer_confidence_unusable_reverted_{stage}")
-                }).collect(),
-            });
+            result
+                .metadata
+                .stage_outcomes
+                .push(roomeq_model::StageOutcome {
+                    checks: Vec::new(),
+                    stage: "optimizer_confidence_correction_reversion".to_string(),
+                    status: roomeq_model::StageStatus::Degraded,
+                    advisories: reverted
+                        .iter()
+                        .map(|stage| format!("optimizer_confidence_unusable_reverted_{stage}"))
+                        .collect(),
+                });
         }
         reverted
     } else {
@@ -75,7 +109,14 @@ pub(super) fn apply_final_correction_safety_gate(
     let mut accepted_report = None;
     let mut score_basis_changed = false;
     let supporting_source_outputs = supporting_source_output_names(result);
-    for (name, channel) in &mut result.channel_results {
+    // Canonical order: per-channel stage pushes, revert lists, and the
+    // best-report tiebreak below must not depend on HashMap iteration.
+    let mut gate_names: Vec<String> = result.channel_results.keys().cloned().collect();
+    gate_names.sort();
+    for name in &gate_names {
+        let Some(channel) = result.channel_results.get_mut(name) else {
+            continue;
+        };
         if supporting_source_outputs.contains(name) {
             continue;
         }
@@ -93,10 +134,19 @@ pub(super) fn apply_final_correction_safety_gate(
             // A group with limited-band EQ carries an absolute broadband
             // target. Do not erase its bass/treble error by re-centering each
             // curve, or compare normalized flatness with target-relative loss.
-            if let Some(target) = result.channels.get(name).and_then(|chain| chain.target_curve.clone()) {
+            if let Some(target) = result
+                .channels
+                .get(name)
+                .and_then(|chain| chain.target_curve.clone())
+            {
                 let target: roomeq_model::Curve = target.into();
                 let score = |curve: &roomeq_model::Curve| {
-                    roomeq_engine::group::target_error_score(curve, &target, evaluation_band.0, evaluation_band.1)
+                    roomeq_engine::group::target_error_score(
+                        curve,
+                        &target,
+                        evaluation_band.0,
+                        evaluation_band.1,
+                    )
                 };
                 channel.pre_score = score(&channel.initial_curve);
                 channel.post_score = score(&channel.final_curve);
@@ -149,10 +199,21 @@ pub(super) fn apply_final_correction_safety_gate(
             }
             continue;
         }
+        let physical_target = result
+            .channels
+            .get(name)
+            .and_then(|chain| chain.physical_correction_target.as_ref());
+        let target_metadata_valid = physical_target.is_none_or(|target| target.validate().is_ok());
         let mut target = result
             .channels
             .get(name)
-            .and_then(|chain| chain.target_curve.clone())
+            .and_then(|chain| {
+                chain
+                    .physical_correction_target
+                    .as_ref()
+                    .map(|target| target.curve.clone())
+                    .or_else(|| chain.target_curve.clone())
+            })
             .map(roomeq_model::Curve::from)
             .unwrap_or_else(|| {
                 let mean = channel.initial_curve.spl.mean().unwrap_or(0.0);
@@ -161,51 +222,137 @@ pub(super) fn apply_final_correction_safety_gate(
                 target.phase = None;
                 target
             });
-        if result.channels.get(name).is_none_or(|chain| chain.target_curve.is_none()) {
+        if result.channels.get(name).is_none_or(|chain| {
+            chain.target_curve.is_none() && chain.physical_correction_target.is_none()
+        }) {
             align_target_level(&channel.initial_curve, &mut target);
         }
-        let acceptance_post = result.channels.get(name).and_then(|chain| {
-            correction_only_curve(
-                chain, &channel.initial_curve, &channel.final_curve, sample_rate, sidecar_dir,
-            )
-        }).unwrap_or_else(|| channel.final_curve.clone());
-        let mut report = result.channels.get(name).and_then(|chain| {
-            evaluate_passband_correction_acceptance(
-                chain,
-                &channel.initial_curve,
-                &acceptance_post,
-                &target,
-                smoothing_n,
-                excursion_aware_band(chain, evaluation_band),
-            )
-        });
+        let mut acceptance_initial = channel.initial_curve.clone();
+        let mut acceptance_post = result
+            .channels
+            .get(name)
+            .and_then(|chain| {
+                correction_only_curve(
+                    chain,
+                    &channel.initial_curve,
+                    &channel.final_curve,
+                    sample_rate,
+                    sidecar_dir,
+                )
+            })
+            .unwrap_or_else(|| channel.final_curve.clone());
+        if let Some(physical) = physical_target.filter(|_| target_metadata_valid) {
+            // Restore exactly the initial calibrated measurement plane after
+            // removing structural routing; correction trims remain correction.
+            acceptance_initial
+                .spl
+                .mapv_inplace(|level| level + physical.measurement_alignment_gain_db);
+            acceptance_post
+                .spl
+                .mapv_inplace(|level| level + physical.measurement_alignment_gain_db);
+        }
+        let mut report = result
+            .channels
+            .get(name)
+            .filter(|_| target_metadata_valid)
+            .and_then(|chain| {
+                evaluate_passband_correction_acceptance(
+                    chain,
+                    &acceptance_initial,
+                    &acceptance_post,
+                    &target,
+                    smoothing_n,
+                    excursion_aware_band(chain, evaluation_band),
+                )
+            });
         // Routed published scores can include intentional crossover rolloff
         // only on the post side. Use the same correction-only basis and band
         // as the acceptance replay for this veto, not that asymmetric pair.
-        let topology_band = result.channels.get(name).and_then(|chain| {
-            route_passband(chain, &channel.initial_curve, excursion_aware_band(chain, evaluation_band))
-        }).unwrap_or(evaluation_band);
+        let topology_band = result
+            .channels
+            .get(name)
+            .and_then(|chain| {
+                route_passband(
+                    chain,
+                    &acceptance_initial,
+                    excursion_aware_band(chain, evaluation_band),
+                )
+            })
+            .unwrap_or(evaluation_band);
         let (topology_pre, topology_post) = if result.channels.get(name).is_some_and(|chain| {
-            chain.plugins.iter().any(|plugin| plugin.plugin_type == "crossover")
+            chain
+                .plugins
+                .iter()
+                .any(|plugin| plugin.plugin_type == "crossover")
                 || is_graph_routed_bass_output(chain)
         }) {
             // Crop before resampling, just as the target gate does. Passing
             // bounds alone still lets interpolation pull stopband samples
             // into an in-band edge and change the supposedly same-band veto.
-            result.channels.get(name).and_then(|chain| {
-                passband_curves(chain, &[&channel.initial_curve, &acceptance_post],
-                    excursion_aware_band(chain, evaluation_band))
-            }).map(|curves| (
-                roomeq_engine::topology::compute_flat_loss(&curves[0], topology_band.0, topology_band.1),
-                roomeq_engine::topology::compute_flat_loss(&curves[1], topology_band.0, topology_band.1),
-            )).unwrap_or((f64::NAN, f64::NAN))
+            result
+                .channels
+                .get(name)
+                .and_then(|chain| {
+                    passband_curves(
+                        chain,
+                        &[&acceptance_initial, &acceptance_post],
+                        excursion_aware_band(chain, evaluation_band),
+                    )
+                })
+                .map(|curves| {
+                    // A common Post-EQ is designed for the routed sum around
+                    // crossover. Above that region, protect the configured
+                    // main target rather than penalizing its intended slope.
+                    if let Some(target) = result
+                        .channels
+                        .get(name)
+                        .filter(|chain| has_routed_post_eq(chain))
+                        .and_then(|chain| {
+                            chain
+                                .physical_correction_target
+                                .as_ref()
+                                .map(|target| &target.curve)
+                                .or(chain.target_curve.as_ref())
+                        })
+                    {
+                        let target: roomeq_model::Curve = target.clone().into();
+                        return (
+                            roomeq_engine::group::target_error_score(
+                                &curves[0],
+                                &target,
+                                topology_band.0,
+                                topology_band.1,
+                            ),
+                            roomeq_engine::group::target_error_score(
+                                &curves[1],
+                                &target,
+                                topology_band.0,
+                                topology_band.1,
+                            ),
+                        );
+                    }
+                    (
+                        roomeq_engine::topology::compute_flat_loss(
+                            &curves[0],
+                            topology_band.0,
+                            topology_band.1,
+                        ),
+                        roomeq_engine::topology::compute_flat_loss(
+                            &curves[1],
+                            topology_band.0,
+                            topology_band.1,
+                        ),
+                    )
+                })
+                .unwrap_or((f64::NAN, f64::NAN))
         } else {
             (channel.pre_score, channel.post_score)
         };
         // Publish the same correction-only comparison used by this gate.
         // Otherwise downstream seed reliability compares raw pre-EQ shape
         // with post-EQ crossover rolloff, a different physical quantity.
-        if topology_pre.is_finite() && topology_post.is_finite()
+        if topology_pre.is_finite()
+            && topology_post.is_finite()
             && (channel.pre_score != topology_pre || channel.post_score != topology_post)
         {
             channel.pre_score = topology_pre;
@@ -213,11 +360,10 @@ pub(super) fn apply_final_correction_safety_gate(
             score_basis_changed = true;
         }
         let topology_epsilon = (topology_pre.abs() * 1e-4).max(1e-6);
-        let topology_improved = topology_pre.is_finite()
-            && topology_post < topology_pre - topology_epsilon;
+        let topology_improved =
+            topology_pre.is_finite() && topology_post < topology_pre - topology_epsilon;
         let topology_regressed = topology_pre.is_finite()
-            && (!topology_post.is_finite()
-                || topology_post > topology_pre + topology_epsilon);
+            && (!topology_post.is_finite() || topology_post > topology_pre + topology_epsilon);
         let regressed = report.as_ref().is_none_or(|report| {
             // FIR windowing and response evaluation can leave sub-millidecibel
             // residuals on an otherwise exactly flat fixture. Do not classify
@@ -292,8 +438,12 @@ pub(super) fn apply_final_correction_safety_gate(
             kind: roomeq_model::StageCheckKind::Quality,
             passed: !topology_regressed,
             observed: topology_post.is_finite().then_some(topology_post),
-            limit: topology_pre.is_finite().then_some(topology_pre + topology_epsilon),
-            diagnostic: Some(format!("pre_score={topology_pre}; band_hz={topology_band:?}; basis=safety_gate_topology_comparison")),
+            limit: topology_pre
+                .is_finite()
+                .then_some(topology_pre + topology_epsilon),
+            diagnostic: Some(format!(
+                "pre_score={topology_pre}; band_hz={topology_band:?}; basis=safety_gate_topology_comparison"
+            )),
         }];
         if let Some(candidate) = &report {
             let before = candidate.metrics.pre_target_weighted_rms_db;
@@ -305,15 +455,27 @@ pub(super) fn apply_final_correction_safety_gate(
                 passed: after.is_finite() && after <= limit,
                 observed: after.is_finite().then_some(after),
                 limit: limit.is_finite().then_some(limit),
-                diagnostic: Some(format!("pre_target_weighted_rms_db={before}; max_abs_correction_db={}", candidate.metrics.max_abs_correction_db)),
+                diagnostic: Some(format!(
+                    "pre_target_weighted_rms_db={before}; max_abs_correction_db={}",
+                    candidate.metrics.max_abs_correction_db
+                )),
             });
         }
-        result.metadata.stage_outcomes.push(roomeq_model::StageOutcome {
-            stage: format!("final_correction_candidate_assessment_{name}"),
-            status: if regressed { roomeq_model::StageStatus::Degraded } else { roomeq_model::StageStatus::Applied },
-            checks: candidate_checks,
-            advisories: vec![format!("candidate_regressed={regressed}; evidence_captured_before_reversion")],
-        });
+        result
+            .metadata
+            .stage_outcomes
+            .push(roomeq_model::StageOutcome {
+                stage: format!("final_correction_candidate_assessment_{name}"),
+                status: if regressed {
+                    roomeq_model::StageStatus::Degraded
+                } else {
+                    roomeq_model::StageStatus::Applied
+                },
+                checks: candidate_checks,
+                advisories: vec![format!(
+                    "candidate_regressed={regressed}; evidence_captured_before_reversion"
+                )],
+            });
         let has_revertible_correction_stage = result
             .channels
             .get(name)
@@ -381,9 +543,17 @@ pub(super) fn apply_final_correction_safety_gate(
                 if stages.contains(&CorrectionStage::Peq) {
                     channel.biquads.clear();
                 }
-                if stages.contains(&CorrectionStage::Fir) {
+                // The hybrid crossover stage carries the channel FIR, so it
+                // must release the coefficients like a plain FIR revert:
+                // orphaned coefficients with no convolution read as FIR
+                // evidence that can never resolve, failing Hybrid
+                // temporal-evidence policy downstream.
+                if stages.contains(&CorrectionStage::Fir)
+                    || stages.contains(&CorrectionStage::Hybrid)
+                {
                     channel.fir_coeffs = None;
                 }
+                release_masking_without_fir_bulk(&mut chain);
                 sync_chain_reported_curve(&mut chain, &channel.final_curve);
                 result.channels.insert(name.clone(), chain);
                 let stage_names: Vec<_> = stages
@@ -428,6 +598,7 @@ pub(super) fn apply_final_correction_safety_gate(
                     channel.post_score = channel.pre_score;
                     channel.biquads.clear();
                     channel.fir_coeffs = None;
+                    release_masking_without_fir_bulk(&mut chain);
                     chain.final_curve = Some((&curve).into());
                     chain.eq_response = None;
                     result.channels.insert(name.clone(), chain);
@@ -468,8 +639,12 @@ pub(super) fn apply_final_correction_safety_gate(
 
     if score_basis_changed {
         let count = result.channel_results.len().max(1) as f64;
-        result.combined_pre_score = result.channel_results.values()
-            .map(|channel| channel.pre_score).sum::<f64>() / count;
+        result.combined_pre_score = result
+            .channel_results
+            .values()
+            .map(|channel| channel.pre_score)
+            .sum::<f64>()
+            / count;
         result.metadata.pre_score = result.combined_pre_score;
     }
     if !reverted.is_empty() || score_basis_changed {
@@ -482,6 +657,7 @@ pub(super) fn apply_final_correction_safety_gate(
             / count;
         result.metadata.post_score = result.combined_post_score;
     }
+    let had_acceptance_report = accepted_report.is_some();
     if let Some(mut report) = accepted_report {
         if optimizer_rejected || !reverted.is_empty() {
             report.accepted = false;
@@ -497,7 +673,7 @@ pub(super) fn apply_final_correction_safety_gate(
             } else {
                 "audibility_regression_reverted".to_string()
             });
-            report.reverted_stages = reverted;
+            report.reverted_stages = reverted.clone();
         }
         if let Some((mut quality, mut realization, policy)) = runtime_acceptance_evidence(
             result,
@@ -543,7 +719,7 @@ pub(super) fn apply_final_correction_safety_gate(
                 quality.training.worst_position_improvement_db,
                 quality.max_boost_db,
                 quality.induced_group_delay_rms_ms,
-                quality.temporal.pre_ringing_energy_db,
+                quality.temporal.pre_ringing_audible_db,
                 quality.temporal.latency_ms,
                 realization.max_abs_error_db,
                 realization.failed_channels,
@@ -559,6 +735,10 @@ pub(super) fn apply_final_correction_safety_gate(
                 is_runtime_quality_violation(violation)
                     && violation != "audibility_regression_reverted"
             }) {
+                // The report below is refreshed to describe reverted playback.
+                // Preserve the refusal's original measurements before rollback.
+                let refusal_checks =
+                    roomeq_engine::quality::runtime_acceptance_failure_checks(&report);
                 let runtime_reverted = revert_all_correction_stages(
                     result,
                     sample_rate,
@@ -584,12 +764,15 @@ pub(super) fn apply_final_correction_safety_gate(
                         .metadata
                         .stage_outcomes
                         .push(roomeq_model::StageOutcome {
-                            checks: Vec::new(),
+                            checks: refusal_checks,
                             stage: "final_runtime_acceptance".to_string(),
                             status: roomeq_model::StageStatus::Degraded,
                             advisories: runtime_reverted
                                 .iter()
                                 .map(|stage| format!("runtime_policy_reverted_{stage}"))
+                                .chain(report.violations.iter().map(|violation| {
+                                    format!("runtime_policy_violation:{violation}")
+                                }))
                                 .collect(),
                         });
                     refresh_combined_scores(result);
@@ -610,7 +793,37 @@ pub(super) fn apply_final_correction_safety_gate(
         }
         result.metadata.correction_acceptance = Some(report);
     }
+    if !had_acceptance_report && (optimizer_rejected || !reverted.is_empty()) {
+        // The scorecard may already have been attached by the outer workflow,
+        // while the per-channel passband evaluator had no report to promote.
+        // Preserve the safety decision instead of leaving an `Accepted`
+        // report next to a reverted chain.
+        if let Some(report) = result.metadata.correction_acceptance.as_mut() {
+            report.accepted = false;
+            report.decision = if reverted.len() == result.channel_results.len()
+                && reverted.iter().all(|stage| !stage.contains(':'))
+            {
+                CorrectionDecision::IdentityFallback
+            } else {
+                CorrectionDecision::RevertedStage
+            };
+            report.violations.push(if optimizer_rejected {
+                "optimizer_confidence_unusable".to_string()
+            } else {
+                "audibility_regression_reverted".to_string()
+            });
+            report.reverted_stages.extend(reverted);
+            report.violations.sort();
+            report.violations.dedup();
+            report.reverted_stages.sort();
+            report.reverted_stages.dedup();
+        }
+    }
+    reinstall_orphaned_latency_alignment(result, &captured_latency);
     reconcile_group_delay_summary(result);
+    if let Some(report) = result.metadata.correction_acceptance.as_mut() {
+        report.refresh_outcome();
+    }
 }
 
 fn reconcile_group_delay_summary(result: &mut RoomOptimizationResult) {
@@ -705,7 +918,8 @@ fn reconcile_group_delay_summary(result: &mut RoomOptimizationResult) {
 
 const OPTIMIZER_ACCEPTANCE_POLICY_VERSION: &str = "1.0.0";
 
-fn refresh_optimizer_evidence(
+/// Refresh optimizer evidence for the currently retained correction kernels.
+pub(super) fn refresh_optimizer_evidence(
     result: &mut RoomOptimizationResult,
 ) -> Option<roomeq_engine::OptimizerConfidence> {
     use roomeq_engine::OptimizerConfidence;
@@ -717,6 +931,25 @@ fn refresh_optimizer_evidence(
         .filter(|(_, channel)| !channel.optimizer_evidence.is_empty())
         .map(|(name, channel)| (name.clone(), channel.optimizer_evidence.clone()))
         .collect();
+    let veto_by_channel: std::collections::BTreeMap<_, _> = result
+        .channel_results
+        .iter()
+        .filter(|(_, channel)| !channel.audibility_veto.is_empty())
+        .map(|(name, channel)| (name.clone(), channel.audibility_veto.clone()))
+        .collect();
+    result.metadata.audibility_veto = (!veto_by_channel.is_empty()).then_some(veto_by_channel);
+    let adjudication_by_channel: std::collections::BTreeMap<_, _> = result
+        .channel_results
+        .iter()
+        .filter_map(|(name, channel)| {
+            channel
+                .veto_adjudication
+                .clone()
+                .map(|report| (name.clone(), report))
+        })
+        .collect();
+    result.metadata.veto_adjudication =
+        (!adjudication_by_channel.is_empty()).then_some(adjudication_by_channel);
     result
         .metadata
         .stage_outcomes
@@ -739,13 +972,14 @@ fn refresh_optimizer_evidence(
     // invalidate a directly generated PhaseLinear FIR.
     let has_selected_output = !selected.is_empty();
     let confidence = if selected
-            .iter()
-            .any(|(_, run)| run.confidence == OptimizerConfidence::Unusable)
+        .iter()
+        .any(|(_, run)| run.confidence == OptimizerConfidence::Unusable)
     {
         OptimizerConfidence::Unusable
-    } else if !has_selected_output || selected
-        .iter()
-        .any(|(_, run)| run.confidence == OptimizerConfidence::Low)
+    } else if !has_selected_output
+        || selected
+            .iter()
+            .any(|(_, run)| run.confidence == OptimizerConfidence::Low)
     {
         OptimizerConfidence::Low
     } else {
@@ -820,23 +1054,42 @@ fn runtime_acceptance_evidence(
         .cloned()
         .collect();
     names.sort();
+    if names.is_empty() {
+        return None;
+    }
     let mut training_pre = Vec::with_capacity(names.len());
     let mut training_post = Vec::with_capacity(names.len());
     let mut training_targets = Vec::with_capacity(names.len());
     for name in &names {
         let channel = &result.channel_results[name];
-        let target = result
+        let physical_target = result
             .channels
             .get(name)
-            .and_then(|chain| chain.target_curve.clone())
-            .map(roomeq_model::Curve::from)
-            .map(|mut target| {
-                // Target curves are serialized at the optimizer's display
-                // level. Align their absolute level to the measured channel
-                // before using them for runtime residual metrics, matching
-                // the per-channel acceptance gate above.
-                align_target_level(&channel.initial_curve, &mut target);
+            .and_then(|chain| chain.physical_correction_target.as_ref());
+        let target = physical_target
+            .map(|physical| {
+                // Runtime curves retain the raw measurement plane. Translate the
+                // calibrated target into that same plane without fitting its level.
+                let mut target = roomeq_model::Curve::from(physical.curve.clone());
                 target
+                    .spl
+                    .mapv_inplace(|level| level - physical.measurement_alignment_gain_db);
+                target
+            })
+            .or_else(|| {
+                result
+                    .channels
+                    .get(name)
+                    .and_then(|chain| chain.target_curve.clone())
+                    .map(roomeq_model::Curve::from)
+                    .map(|mut target| {
+                        // Target curves are serialized at the optimizer's display
+                        // level. Align their absolute level to the measured channel
+                        // before using them for runtime residual metrics, matching
+                        // the per-channel acceptance gate above.
+                        align_target_level(&channel.initial_curve, &mut target);
+                        target
+                    })
             });
         let post = result
             .channels
@@ -907,7 +1160,7 @@ fn runtime_acceptance_evidence(
             sample_rate,
             processing_mode.clone(),
         );
-        let scorecard = roomeq_engine::quality::evaluate_acoustic_quality(
+        let mut scorecard = roomeq_engine::quality::evaluate_acoustic_quality(
             std::slice::from_ref(pre),
             std::slice::from_ref(post),
             &[],
@@ -917,11 +1170,17 @@ fn runtime_acceptance_evidence(
                 min_freq_hz: pre.freq[0].max(post.freq[0]),
                 max_freq_hz: pre.freq.last().copied()?.min(post.freq.last().copied()?),
                 schroeder_hz: None,
-                normalize_level: true,
+                normalize_level: result
+                    .channels
+                    .get(name)
+                    .is_none_or(|chain| chain.physical_correction_target.is_none()),
             },
             channel_temporal,
         )
         .ok()?;
+        for reference in &mut scorecard.training.frozen_grid_residual {
+            reference.logical_input = Some(name.clone());
+        }
         log::debug!(
             "Runtime acoustic quality '{}': RMS {:.4} -> {:.4} dB, p95 {:.4} dB, worst {:.4} dB",
             name,
@@ -961,23 +1220,20 @@ fn runtime_acceptance_evidence(
                 })
         })
     });
-    let output_class = if matches!(
-        processing_mode,
-        roomeq_model::ProcessingMode::Hybrid | roomeq_model::ProcessingMode::MixedPhase
-    ) {
-        roomeq_engine::quality::RuntimeOutputClass::Hybrid
-    } else if processing_mode == roomeq_model::ProcessingMode::PhaseLinear {
-        roomeq_engine::quality::RuntimeOutputClass::Fir
-    } else if !has_fir {
+    let mut output_class = processing_mode.runtime_output_class();
+    if matches!(
+        output_class,
         roomeq_engine::quality::RuntimeOutputClass::LowLatencyIir
-    } else if has_partial_band_fir {
-        roomeq_engine::quality::RuntimeOutputClass::Hybrid
-    } else {
-        // Full-band phase-linear FIR may be accompanied by PEQ/crossover
-        // biquads. Those do not turn its latency contract into the stricter
-        // partial-band hybrid contract.
-        roomeq_engine::quality::RuntimeOutputClass::Fir
-    };
+    ) && has_fir
+    {
+        output_class = if has_partial_band_fir {
+            roomeq_engine::quality::RuntimeOutputClass::Hybrid
+        } else {
+            // A low-latency request that actually contains a full-band FIR
+            // must be judged by the realized graph, not by its request label.
+            roomeq_engine::quality::RuntimeOutputClass::Fir
+        };
+    }
     let mut policy =
         roomeq_engine::quality::RuntimeAcceptancePolicy::for_output_class(output_class);
     if let Some(budget_ms) = group_delay_budget_ms {
@@ -989,7 +1245,11 @@ fn runtime_acceptance_evidence(
         policy.max_induced_group_delay_rms_ms =
             policy.max_induced_group_delay_rms_ms.max(budget_ms);
     }
-    Some((quality, realization, policy))
+    Some((
+        quality,
+        realization,
+        policy_for_delivered_graph(result, policy),
+    ))
 }
 
 pub(super) fn aggregate_runtime_quality(
@@ -1017,11 +1277,23 @@ pub(super) fn aggregate_runtime_quality(
         )
     };
     let mut aggregate = first.clone();
+    aggregate.training.frozen_grid_residual.clear();
+    let mut curve_offset = 0;
+    for score in scorecards {
+        for mut reference in score.training.frozen_grid_residual.iter().cloned() {
+            reference.curve_index += curve_offset;
+            aggregate.training.frozen_grid_residual.push(reference);
+        }
+        curve_offset += score.training.curve_count;
+    }
     aggregate.useful_output = scorecards
         .iter()
         .flat_map(|score| score.useful_output.iter().cloned())
         .collect();
-    aggregate.training.curve_count = scorecards.len();
+    aggregate.training.curve_count = scorecards
+        .iter()
+        .map(|score| score.training.curve_count)
+        .sum();
     aggregate.training.pre_weighted_rms_median_db =
         metric(|metrics| metrics.pre_weighted_rms_median_db);
     aggregate.training.post_weighted_rms_median_db =
@@ -1061,7 +1333,14 @@ pub(super) fn aggregate_runtime_quality(
         .max_by(f64::total_cmp);
     aggregate.temporal = temporal;
     aggregate.evaluated_band_hz = [min_freq_hz, max_freq_hz];
-    aggregate.measurement_overlap_hz = [min_freq_hz, max_freq_hz];
+    aggregate.measurement_overlap_hz =
+        scorecards
+            .iter()
+            .try_fold([0.0_f64, f64::INFINITY], |[low, high], scorecard| {
+                let band = scorecard.measurement_overlap_hz?;
+                let overlap = [low.max(band[0]), high.min(band[1])];
+                (overlap[0] < overlap[1]).then_some(overlap)
+            });
     aggregate.finite = scorecards.iter().all(|scorecard| scorecard.finite);
     Some(aggregate)
 }
@@ -1193,22 +1472,19 @@ fn limit_runtime_combined_boost(
             continue;
         }
         let initial = result.channel_results[&name].initial_curve.clone();
-        let realized = match apply_logical_channel_chain(
-            &candidate_chain,
-            &initial,
-            sample_rate,
-            sidecar_dir,
-        ) {
-            Ok(realized) => realized,
-            Err(error) => {
-                log::warn!(
-                    "Could not reconstruct '{}' after combined-boost limiting: {}",
-                    name,
-                    error
-                );
-                continue;
-            }
-        };
+        let realized =
+            match apply_logical_channel_chain(&candidate_chain, &initial, sample_rate, sidecar_dir)
+            {
+                Ok(realized) => realized,
+                Err(error) => {
+                    log::warn!(
+                        "Could not reconstruct '{}' after combined-boost limiting: {}",
+                        name,
+                        error
+                    );
+                    continue;
+                }
+            };
         let channel = result.channel_results.get_mut(&name).unwrap();
         channel.final_curve = realized.clone();
         // These filters feed the later IR report. Keep their coefficient state
@@ -1235,7 +1511,12 @@ fn limit_runtime_combined_boost(
         candidate_chain.pre_ir = None;
         candidate_chain.post_ir = None;
         candidate_chain.direct_early_late_correction = None;
-        for run in &mut result.channel_results.get_mut(&name).unwrap().optimizer_evidence {
+        for run in &mut result
+            .channel_results
+            .get_mut(&name)
+            .unwrap()
+            .optimizer_evidence
+        {
             run.selected_for_output = false;
         }
         result.metadata.stage_outcomes.push(roomeq_model::StageOutcome {
@@ -1307,7 +1588,7 @@ fn is_runtime_quality_violation(violation: &str) -> bool {
     )
 }
 
-fn revert_all_correction_stages(
+pub(super) fn revert_all_correction_stages(
     result: &mut RoomOptimizationResult,
     sample_rate: f64,
     smoothing_n: usize,
@@ -1317,6 +1598,7 @@ fn revert_all_correction_stages(
 ) -> Vec<String> {
     let supporting_source_outputs = supporting_source_output_names(result);
     let names: Vec<_> = result.channel_results.keys().cloned().collect();
+    let captured_latency = capture_branch_latency(result);
     let mut reverted = Vec::new();
     for name in names {
         if supporting_source_outputs.contains(&name) {
@@ -1383,6 +1665,7 @@ fn revert_all_correction_stages(
                 .map(|stage| format!("{name}:{}", stage.as_str())),
         );
     }
+    reinstall_orphaned_latency_alignment(result, &captured_latency);
     reverted
 }
 
@@ -1397,7 +1680,7 @@ fn refresh_combined_scores(result: &mut RoomOptimizationResult) {
     result.metadata.post_score = result.combined_post_score;
 }
 
-fn runtime_temporal_quality_evidence(
+pub(super) fn runtime_temporal_quality_evidence(
     result: &RoomOptimizationResult,
     names: &[String],
     pre: &[roomeq_model::Curve],
@@ -1442,11 +1725,37 @@ fn runtime_temporal_quality_evidence(
             }
         })
         .collect();
-    roomeq_engine::quality::derive_temporal_quality_evidence(&channels, pre, post, sample_rate)
+    let mut evidence =
+        roomeq_engine::quality::derive_temporal_quality_evidence(&channels, pre, post, sample_rate);
+    let unresolved_fir = names.iter().any(|name| {
+        result.channels.get(name).is_some_and(|chain| {
+            chain.fir_temporal_masking.is_none()
+                && chain
+                    .plugins
+                    .iter()
+                    .chain(
+                        chain
+                            .drivers
+                            .iter()
+                            .flatten()
+                            .flat_map(|driver| &driver.plugins),
+                    )
+                    .any(|plugin| plugin.plugin_type == "convolution")
+        })
+    });
+    if unresolved_fir {
+        // Serialized convolution establishes that FIR evidence is required,
+        // even when missing resources also removed the tap-count metadata.
+        // A maximum over the remaining channels is not complete evidence.
+        evidence.temporal_evidence_available = false;
+        evidence.pre_ringing_audible_db = None;
+        evidence.latency_ms = None;
+    }
+    evidence
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum CorrectionStage {
+pub(super) enum CorrectionStage {
     Peq,
     Mso,
     GroupDelay,
@@ -1455,7 +1764,7 @@ enum CorrectionStage {
 }
 
 impl CorrectionStage {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Peq => "peq",
             Self::Mso => "mso",
@@ -1474,7 +1783,7 @@ fn correction_free_chain(chain: &ChannelDspChain) -> ChannelDspChain {
     baseline
 }
 
-fn apply_logical_channel_chain(
+pub(super) fn apply_logical_channel_chain(
     chain: &ChannelDspChain,
     curve: &roomeq_model::Curve,
     sample_rate: f64,
@@ -1533,6 +1842,22 @@ fn has_route_owned_bass_low_pass(chain: &ChannelDspChain) -> bool {
     })
 }
 
+fn has_routed_post_eq(chain: &ChannelDspChain) -> bool {
+    chain.plugins.iter().any(|plugin| {
+        plugin.plugin_type == "eq"
+            && plugin
+                .parameters
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                == Some("post_eq")
+            && plugin
+                .parameters
+                .get("room_eq_stage")
+                .and_then(serde_json::Value::as_str)
+                == Some("pre_route")
+    })
+}
+
 fn route_passband(
     chain: &ChannelDspChain,
     curve: &roomeq_model::Curve,
@@ -1570,7 +1895,19 @@ fn route_passband(
             .get("output")
             .and_then(serde_json::Value::as_str)
         {
-            Some("high") => low = low.max(frequency + 20.0),
+            Some("high") => {
+                // The routed sum owns the half-to-twice-crossover window.
+                // Common Post-EQ is screened there before insertion and by
+                // final native-seat replay. Its isolated main gate protects
+                // the response above that window; ordinary main correction
+                // retains the existing passband.
+                let floor = if has_routed_post_eq(chain) {
+                    2.0 * frequency
+                } else {
+                    frequency + 20.0
+                };
+                low = low.max(floor);
+            }
             Some("low") => high = high.min(frequency),
             _ => {}
         }
@@ -1604,6 +1941,7 @@ fn crop_curve_to_band(
         min_phase: curve.min_phase.as_ref().map(select),
         excess_phase: curve.excess_phase.as_ref().map(select),
         excess_delay_ms: curve.excess_delay_ms,
+        resolution: Some(curve.retained_resolution()),
     })
 }
 
@@ -1628,25 +1966,57 @@ fn evaluate_passband_correction_acceptance(
     smoothing_n: usize,
     evaluation_band: (f64, f64),
 ) -> Option<roomeq_engine::quality::CorrectionAcceptanceReport> {
-    let (low, high) = route_passband(chain, initial, evaluation_band)?;
+    let band = route_passband(chain, initial, evaluation_band)?;
+    evaluate_target_passband_correction(
+        initial,
+        post,
+        target,
+        smoothing_n,
+        band,
+        chain.target_curve.is_none() && chain.physical_correction_target.is_none(),
+    )
+}
+
+/// Compare pressure curves and a preserved target in one explicit reference
+/// plane. Shared with final acceptance: crop before smoothing, require target
+/// support, and keep calibrated target shape and absolute level unchanged.
+pub(crate) fn evaluate_preserved_target_passband(
+    before: &roomeq_model::Curve,
+    after: &roomeq_model::Curve,
+    target: &roomeq_model::Curve,
+    smoothing_n: usize,
+    band: (f64, f64),
+) -> Option<roomeq_engine::quality::CorrectionAcceptanceReport> {
+    evaluate_target_passband_correction(before, after, target, smoothing_n, band, false)
+}
+
+fn evaluate_target_passband_correction(
+    initial: &roomeq_model::Curve,
+    post: &roomeq_model::Curve,
+    target: &roomeq_model::Curve,
+    smoothing_n: usize,
+    (low, high): (f64, f64),
+    align_inferred_target: bool,
+) -> Option<roomeq_engine::quality::CorrectionAcceptanceReport> {
     let target_low = *target.freq.first()?;
     let target_high = *target.freq.last()?;
     // Native target grids need not match the routed measurement grid. Align
     // explicitly, but do not turn unsupported target frequencies into evidence
     // by extrapolating or silently narrowing the requested passband.
-    if target_low > low + low.abs() * 1e-9
-        || target_high < high - high.abs() * 1e-9
-    {
+    if target_low > low + low.abs() * 1e-9 || target_high < high - high.abs() * 1e-9 {
         return None;
     }
     let aligned_target = autoeq_core::interpolate_log_space(&initial.freq, target);
-    let mut passband = passband_curves(chain, &[initial, post, &aligned_target], evaluation_band)?;
+    let mut passband = [initial, post, &aligned_target]
+        .into_iter()
+        .map(|curve| crop_curve_to_band(curve, low, high))
+        .collect::<Option<Vec<_>>>()?;
     // Bass-managed mains and LFE are evaluated only inside their routed
     // passbands. Re-level the target after cropping so a sloped target is not
     // anchored by out-of-band frequencies that the channel never reproduces.
     // Explicit targets are the calibrated design reference, not merely a
     // shape to normalize again. Only inferred legacy targets need alignment.
-    if chain.target_curve.is_none() {
+    if align_inferred_target {
         let (reference, target) = passband.split_at_mut(2);
         align_target_level(&reference[0], &mut target[0]);
     }
@@ -1770,6 +2140,11 @@ pub(in super::super) fn remove_routing_transfer(
     }
 
     let mut corrected = realized.clone();
+    corrected.resolution = autoeq_core::resolution::MeasurementResolution::combine([
+        initial,
+        routed_baseline,
+        realized,
+    ]);
     corrected.spl = &realized.spl - &routed_baseline.spl + &initial.spl;
     corrected.phase = match (
         initial.phase.as_ref(),
@@ -1868,7 +2243,7 @@ fn sync_chain_reported_curve(chain: &mut ChannelDspChain, final_curve: &roomeq_m
     chain.final_curve = Some(final_data);
 }
 
-fn correction_stages(chain: &ChannelDspChain) -> BTreeSet<CorrectionStage> {
+pub(super) fn correction_stages(chain: &ChannelDspChain) -> BTreeSet<CorrectionStage> {
     let mut stages: BTreeSet<_> = chain.plugins.iter().filter_map(correction_stage).collect();
     // Routed driver controls are already accepted by the array engine and
     // crossover optimizer. A common-curve EQ check cannot judge or remove them
@@ -1888,7 +2263,129 @@ fn correction_stages(chain: &ChannelDspChain) -> BTreeSet<CorrectionStage> {
     stages
 }
 
+/// Record actual selected PEQ stages before the final workflow mutation pass.
+pub(super) fn record_peq_candidates(result: &mut RoomOptimizationResult, config: &RoomConfig) {
+    use roomeq_model::decision_ledger::{
+        DECISION_LEDGER_VERSION, DecisionAction, DecisionRecord, DecisionStage, DecisionStatus,
+        ObservedQuantity,
+    };
+    let supporting_outputs = supporting_source_output_names(result);
+    let mut names: Vec<_> = result.channels.keys().cloned().collect();
+    names.sort();
+    for name in names {
+        if supporting_outputs.contains(&name)
+            || !correction_stages(&result.channels[&name]).contains(&CorrectionStage::Peq)
+        {
+            continue;
+        }
+        let decision_id = format!("candidate-peq-{name}");
+        if result
+            .metadata
+            .provisional_decisions
+            .iter()
+            .any(|record| record.decision_id == decision_id)
+        {
+            continue;
+        }
+        let gate = result
+            .metadata
+            .operation_gates
+            .as_ref()
+            .and_then(|gates| gates.iter().find(|gate| gate.channel == name));
+        let mut measurement_refs = Vec::new();
+        let mut seat_refs = BTreeSet::new();
+        let mut evidence_refs = BTreeSet::new();
+        if let Some(gate) = gate {
+            measurement_refs.push(gate.measurement_id.clone());
+            for record in &gate.records {
+                if record.operation
+                    == roomeq_model::eligibility::CorrectionOperation::MagnitudeCorrection
+                {
+                    seat_refs.extend(record.seat_ids.iter().cloned());
+                    evidence_refs.insert(record.record_id.clone());
+                    evidence_refs.extend(record.evidence_refs.iter().cloned());
+                }
+            }
+        }
+        let mut observed = Vec::new();
+        if let Some(channel) = result.channel_results.get(&name) {
+            for (quantity, value) in [
+                ("candidate_pre_score", channel.pre_score),
+                ("candidate_post_score", channel.post_score),
+            ] {
+                if value.is_finite() {
+                    observed.push(ObservedQuantity {
+                        name: quantity.to_owned(),
+                        value,
+                        unit: "objective_units".to_owned(),
+                    });
+                }
+            }
+        }
+        // Requested optimizer limits are not an observed affected interval.
+        let limits = [
+            ("requested_min_frequency", config.optimizer.min_freq),
+            ("requested_max_frequency", config.optimizer.max_freq),
+        ]
+        .into_iter()
+        .filter(|(_, value)| value.is_finite() && *value > 0.0)
+        .map(|(name, value)| ObservedQuantity {
+            name: name.to_owned(),
+            value,
+            unit: "hz".to_owned(),
+        })
+        .collect();
+        result.metadata.provisional_decisions.push(DecisionRecord {
+            decision_id,
+            ledger_version: DECISION_LEDGER_VERSION.to_owned(),
+            stage: DecisionStage::Provisional,
+            logical_input: name.clone(),
+            physical_output: name,
+            measurement_refs,
+            seat_refs: seat_refs.into_iter().collect(),
+            frequency_band_hz: None,
+            filter_center_hz: None,
+            action: DecisionAction::Equalize,
+            status: DecisionStatus::Applied,
+            reason_codes: vec![
+                "optimizer_selected_magnitude_correction".to_owned(),
+                "candidate_prediction_not_playback_validation".to_owned(),
+            ],
+            observed,
+            limits,
+            evidence_refs: evidence_refs.into_iter().collect(),
+            confidence: roomeq_model::AssessmentConfidence::Unknown,
+            related_decision_ids: Vec::new(),
+            supersedes_ids: Vec::new(),
+            final_graph_identity: None,
+        });
+    }
+}
+
 fn correction_stage(plugin: &roomeq_model::PluginConfigWrapper) -> Option<CorrectionStage> {
+    // Electrical headroom gains are hard safety controls, not acoustic
+    // correction stages. The safety gate must never remove explicitly
+    // required attenuation merely because the level change increases target
+    // error; this gain is what makes the realized graph electrically safe.
+    if plugin
+        .parameters
+        .get("room_eq_safety_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return None;
+    }
+    // Broadband gains explicitly marked by the realization layer are
+    // corrective stages too.  Treating them as structural would let an
+    // electrically unsafe candidate survive an identity fallback.
+    if plugin
+        .parameters
+        .get("room_eq_correction_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return Some(CorrectionStage::Peq);
+    }
     if plugin
         .parameters
         .get(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
@@ -1925,6 +2422,396 @@ fn correction_stage(plugin: &roomeq_model::PluginConfigWrapper) -> Option<Correc
     }
 }
 
+/// Classify complete owned correction stages for frozen-baseline replay.
+///
+/// Deployment headroom safety stays in the baseline: it is the cost of
+/// deploying the graph, not damage done by the correction under judgment.
+/// Charging it as loss rejects net-beneficial corrections whenever the
+/// target exceeds rig headroom (measured: +12 dB stacked sub boost needs
+/// ~5 dB of safety, netting a bass lift the target requires). Seat replay
+/// additionally transplants each trial's post-route safety onto the baseline
+/// clone, so pre/post deployment matches exactly; pre-route (input-level)
+/// safety is the trial's own blunt choice and stays judged, and the benefit
+/// floor plus the electrical backstop still gate boost-then-attenuate
+/// placebos.
+pub(super) fn is_baseline_correction(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    // Electrical headroom gains are hard safety controls, not acoustic
+    // correction stages; this mirrors the correction_stage exemption so the
+    // frozen baseline keeps deployed safety on both sides of the replay.
+    if plugin
+        .parameters
+        .get("room_eq_safety_gain")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return false;
+    }
+    if plugin
+        .parameters
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        == Some("post_dsp_output_headroom_safety")
+    {
+        return false;
+    }
+    correction_stage(plugin).is_some()
+        || plugin
+            .parameters
+            .get("room_eq_correction_gain")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        // These gains were calculated from corrected playback. They are not
+        // physical speaker calibration and must be recomputed after rollback.
+        || matches!(
+            plugin.parameters.get("label").and_then(serde_json::Value::as_str),
+            Some("post_dsp_input_level_alignment" | "final_channel_level_alignment")
+        )
+        // Compile-appended padding carries optimized relative timing, not a
+        // structural alignment. Refused graphs must not assert it.
+        || plugin
+            .parameters
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::delay_compile::COMPILE_PADDING_LABEL)
+}
+
+/// Release temporal masking when no FIR bulk survives on the branch.
+/// Masking is the bulk-delay prior replay unwraps post phase with: it stays
+/// valid while a convolution or a converted FIR bulk-delay plugin remains
+/// (a plain FIR revert preserves bulk that way), but a branch stripped of
+/// every FIR bulk carrier (a hybrid revert, which converts nothing) must
+/// not hand replay a delay prior for a delay it no longer has.
+fn release_masking_without_fir_bulk(chain: &mut ChannelDspChain) {
+    if !chain_has_fir_bulk(chain) {
+        chain.fir_temporal_masking = None;
+    }
+}
+
+/// A branch keeps FIR bulk while a convolution or an FIR bulk-delay plugin
+/// survives on it. Structural delays (time alignment, routes) are
+/// deployment-constant and excluded.
+fn chain_has_fir_bulk(chain: &ChannelDspChain) -> bool {
+    chain
+        .plugins
+        .iter()
+        .any(|plugin| plugin.plugin_type == "convolution" || is_fir_bulk_delay_plugin(plugin))
+}
+
+fn is_fir_bulk_delay_plugin(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    plugin.plugin_type == "delay"
+        && matches!(
+            plugin
+                .parameters
+                .get("label")
+                .and_then(|value| value.as_str()),
+            Some("fir_design_delay" | "hybrid_fir_latency_alignment")
+        )
+}
+
+fn is_latency_alignment_plugin(plugin: &roomeq_model::PluginConfigWrapper) -> bool {
+    plugin.plugin_type == "delay"
+        && plugin
+            .parameters
+            .get("label")
+            .and_then(|value| value.as_str())
+            == Some("hybrid_fir_latency_alignment")
+}
+
+/// FIR bulk delay realized on one branch: serial convolutions and
+/// bulk-delay plugins add, while the two bands between a band split and
+/// its merge run in parallel (the convolution shapes one band, the
+/// latency alignment lifts the other), so the crossover section
+/// contributes the slower band, not the sum. Drivers are parallel
+/// outputs; the branch bulk is the slowest path.
+fn branch_fir_bulk_ms(chain: &ChannelDspChain) -> f64 {
+    fn conv_bulk_ms(plugin: &roomeq_model::PluginConfigWrapper) -> f64 {
+        if plugin.plugin_type == "convolution" {
+            plugin
+                .parameters
+                .get("correction_design_delay_ms")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+    fn delay_bulk_ms(plugin: &roomeq_model::PluginConfigWrapper) -> f64 {
+        if is_fir_bulk_delay_plugin(plugin) {
+            plugin
+                .parameters
+                .get("delay_ms")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+    let split = chain
+        .plugins
+        .iter()
+        .position(|plugin| plugin.plugin_type == "band_split");
+    let merge = split.and_then(|start| {
+        chain
+            .plugins
+            .iter()
+            .skip(start + 1)
+            .position(|plugin| plugin.plugin_type == "band_merge")
+            .map(|offset| start + 1 + offset)
+    });
+    let chain_bulk_ms = match (split, merge) {
+        (Some(start), Some(end)) => {
+            let before: f64 = chain.plugins[..start]
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum();
+            let band_conv: f64 = chain.plugins[start + 1..end].iter().map(conv_bulk_ms).sum();
+            let band_delay: f64 = chain.plugins[start + 1..end]
+                .iter()
+                .map(delay_bulk_ms)
+                .sum();
+            let after: f64 = chain.plugins[end + 1..]
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum();
+            before + band_conv.max(band_delay) + after
+        }
+        _ => chain
+            .plugins
+            .iter()
+            .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+            .sum(),
+    };
+    let driver_bulk_ms = chain
+        .drivers
+        .iter()
+        .flatten()
+        .map(|driver| {
+            driver
+                .plugins
+                .iter()
+                .map(|plugin| conv_bulk_ms(plugin) + delay_bulk_ms(plugin))
+                .sum::<f64>()
+        })
+        .fold(0.0, f64::max);
+    chain_bulk_ms.max(driver_bulk_ms)
+}
+
+/// Pre-revert FIR timing state per channel, for post-revert re-alignment.
+struct CapturedBranchLatency {
+    alignment: Vec<roomeq_model::PluginConfigWrapper>,
+    masking: Option<roomeq_model::TemporalIrMaskingMetrics>,
+}
+
+fn capture_branch_latency(
+    result: &RoomOptimizationResult,
+) -> std::collections::HashMap<String, CapturedBranchLatency> {
+    result
+        .channels
+        .iter()
+        .map(|(name, chain)| {
+            (
+                name.clone(),
+                CapturedBranchLatency {
+                    alignment: chain
+                        .plugins
+                        .iter()
+                        .filter(|plugin| is_latency_alignment_plugin(plugin))
+                        .cloned()
+                        .collect(),
+                    masking: chain.fir_temporal_masking.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Bulk contributed by re-alignment installs: unmarked
+/// `hybrid_fir_latency_alignment` delays (the hybrid stage marker was
+/// stripped at install). Derived alignment, not correction bulk.
+fn own_realignment_ms(chain: &ChannelDspChain) -> f64 {
+    chain
+        .plugins
+        .iter()
+        .filter(|plugin| {
+            is_latency_alignment_plugin(plugin)
+                && !plugin.parameters.as_object().is_some_and(|object| {
+                    object.contains_key(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                })
+        })
+        .filter_map(|plugin| {
+            plugin
+                .parameters
+                .get("delay_ms")
+                .and_then(serde_json::Value::as_f64)
+        })
+        .filter(|delay| delay.is_finite() && *delay > 0.0)
+        .sum()
+}
+
+/// Correction bulk excluding derived re-alignment: convolutions, design
+/// delays, and original (marked) crossover-block alignment. Reinstalled
+/// delays must track this, never their own echo: counting them targets
+/// ghosts (a partner's install is not its bulk) and oscillates (an
+/// install shrinks its own gap, so the next gate removes it).
+fn real_branch_bulk_ms(chain: &ChannelDspChain) -> f64 {
+    (branch_fir_bulk_ms(chain) - own_realignment_ms(chain)).max(0.0)
+}
+
+/// Bulk a branch rejoins: its crossover partner's surviving bulk (mains
+/// rejoin subs', a sub rejoins its mains'). Without routed subs there is
+/// no main/sub split to heal: the pair aligns to the surviving global
+/// bulk instead.
+fn partner_target_bulk_ms(
+    has_subs: bool,
+    chain: &ChannelDspChain,
+    sub_bulk_ms: f64,
+    main_bulk_ms: f64,
+) -> f64 {
+    if !has_subs || is_graph_routed_bass_output(chain) {
+        main_bulk_ms
+    } else {
+        sub_bulk_ms
+    }
+}
+
+/// Reinstall FIR latency alignment orphaned by stage removal.
+///
+/// Reverting one branch's FIR while its crossover partners keep theirs
+/// splits the crossover sum by the design delay at every downstream
+/// strength: the reverted branch plays ~42 ms off its partners, failing
+/// body regression and group-delay gates no strength can pass. Delays
+/// commute with every linear stage, so the reverted branch rejoins the
+/// surviving partner bulk exactly: mains rejoin their subs' bulk, a
+/// reverted sub rejoins its mains'. Branches that never carried
+/// alignment, kept theirs, or already hold converted bulk need nothing;
+/// a fully reverted graph (no surviving bulk) stays at zero latency.
+/// Installs track the live gap across gates (partners shed bulk after
+/// the install); unmarked delays never count as bulk on either side.
+fn reinstall_orphaned_latency_alignment(
+    result: &mut RoomOptimizationResult,
+    captured: &std::collections::HashMap<String, CapturedBranchLatency>,
+) {
+    let has_subs = result.channels.values().any(is_graph_routed_bass_output);
+    let sub_bulk_ms = result
+        .channels
+        .values()
+        .filter(|chain| is_graph_routed_bass_output(chain))
+        .map(real_branch_bulk_ms)
+        .fold(0.0, f64::max);
+    let main_bulk_ms = result
+        .channels
+        .values()
+        .filter(|chain| !is_graph_routed_bass_output(chain))
+        .map(real_branch_bulk_ms)
+        .fold(0.0, f64::max);
+    // Pass 1: reconcile installs from earlier gates against the live bulk.
+    // Partner bulk evolves after the install (later strips, rebuilds, trial
+    // states), and this gate's `captured` only covers fresh reverts, so a
+    // write-once install goes stale. Track the live gap instead.
+    let targets: std::collections::HashMap<String, f64> = result
+        .channels
+        .iter()
+        .map(|(name, chain)| {
+            let target = partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
+            (name.clone(), target)
+        })
+        .collect();
+    for (name, chain) in result.channels.iter_mut() {
+        let target_bulk_ms = targets.get(name).copied().unwrap_or(0.0);
+        if !target_bulk_ms.is_finite() {
+            continue;
+        }
+        let gap_ms = target_bulk_ms - real_branch_bulk_ms(chain);
+        let own_index = chain.plugins.iter().position(|plugin| {
+            is_latency_alignment_plugin(plugin)
+                && !plugin.parameters.as_object().is_some_and(|object| {
+                    object.contains_key(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                })
+        });
+        let Some(index) = own_index else {
+            continue;
+        };
+        if gap_ms > 0.1 {
+            chain.plugins[index].parameters["delay_ms"] = serde_json::json!(gap_ms);
+            if let Some(masking) = chain.fir_temporal_masking.as_mut()
+                && masking.masking_profile == "realigned-bulk-delay"
+            {
+                masking.main_time_ms = target_bulk_ms;
+            }
+        } else {
+            chain.plugins.remove(index);
+            if chain
+                .fir_temporal_masking
+                .as_ref()
+                .is_some_and(|masking| masking.masking_profile == "realigned-bulk-delay")
+            {
+                chain.fir_temporal_masking = None;
+            }
+            release_masking_without_fir_bulk(chain);
+        }
+    }
+    for (name, captured) in captured {
+        if captured.alignment.is_empty() {
+            continue;
+        }
+        let Some(chain) = result.channels.get_mut(name) else {
+            continue;
+        };
+        if chain.plugins.iter().any(is_latency_alignment_plugin) {
+            continue;
+        }
+        let target_bulk_ms = partner_target_bulk_ms(has_subs, chain, sub_bulk_ms, main_bulk_ms);
+        if !target_bulk_ms.is_finite() {
+            continue;
+        }
+        // Pass 2: install for channels reverted by this gate. The gap is
+        // against real bulk (Pass 1 already reconciled older installs,
+        // and unmarked delays never count toward either side).
+        let gap_ms = target_bulk_ms - real_branch_bulk_ms(chain);
+        // Millisecond-scale gaps are real splits; microsecond dust from
+        // rounded plugin values must not churn the graph.
+        if gap_ms <= 0.1 {
+            continue;
+        }
+        let mut plugin = captured.alignment[0].clone();
+        plugin.parameters["delay_ms"] = serde_json::json!(gap_ms);
+        // Standalone bulk, not a crossover-block member: drop the hybrid
+        // stage marker so block-atomicity validation ignores it. The
+        // `hybrid_fir_latency_alignment` label still classifies it as FIR
+        // correction, so baseline/fallback replays strip it with the FIR.
+        if let Some(object) = plugin.parameters.as_object_mut() {
+            object.remove(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER);
+        }
+        chain.plugins.push(plugin);
+        if chain.fir_temporal_masking.is_none() {
+            // The reinstalled delay is pure bulk: no precursor by
+            // construction, with the surviving bulk as its timing.
+            chain.fir_temporal_masking = Some(captured.masking.clone().map_or(
+                roomeq_model::TemporalIrMaskingMetrics {
+                    main_index: 0,
+                    main_time_ms: target_bulk_ms,
+                    pre_ringing_peak_db: -300.0,
+                    post_ringing_peak_db: -300.0,
+                    pre_ringing_audible_db: -300.0,
+                    post_ringing_audible_db: -300.0,
+                    pre_energy_ratio_db: -300.0,
+                    penalty: 0.0,
+                    taps: 0,
+                    sample_rate_hz: 48_000.0,
+                    masking_profile: "realigned-bulk-delay".to_string(),
+                    pre_mask_ms: 2.0,
+                    post_mask_ms: 20.0,
+                    audibility_threshold_db: -20.0,
+                },
+                |mut masking| {
+                    masking.main_time_ms = target_bulk_ms;
+                    masking
+                },
+            ));
+        }
+    }
+}
+
 fn remove_correction_stage(chain: &mut ChannelDspChain, stage: CorrectionStage) {
     let keep_routed_drivers = has_route_owned_bass_low_pass(chain);
     if stage == CorrectionStage::Fir {
@@ -1938,7 +2825,9 @@ fn remove_correction_stage(chain: &mut ChannelDspChain, stage: CorrectionStage) 
         ) {
             if correction_stage(plugin) == Some(stage)
                 && plugin.plugin_type == "convolution"
-                && let Some(delay_ms) = plugin.parameters.get("correction_design_delay_ms")
+                && let Some(delay_ms) = plugin
+                    .parameters
+                    .get("correction_design_delay_ms")
                     .and_then(serde_json::Value::as_f64)
                     .filter(|delay| delay.is_finite() && *delay >= 0.0)
             {
@@ -2152,12 +3041,240 @@ fn validate_hybrid_correction_blocks(result: &RoomOptimizationResult) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routing_removal_preserves_all_original_support_before_residual_fir() {
+        let mut initial = autoeq_core::Curve {
+            freq: ndarray::Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: ndarray::Array1::from_elem(5, 80.0),
+            phase: Some(ndarray::Array1::zeros(5)),
+            ..Default::default()
+        };
+        initial.resolution = initial
+            .retained_resolution()
+            .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+        let grid = ndarray::Array1::linspace(20.0, 200.0, 128);
+        let initial = autoeq_core::interpolate_response(&grid, &initial);
+        // These derived operands intentionally have no original annotation;
+        // their dense axes must not erase the retained initial support.
+        let baseline = autoeq_core::Curve {
+            freq: grid.clone(),
+            spl: ndarray::Array1::from_elem(128, 77.0),
+            phase: Some(ndarray::Array1::from_elem(128, -30.0)),
+            ..Default::default()
+        };
+        let realized = autoeq_core::Curve {
+            freq: grid,
+            spl: ndarray::Array1::from_elem(128, 76.0),
+            phase: Some(ndarray::Array1::from_elem(128, -45.0)),
+            ..Default::default()
+        };
+        let corrected = super::remove_routing_transfer(&initial, &baseline, &realized).unwrap();
+        assert_eq!(
+            corrected.retained_resolution().width_octaves(80.0),
+            Some(4.0)
+        );
+        assert!(
+            corrected
+                .spl
+                .iter()
+                .all(|level| (level - 79.0).abs() < 1e-10)
+        );
+        assert!(
+            corrected
+                .phase
+                .unwrap()
+                .iter()
+                .all(|phase| (phase + 15.0).abs() < 1e-10)
+        );
+    }
+
     use super::*;
     use crate::test_fixtures::{empty_metadata, single_channel_room_result};
     use roomeq_engine::OptimizerRunEvidence;
     use roomeq_engine::quality::CorrectionDecision;
     use roomeq_model::{CtcConfig, RoomConfig, SystemConfig, SystemModel};
     use std::collections::HashMap;
+
+    #[test]
+    fn sole_physical_target_keeps_absolute_plane_through_final_safety_gate() {
+        let mut raw = crate::test_fixtures::flat_curve();
+        raw.spl.fill(80.0);
+        let mut calibrated_initial = raw.clone();
+        calibrated_initial.spl.fill(82.0);
+        let mut target = raw.clone();
+        target.spl.fill(85.0);
+        let directory = tempfile::tempdir().unwrap();
+        for (gain, expected_post_rms, expected_accepted) in [(4.0, 1.0, true), (8.0, 5.0, false)] {
+            let mut result = single_channel_room_result("left");
+            let channel = result.channel_results.get_mut("left").unwrap();
+            channel.initial_curve = raw.clone();
+            channel.final_curve = raw.clone();
+            channel.final_curve.spl.fill(80.0 + gain);
+            channel.pre_score = 0.0;
+            channel.post_score = 0.0;
+            let chain = result.channels.get_mut("left").unwrap();
+            chain.target_curve = None;
+            chain.physical_correction_target = Some(roomeq_model::PhysicalCorrectionTarget {
+                curve: (&target).into(),
+                measurement_alignment_gain_db: 2.0,
+            });
+            let mut correction = roomeq_engine::output::create_gain_plugin(gain);
+            correction.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+            chain.plugins = vec![correction];
+            let mut calibrated_post = calibrated_initial.clone();
+            calibrated_post.spl.fill(82.0 + gain);
+            let direct = evaluate_passband_correction_acceptance(
+                chain,
+                &calibrated_initial,
+                &calibrated_post,
+                &target,
+                3,
+                (100.0, 500.0),
+            )
+            .unwrap();
+            // Constant spectra independently give |82-85|=3 and |82+gain-85|.
+            assert!((direct.metrics.pre_target_weighted_rms_db - 3.0).abs() < 1e-9);
+            assert!((direct.metrics.post_target_weighted_rms_db - expected_post_rms).abs() < 1e-9);
+            apply_final_correction_safety_gate(
+                &mut result,
+                48_000.0,
+                3,
+                (100.0, 500.0),
+                directory.path(),
+                roomeq_model::ProcessingMode::LowLatency,
+                None,
+            );
+            let actual = result.metadata.correction_acceptance.as_ref().unwrap();
+            assert!(
+                (actual.metrics.pre_target_weighted_rms_db - 3.0).abs() < 1e-9,
+                "{actual:?}"
+            );
+            assert!(
+                (actual.metrics.post_target_weighted_rms_db - expected_post_rms).abs() < 1e-9,
+                "{actual:?}"
+            );
+            assert_eq!(actual.accepted, expected_accepted, "{actual:?}");
+            assert!(result.channels["left"].target_curve.is_none());
+            assert_eq!(
+                result.channels["left"]
+                    .physical_correction_target
+                    .as_ref()
+                    .unwrap()
+                    .curve
+                    .spl,
+                vec![85.0; target.freq.len()]
+            );
+        }
+    }
+
+    #[test]
+    fn routed_post_eq_main_gate_protects_response_above_the_splice_window() {
+        let room = single_channel_room_result("L");
+        let mut chain = room.channels["L"].clone();
+        chain.plugins = vec![roomeq_engine::topology::mark_route_owned_plugin(
+            roomeq_engine::output::create_crossover_plugin("LR24", 80.0, "high"),
+        )];
+        let initial = roomeq_model::Curve {
+            freq: ndarray::array![20.0, 40.0, 80.0, 120.0, 160.0, 300.0, 1000.0, 2000.0],
+            spl: ndarray::Array1::from_elem(8, 80.0),
+            ..Default::default()
+        };
+        chain.target_curve = Some((&initial).into());
+        let mut post = initial.clone();
+        post.spl[3] += 10.0;
+        assert_eq!(
+            route_passband(&chain, &initial, (20.0, 2000.0)),
+            Some((100.0, 2000.0))
+        );
+        let ordinary = evaluate_passband_correction_acceptance(
+            &chain,
+            &initial,
+            &post,
+            &initial,
+            12,
+            (20.0, 2000.0),
+        )
+        .unwrap();
+        assert!(
+            ordinary.metrics.post_target_weighted_rms_db
+                > ordinary.metrics.pre_target_weighted_rms_db
+        );
+        chain
+            .plugins
+            .push(roomeq_engine::topology::mark_plugin_stage(
+                roomeq_engine::output::create_labeled_eq_plugin(&[], "post_eq"),
+                "pre_route",
+            ));
+        assert_eq!(
+            route_passband(&chain, &initial, (20.0, 2000.0)),
+            Some((160.0, 2000.0))
+        );
+        let splice = evaluate_passband_correction_acceptance(
+            &chain,
+            &initial,
+            &post,
+            &initial,
+            12,
+            (20.0, 2000.0),
+        )
+        .unwrap();
+        assert!(splice.metrics.post_target_weighted_rms_db < 1e-9);
+        post.spl[6] += 10.0;
+        let outside = evaluate_passband_correction_acceptance(
+            &chain,
+            &initial,
+            &post,
+            &initial,
+            12,
+            (20.0, 2000.0),
+        )
+        .unwrap();
+        assert!(
+            outside.metrics.post_target_weighted_rms_db
+                > outside.metrics.pre_target_weighted_rms_db
+        );
+        chain.plugins[1].parameters["room_eq_stage"] = serde_json::json!("post_route");
+        assert_eq!(
+            route_passband(&chain, &initial, (20.0, 2000.0)),
+            Some((100.0, 2000.0))
+        );
+    }
+
+    #[test]
+    fn baseline_restoration_strips_marked_padding_but_keeps_structural_delays() {
+        let mut padding = roomeq_engine::output::create_delay_plugin(4.86);
+        padding
+            .parameters
+            .as_object_mut()
+            .expect("delay parameters are an object")
+            .insert(
+                "label".to_string(),
+                serde_json::json!(crate::delay_compile::COMPILE_PADDING_LABEL),
+            );
+        assert!(super::is_baseline_correction(&padding));
+        let structural = roomeq_engine::output::create_delay_plugin(4.86);
+        assert!(!super::is_baseline_correction(&structural));
+    }
+
+    #[test]
+    fn baseline_restoration_keeps_deployed_safety_but_strips_correction() {
+        // Tagged safety gains stay: deployment headroom is not correction.
+        let mut safety = roomeq_engine::output::create_gain_plugin(-5.0);
+        safety.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+        safety.parameters["room_eq_safety_gain"] = serde_json::json!(true);
+        assert!(!super::is_baseline_correction(&safety));
+        // Labeled post-DSP headroom safety has no flag; still deployment.
+        let mut post_dsp = roomeq_engine::output::create_gain_plugin(-5.89);
+        post_dsp.parameters["label"] = serde_json::json!("post_dsp_output_headroom_safety");
+        assert!(!super::is_baseline_correction(&post_dsp));
+        // Untagged correction gains and alignment still strip.
+        let mut correction_gain = roomeq_engine::output::create_gain_plugin(-2.0);
+        correction_gain.parameters["room_eq_correction_gain"] = serde_json::json!(true);
+        assert!(super::is_baseline_correction(&correction_gain));
+        let mut alignment = roomeq_engine::output::create_gain_plugin(-0.5);
+        alignment.parameters["label"] = serde_json::json!("final_channel_level_alignment");
+        assert!(super::is_baseline_correction(&alignment));
+    }
 
     #[test]
     fn sync_chain_reported_curve_replaces_stale_eq_response() {
@@ -2239,10 +3356,19 @@ mod tests {
         target.spl.fill(80.0);
         chain.target_curve = Some((&target).into());
         let report = evaluate_passband_correction_acceptance(
-            &chain, &initial, &target, &target, 12, (100.0, 160.0),
-        ).unwrap();
-        assert!(report.metrics.post_target_weighted_rms_db < 1e-10,
-            "cropping must not redefine the calibrated design target: {:?}", report.metrics);
+            &chain,
+            &initial,
+            &target,
+            &target,
+            12,
+            (100.0, 160.0),
+        )
+        .unwrap();
+        assert!(
+            report.metrics.post_target_weighted_rms_db < 1e-10,
+            "cropping must not redefine the calibrated design target: {:?}",
+            report.metrics
+        );
     }
 
     #[test]
@@ -2263,23 +3389,88 @@ mod tests {
         post.spl.fill(80.0);
         chain.target_curve = Some((&target).into());
         let report = evaluate_passband_correction_acceptance(
-            &chain, &initial, &post, &target, 12, (100.0, 160.0),
-        ).expect("explicit targets may retain their native grid");
+            &chain,
+            &initial,
+            &post,
+            &target,
+            12,
+            (100.0, 160.0),
+        )
+        .expect("explicit targets may retain their native grid");
         assert!(report.metrics.post_target_weighted_rms_db < 1e-10);
         let mut unsupported = target.clone();
         unsupported.freq[0] = 105.0;
-        assert!(evaluate_passband_correction_acceptance(
-            &chain, &initial, &post, &unsupported, 12, (100.0, 160.0),
-        ).is_none(), "do not extrapolate missing low-frequency target support");
+        assert!(
+            evaluate_passband_correction_acceptance(
+                &chain,
+                &initial,
+                &post,
+                &unsupported,
+                12,
+                (100.0, 160.0),
+            )
+            .is_none(),
+            "do not extrapolate missing low-frequency target support"
+        );
         unsupported = target.clone();
         unsupported.freq[2] = 155.0;
-        assert!(evaluate_passband_correction_acceptance(
-            &chain, &initial, &post, &unsupported, 12, (100.0, 160.0),
-        ).is_none(), "do not narrow the band to missing high-frequency target support");
+        assert!(
+            evaluate_passband_correction_acceptance(
+                &chain,
+                &initial,
+                &post,
+                &unsupported,
+                12,
+                (100.0, 160.0),
+            )
+            .is_none(),
+            "do not narrow the band to missing high-frequency target support"
+        );
     }
 
-#[test]
-fn to_dsp_chain_output_includes_channels_and_metadata() {
+    #[test]
+    fn veto_metadata_round_trips_through_dsp_chain_output() {
+        let mut result = single_channel_room_result("left");
+        let channel = result.channel_results.get_mut("left").unwrap();
+        channel.audibility_veto = vec![roomeq_model::FilterVetoVerdict {
+            index: 2,
+            center_hz: 1_000.0,
+            q: 0.8,
+            gain_db: 1.5,
+            peak_delta_db: 1.5,
+            affected_erb_width: 1.2,
+            loudness_delta_sones: 0.1,
+            decision: roomeq_model::VetoDecision::Keep,
+            reason: roomeq_model::VetoReason::Audible,
+            enforced: false,
+            acceptance: Default::default(),
+        }];
+        channel.veto_adjudication = Some(roomeq_model::VetoAdjudicationReport {
+            f0_reference_id: "f0-round-trip".into(),
+            removed_filter_indices: vec![0],
+            cumulative_loudness_delta_sones: 0.1,
+            max_local_deviation_db: 0.2,
+            enforced: false,
+        });
+        refresh_optimizer_evidence(&mut result);
+
+        let output = result.to_dsp_chain_output();
+        let encoded = serde_json::to_value(&output).expect("serialize DSP graph");
+        let decoded: roomeq_model::DspChainOutput =
+            serde_json::from_value(encoded).expect("deserialize DSP graph");
+        let metadata = decoded.metadata.expect("metadata");
+        assert_eq!(
+            metadata.audibility_veto.as_ref().unwrap()["left"][0].reason,
+            roomeq_model::VetoReason::Audible
+        );
+        assert_eq!(
+            metadata.veto_adjudication.as_ref().unwrap()["left"].f0_reference_id,
+            "f0-round-trip"
+        );
+    }
+
+    #[test]
+    fn to_dsp_chain_output_includes_channels_and_metadata() {
         let result = single_channel_room_result("left");
         let output = result.to_dsp_chain_output();
         assert!(output.channels.contains_key("left"));
@@ -2472,10 +3663,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         let mut result = single_channel_room_result("left");
         let evidence = OptimizerRunEvidence::from_backend_result(
             "autoeq:cobyla",
-            Ok((
-                "AutoEQ COBYLA: MaxevalReached".to_string(),
-                0.5,
-            )),
+            Ok(("AutoEQ COBYLA: MaxevalReached".to_string(), 0.5)),
             &[0.0],
             &[-1.0],
             &[1.0],
@@ -2577,6 +3765,15 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             40,
             Some(7),
         );
+        // The optimizer crate tests that run control creates this typed result.
+        // This workflow test consumes the serialized boundary without taking
+        // a test-only dependency on the optimizer implementation.
+        let mut evidence_json =
+            serde_json::to_value(evidence).expect("serialize optimizer evidence fixture");
+        evidence_json["termination"] = serde_json::json!("user_stopped");
+        evidence_json["confidence"] = serde_json::json!("unusable");
+        let evidence = serde_json::from_value(evidence_json)
+            .expect("deserialize typed stopped optimizer evidence");
         result
             .channel_results
             .get_mut("left")
@@ -2617,20 +3814,98 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         let mut rejected = OptimizerRunEvidence::from_backend_result(
             "autoeq:de",
             Ok(("invalid candidate rejected by Post-EQ".to_string(), 0.5)),
-            &[2.0], &[-1.0], &[1.0], 40, Some(7),
+            &[2.0],
+            &[-1.0],
+            &[1.0],
+            40,
+            Some(7),
         );
         rejected.selected_for_output = false;
-        result.channel_results.get_mut("left").unwrap().optimizer_evidence = vec![rejected];
+        result
+            .channel_results
+            .get_mut("left")
+            .unwrap()
+            .optimizer_evidence = vec![rejected];
         assert_eq!(refresh_optimizer_evidence(&mut result), None);
         let recorded = result.metadata.optimizer_evidence.as_ref().unwrap();
         assert_eq!(recorded.runs_by_channel["left"].len(), 1);
         assert!(!recorded.runs_by_channel["left"][0].selected_for_output);
         assert!(result.metadata.stage_outcomes.iter().any(|outcome| {
-            outcome.advisories.iter().any(|advisory| advisory == "optimizer_no_selected_run")
+            outcome
+                .advisories
+                .iter()
+                .any(|advisory| advisory == "optimizer_no_selected_run")
         }));
         // Selecting the exact same invalid candidate must still reject it.
-        result.channel_results.get_mut("left").unwrap().optimizer_evidence[0].selected_for_output = true;
-        assert_eq!(refresh_optimizer_evidence(&mut result), Some(roomeq_engine::OptimizerConfidence::Unusable));
+        result
+            .channel_results
+            .get_mut("left")
+            .unwrap()
+            .optimizer_evidence[0]
+            .selected_for_output = true;
+        assert_eq!(
+            refresh_optimizer_evidence(&mut result),
+            Some(roomeq_engine::OptimizerConfidence::Unusable)
+        );
+    }
+
+    #[test]
+    fn refresh_optimizer_evidence_preserves_veto_reports_by_channel() {
+        let mut result = single_channel_room_result("left");
+        let channel = result.channel_results.get_mut("left").unwrap();
+        channel.audibility_veto = vec![roomeq_model::FilterVetoVerdict {
+            index: 0,
+            center_hz: 500.0,
+            q: 1.0,
+            gain_db: 2.0,
+            peak_delta_db: 2.0,
+            affected_erb_width: 1.0,
+            loudness_delta_sones: 0.2,
+            decision: roomeq_model::VetoDecision::Remove,
+            reason: roomeq_model::VetoReason::ModeProximityBan,
+            enforced: false,
+            acceptance: Default::default(),
+        }];
+        channel.veto_adjudication = Some(roomeq_model::VetoAdjudicationReport {
+            f0_reference_id: "f0-test".to_string(),
+            removed_filter_indices: Vec::new(),
+            cumulative_loudness_delta_sones: 0.0,
+            max_local_deviation_db: 0.0,
+            enforced: false,
+        });
+
+        refresh_optimizer_evidence(&mut result);
+        assert_eq!(
+            result.metadata.audibility_veto.as_ref().unwrap()["left"][0].reason,
+            roomeq_model::VetoReason::ModeProximityBan
+        );
+        assert_eq!(
+            result.metadata.veto_adjudication.as_ref().unwrap()["left"].f0_reference_id,
+            "f0-test"
+        );
+    }
+
+    #[test]
+    fn temporal_evidence_does_not_treat_unresolved_convolution_as_iir() {
+        let mut result = single_channel_room_result("left");
+        result.channel_results.get_mut("left").unwrap().fir_coeffs = None;
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.fir_temporal_masking = None;
+        chain.plugins = vec![roomeq_model::PluginConfigWrapper {
+            plugin_type: "convolution".into(),
+            parameters: serde_json::json!({"ir_file": "unresolved.wav"}),
+        }];
+        let evidence = runtime_temporal_quality_evidence(
+            &result,
+            &["left".into()],
+            &[],
+            &[],
+            48_000.0,
+            roomeq_model::ProcessingMode::PhaseLinear,
+        );
+        assert!(!evidence.temporal_evidence_available);
+        assert!(evidence.pre_ringing_audible_db.is_none());
+        assert!(evidence.latency_ms.is_none());
     }
 
     #[test]
@@ -2650,7 +3925,14 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             post_ringing_peak_db: -30.0,
             pre_ringing_audible_db: -8.7,
             post_ringing_audible_db: -40.0,
+            pre_energy_ratio_db: -9.5,
             penalty: 1.0,
+            taps: 64,
+            sample_rate_hz: 48_000.0,
+            masking_profile: "mixed".to_string(),
+            pre_mask_ms: 2.0,
+            post_mask_ms: 20.0,
+            audibility_threshold_db: -20.0,
         });
         result.channel_results.get_mut("left").unwrap().fir_coeffs = Some(vec![0.0; 64]);
 
@@ -2664,7 +3946,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             let evidence =
                 runtime_temporal_quality_evidence(&result, &names, &[], &[], 48_000.0, mode);
             assert_eq!(
-                evidence.pre_ringing_energy_db,
+                evidence.pre_ringing_audible_db,
                 Some(-8.7),
                 "mode {label} must preserve the measured precursor"
             );
@@ -2696,7 +3978,14 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             post_ringing_peak_db: -80.0,
             pre_ringing_audible_db: -80.0,
             post_ringing_audible_db: -80.0,
+            pre_energy_ratio_db: -80.0,
             penalty: 0.0,
+            taps: 4096,
+            sample_rate_hz: 48_000.0,
+            masking_profile: "mixed".to_string(),
+            pre_mask_ms: 2.0,
+            post_mask_ms: 20.0,
+            audibility_threshold_db: -20.0,
         });
 
         let (acoustic, _, _) = runtime_acceptance_evidence(
@@ -2786,6 +4075,615 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
     }
 
     #[test]
+    fn hybrid_revert_releases_fir_coefficients_and_temporal_masking() {
+        let mut result = single_channel_room_result("left");
+        let channel = result.channel_results.get_mut("left").unwrap();
+        channel.pre_score = 1.0;
+        channel.post_score = 2.0;
+        for (index, spl) in channel.final_curve.spl.iter_mut().enumerate() {
+            if index % 2 == 0 {
+                *spl += 12.0;
+            }
+        }
+        channel.fir_coeffs = Some(vec![0.5; 64]);
+        // A readable band-FIR sidecar keeps the gate on its selective
+        // revert path (a missing IR would fall back to all-stage removal).
+        let dir = tempfile::tempdir().unwrap();
+        let mut taps = vec![0.0; 64];
+        taps[0] = 1.0;
+        math_audio_iir_fir::save_fir_to_wav(&taps, 48_000, &dir.path().join("left_band_fir.wav"))
+            .unwrap();
+        let mixed_config = roomeq_model::MixedModeConfig {
+            crossover_freq: 300.0,
+            crossover_type: "LR24".to_string(),
+            fir_band: "low".to_string(),
+        };
+        let filter = math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            1_000.0,
+            48_000.0,
+            0.7,
+            -2.0,
+        );
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.plugins = roomeq_engine::output::build_mixed_mode_crossover_chain(
+            "left",
+            &mixed_config,
+            &[filter],
+            "left_band_fir.wav",
+            true,
+            42.0,
+            None,
+        )
+        .plugins;
+        chain.fir_temporal_masking = Some(roomeq_model::TemporalIrMaskingMetrics {
+            main_index: 2048,
+            main_time_ms: 42.666666666666664,
+            pre_ringing_peak_db: -30.0,
+            post_ringing_peak_db: -30.0,
+            pre_ringing_audible_db: -32.0,
+            post_ringing_audible_db: -40.0,
+            pre_energy_ratio_db: -31.0,
+            penalty: 0.0,
+            taps: 4096,
+            sample_rate_hz: 48_000.0,
+            masking_profile: "mixed".to_string(),
+            pre_mask_ms: 2.0,
+            post_mask_ms: 20.0,
+            audibility_threshold_db: -20.0,
+        });
+
+        apply_final_correction_safety_gate(
+            &mut result,
+            48_000.0,
+            3,
+            (20.0, 20_000.0),
+            dir.path(),
+            roomeq_model::ProcessingMode::Hybrid,
+            None,
+        );
+
+        // The hybrid stage carries the FIR: a revert must not orphan the
+        // coefficients (unresolvable FIR evidence downstream) or the
+        // masking (a bulk-delay prior for a branch with no delay left).
+        assert!(result.channel_results["left"].fir_coeffs.is_none());
+        assert!(
+            result.channels["left"].fir_temporal_masking.is_none(),
+            "hybrid revert must release temporal masking"
+        );
+        assert!(
+            !result.channels["left"]
+                .plugins
+                .iter()
+                .any(|plugin| plugin.plugin_type == "convolution"),
+            "hybrid revert must remove the band FIR"
+        );
+    }
+
+    #[test]
+    fn realignment_rejoins_reverted_branch_to_surviving_bulk() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            // Marked original: a crossover-block member with real bulk.
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        // Mixed-mode pairing: partial-band FIR (no bulk of its own) plus
+        // a 42.67 ms latency-alignment plugin.
+        let mut result = single_channel_room_result("L");
+        for name in ["L", "R"] {
+            let chain = if name == "L" {
+                result.channels.get_mut("L").unwrap()
+            } else {
+                let template = result.channels["L"].clone();
+                result.channels.insert("R".to_string(), template);
+                result.channels.get_mut("R").unwrap()
+            };
+            chain.plugins = vec![conv(0.0), alignment(42.67)];
+        }
+        let captured = super::capture_branch_latency(&result);
+
+        // A branch whose revert preserves bulk within rounding rejoins
+        // silently: no second alignment copy on top of converted bulk.
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins = vec![conv(42.666666666666664)];
+        super::remove_correction_stage(chain, super::CorrectionStage::Fir);
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(
+            !result.channels["R"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "converted bulk must not gain a second alignment copy"
+        );
+
+        // A hybrid revert drops bulk delay entirely: the branch rejoins
+        // the surviving 42.67 ms exactly once, with matching timing.
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["R"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed.len(), 1);
+        assert!((installed[0] - 42.67).abs() < 1e-9);
+        assert_eq!(
+            result.channels["R"]
+                .fir_temporal_masking
+                .as_ref()
+                .unwrap()
+                .main_time_ms,
+            42.67
+        );
+        // Standalone bulk: no hybrid block marker (block validation must
+        // ignore it), still FIR correction by label (stripped with FIR).
+        let reinstalled = result.channels["R"]
+            .plugins
+            .iter()
+            .find(|plugin| super::is_latency_alignment_plugin(plugin))
+            .unwrap();
+        assert!(
+            reinstalled
+                .parameters
+                .get(roomeq_engine::topology::CORRECTION_STAGE_PARAMETER)
+                .is_none()
+        );
+        assert_eq!(
+            super::correction_stage(reinstalled),
+            Some(super::CorrectionStage::Fir)
+        );
+
+        // A fully reverted graph (no surviving bulk) stays at zero latency.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(result.channels["R"].plugins.is_empty());
+
+        // Captured masking is restored (not synthesized) with its timing
+        // retargeted to the surviving bulk.
+        fn masking(main_time_ms: f64) -> roomeq_model::TemporalIrMaskingMetrics {
+            roomeq_model::TemporalIrMaskingMetrics {
+                main_index: 2048,
+                main_time_ms,
+                pre_ringing_peak_db: -30.0,
+                post_ringing_peak_db: -30.0,
+                pre_ringing_audible_db: -32.0,
+                post_ringing_audible_db: -40.0,
+                pre_energy_ratio_db: -31.0,
+                penalty: 0.0,
+                taps: 4096,
+                sample_rate_hz: 48_000.0,
+                masking_profile: "mixed".to_string(),
+                pre_mask_ms: 2.0,
+                post_mask_ms: 20.0,
+                audibility_threshold_db: -20.0,
+            }
+        }
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        chain.fir_temporal_masking = Some(masking(40.0));
+        let captured = super::capture_branch_latency(&result);
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let restored = result.channels["R"].fir_temporal_masking.as_ref().unwrap();
+        assert_eq!(restored.main_time_ms, 42.67);
+        assert_eq!(restored.masking_profile, "mixed");
+    }
+
+    #[test]
+    fn realignment_targets_crossover_partner_bulk() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            // Marked original: a crossover-block member with real bulk.
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // A reverted main rejoins its sub's bulk, not the global max.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["L"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+
+        // A bulk-less sub is already aligned with the reverted main:
+        // nothing to reinstall (and no global-max invention).
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(result.channels["L"].plugins.is_empty());
+
+        // A reverted sub rejoins its mains' bulk in the other direction.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![conv(0.0), alignment(42.67)];
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["Sub1"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+    }
+
+    #[test]
+    fn realignment_reconciles_stale_install_when_partner_bulk_drops() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // Gate 1: the main reverts while the sub keeps its FIR.
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["L"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed, vec![42.67]);
+
+        // Gate 2: the sub loses its FIR after the install. The stale
+        // install must go (with its synthesized masking), and the sub
+        // must not install against the main's own install (ghost).
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        assert!(
+            !result.channels["L"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "stale install must track the live gap down to zero"
+        );
+        assert!(
+            result.channels["L"].fir_temporal_masking.is_none(),
+            "synthesized masking must go with its stale delay"
+        );
+        assert!(
+            !result.channels["Sub1"]
+                .plugins
+                .iter()
+                .any(super::is_latency_alignment_plugin),
+            "a partner install is not real bulk: no ghost target"
+        );
+    }
+
+    #[test]
+    fn realignment_updates_install_when_gap_changes() {
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        // No-sub pair: two mains align to the surviving global bulk.
+        let mut result = single_channel_room_result("L");
+        let template = result.channels["L"].clone();
+        result.channels.insert("R".to_string(), template);
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(42.67)];
+        result.channels.get_mut("R").unwrap().plugins = vec![conv(42.67)];
+        let captured = super::capture_branch_latency(&result);
+        let chain = result.channels.get_mut("R").unwrap();
+        chain.plugins.clear();
+        chain.fir_temporal_masking = None;
+        // A captured alignment template is required for the install.
+        let mut captured = captured;
+        captured.get_mut("R").unwrap().alignment = vec![roomeq_model::PluginConfigWrapper {
+            plugin_type: "delay".to_string(),
+            parameters: serde_json::json!({
+                "delay_ms": 42.67,
+                "label": "hybrid_fir_latency_alignment",
+                "room_eq_correction_stage": "hybrid_crossover",
+            }),
+        }];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+
+        // The survivor's bulk halves: the install tracks it in place.
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(21.33)];
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        let installed: Vec<f64> = result.channels["R"]
+            .plugins
+            .iter()
+            .filter(|plugin| super::is_latency_alignment_plugin(plugin))
+            .filter_map(|plugin| plugin.parameters.get("delay_ms").and_then(|v| v.as_f64()))
+            .collect();
+        assert_eq!(installed.len(), 1);
+        assert!((installed[0] - 21.33).abs() < 1e-9);
+        assert!(
+            (result.channels["R"]
+                .fir_temporal_masking
+                .as_ref()
+                .unwrap()
+                .main_time_ms
+                - 21.33)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn realignment_leaves_no_mutual_ghost_lock() {
+        fn alignment(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                    "room_eq_correction_stage": "hybrid_crossover",
+                }),
+            }
+        }
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn sub_crossover() -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "crossover".to_string(),
+                parameters: serde_json::json!({
+                    "type": "LR24",
+                    "frequency": 120.0,
+                    "output": "low",
+                    "room_eq_stage": "route_owned",
+                    "label": "room_eq_route_owned",
+                }),
+            }
+        }
+        let mut result = single_channel_room_result("L");
+        result.channels.get_mut("L").unwrap().plugins = vec![conv(0.0), alignment(42.67)];
+        let mut sub = result.channels["L"].clone();
+        sub.plugins = vec![sub_crossover(), conv(0.0), alignment(42.67)];
+        result.channels.insert("Sub1".to_string(), sub);
+        let captured = super::capture_branch_latency(&result);
+
+        // Both branches revert; the main carries an install from an
+        // earlier gate. Neither side has real bulk, so both must end
+        // with no alignment (no mutual ghost-lock).
+        let chain = result.channels.get_mut("L").unwrap();
+        chain.plugins = vec![roomeq_model::PluginConfigWrapper {
+            plugin_type: "delay".to_string(),
+            parameters: serde_json::json!({
+                "delay_ms": 42.67,
+                "label": "hybrid_fir_latency_alignment",
+            }),
+        }];
+        let chain = result.channels.get_mut("Sub1").unwrap();
+        chain.plugins = vec![sub_crossover()];
+        chain.fir_temporal_masking = None;
+        super::reinstall_orphaned_latency_alignment(&mut result, &captured);
+        for name in ["L", "Sub1"] {
+            assert!(
+                !result.channels[name]
+                    .plugins
+                    .iter()
+                    .any(super::is_latency_alignment_plugin),
+                "{name} must not hold alignment without real partner bulk"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_bulk_maxes_parallel_bands_and_sums_serial_stages() {
+        fn conv(design_delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "convolution".to_string(),
+                parameters: serde_json::json!({
+                    "ir_file": "band.wav",
+                    "correction_design_delay_ms": design_delay_ms,
+                }),
+            }
+        }
+        fn bulk_delay(delay_ms: f64) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: "delay".to_string(),
+                parameters: serde_json::json!({
+                    "delay_ms": delay_ms,
+                    "label": "hybrid_fir_latency_alignment",
+                }),
+            }
+        }
+        fn plain(plugin_type: &str) -> roomeq_model::PluginConfigWrapper {
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: plugin_type.to_string(),
+                parameters: serde_json::json!({}),
+            }
+        }
+        let mut result = single_channel_room_result("left");
+        let chain = result.channels.get_mut("left").unwrap();
+        // Crossover bands run in parallel: the slower band wins, not the sum.
+        chain.plugins = vec![
+            plain("band_split"),
+            conv(42.666666666666664),
+            bulk_delay(42.67),
+            plain("band_merge"),
+        ];
+        assert!((super::branch_fir_bulk_ms(chain) - 42.67).abs() < 1e-9);
+        // Serial convolutions without a split add.
+        chain.plugins = vec![conv(10.0), conv(20.0)];
+        assert!((super::branch_fir_bulk_ms(chain) - 30.0).abs() < 1e-9);
+        // Drivers are parallel outputs: the slowest path wins.
+        chain.plugins = vec![conv(10.0)];
+        chain.drivers = Some(vec![roomeq_model::DriverDspChain {
+            measured_acoustics: None,
+            name: "Sub1".into(),
+            index: 0,
+            initial_curve: None,
+            measured_band_hz: None,
+            plugins: vec![conv(50.0)],
+        }]);
+        assert!((super::branch_fir_bulk_ms(chain) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn masking_survives_only_with_fir_bulk() {
+        fn masking() -> roomeq_model::TemporalIrMaskingMetrics {
+            roomeq_model::TemporalIrMaskingMetrics {
+                main_index: 2048,
+                main_time_ms: 42.666666666666664,
+                pre_ringing_peak_db: -30.0,
+                post_ringing_peak_db: -30.0,
+                pre_ringing_audible_db: -32.0,
+                post_ringing_audible_db: -40.0,
+                pre_energy_ratio_db: -31.0,
+                penalty: 0.0,
+                taps: 4096,
+                sample_rate_hz: 48_000.0,
+                masking_profile: "mixed".to_string(),
+                pre_mask_ms: 2.0,
+                post_mask_ms: 20.0,
+                audibility_threshold_db: -20.0,
+            }
+        }
+        fn plugin(plugin_type: &str, label: Option<&str>) -> roomeq_model::PluginConfigWrapper {
+            let mut parameters = serde_json::json!({});
+            if let Some(label) = label {
+                parameters["label"] = serde_json::json!(label);
+            }
+            roomeq_model::PluginConfigWrapper {
+                plugin_type: plugin_type.to_string(),
+                parameters,
+            }
+        }
+        // A surviving convolution keeps its masking prior.
+        let mut result = single_channel_room_result("left");
+        let chain = result.channels.get_mut("left").unwrap();
+        chain.plugins = vec![plugin("convolution", None)];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_some());
+        // So does a converted FIR bulk-delay plugin.
+        chain.plugins = vec![plugin("delay", Some("fir_design_delay"))];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_some());
+        // A bare EQ chain (hybrid revert drops bulk delay entirely)
+        // releases it.
+        chain.plugins = vec![plugin("eq", None)];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_none());
+        // An unrelated structural delay is not FIR bulk.
+        chain.plugins = vec![plugin("delay", Some("time_alignment"))];
+        chain.fir_temporal_masking = Some(masking());
+        super::release_masking_without_fir_bulk(chain);
+        assert!(chain.fir_temporal_masking.is_none());
+    }
+
+    #[test]
     fn apply_ctc_if_enabled_disabled_leaves_none() {
         let mut result = single_channel_room_result("left");
         let config = RoomConfig {
@@ -2797,7 +4695,9 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             optimizer: roomeq_model::OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         };
         apply_ctc_if_enabled(&mut result, &config, 48000.0, None).unwrap();
@@ -2816,7 +4716,9 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             optimizer: roomeq_model::OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: Some(CtcConfig::default()),
+            reporting: None,
             cea2034_cache: None,
         };
         config.ctc.as_mut().unwrap().enabled = false;
@@ -2836,7 +4738,9 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             optimizer: roomeq_model::OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: Some(CtcConfig::default()),
+            reporting: None,
             cea2034_cache: None,
         };
         config.ctc.as_mut().unwrap().enabled = true;
@@ -2863,7 +4767,9 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             optimizer: roomeq_model::OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: Some(CtcConfig::default()),
+            reporting: None,
             cea2034_cache: None,
         };
         config.ctc.as_mut().unwrap().enabled = true;
@@ -2882,6 +4788,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
     #[test]
     fn sanity_check_result_empty_errors() {
         let result = RoomOptimizationResult {
+            finalized_decisions: None,
             channels: HashMap::new(),
             channel_results: HashMap::new(),
             deployed_source_curves: HashMap::new(),
@@ -2949,15 +4856,19 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         let target = result.channel_results["left"].initial_curve.clone();
         let filter = math_audio_iir_fir::Biquad::new(
             math_audio_iir_fir::BiquadFilterType::Lowshelf,
-            200.0, 48_000.0, 0.707, -6.0,
+            200.0,
+            48_000.0,
+            0.707,
+            -6.0,
         );
         let response = roomeq_engine::response::compute_peq_complex_response(
-            &[filter], &target.freq, 48_000.0,
+            &[filter],
+            &target.freq,
+            48_000.0,
         );
         let channel = result.channel_results.get_mut("left").unwrap();
-        channel.initial_curve.spl = &target.spl - &ndarray::Array1::from_iter(
-            response.iter().map(|value| 20.0 * value.norm().log10()),
-        );
+        channel.initial_curve.spl = &target.spl
+            - &ndarray::Array1::from_iter(response.iter().map(|value| 20.0 * value.norm().log10()));
         channel.final_curve = target.clone();
         // Old mixed score bases falsely said the correction regressed.
         channel.pre_score = 0.1;
@@ -2965,10 +4876,17 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         let chain = result.channels.get_mut("left").unwrap();
         chain.drivers = Some(Vec::new());
         chain.target_curve = Some((&target).into());
-        chain.plugins.push(roomeq_engine::output::create_gain_plugin(0.0));
+        chain
+            .plugins
+            .push(roomeq_engine::output::create_gain_plugin(0.0));
         apply_final_correction_safety_gate(
-            &mut result, 48_000.0, 3, (20.0, 200.0), Path::new("."),
-            roomeq_model::ProcessingMode::LowLatency, None,
+            &mut result,
+            48_000.0,
+            3,
+            (20.0, 200.0),
+            Path::new("."),
+            roomeq_model::ProcessingMode::LowLatency,
+            None,
         );
         assert!(result.channel_results["left"].pre_score > 4.0);
         assert!(result.channel_results["left"].post_score < 1e-6);
@@ -3019,7 +4937,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             .expect("final safety gate should attach the shared quality scorecard");
         assert!(quality.finite);
         assert_eq!(quality.training.curve_count, 1);
-        assert_eq!(quality.temporal.pre_ringing_energy_db, Some(-300.0));
+        assert_eq!(quality.temporal.pre_ringing_audible_db, Some(-300.0));
         assert_eq!(quality.temporal.latency_ms, Some(0.0));
         assert!(quality.temporal.available_headroom_db.is_some());
     }
@@ -3240,15 +5158,30 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                     .iter()
                     .all(|advisory| !advisory.starts_with("topology_regression_reverted_lfe"))
         }));
-        let check = result.metadata.stage_outcomes.iter()
+        let check = result
+            .metadata
+            .stage_outcomes
+            .iter()
             .find(|stage| stage.stage == "final_correction_candidate_assessment_lfe")
-            .unwrap().checks.iter().find(|check| check.id == "candidate_topology_score_regression")
+            .unwrap()
+            .checks
+            .iter()
+            .find(|check| check.id == "candidate_topology_score_regression")
             .unwrap();
-        assert!(check.limit.unwrap() < 1e-5, "out-of-band sub rolloff entered veto: {check:?}");
+        assert!(
+            check.limit.unwrap() < 1e-5,
+            "out-of-band sub rolloff entered veto: {check:?}"
+        );
         let channel = &result.channel_results["lfe"];
-        assert!((channel.pre_score - channel.post_score).abs() < 1e-10,
-            "route-only transfer must not manufacture published correction regression");
-        assert!(channel.pre_score < 1e-5, "flat-loss numerical floor: {}", channel.pre_score);
+        assert!(
+            (channel.pre_score - channel.post_score).abs() < 1e-10,
+            "route-only transfer must not manufacture published correction regression"
+        );
+        assert!(
+            channel.pre_score < 1e-5,
+            "flat-loss numerical floor: {}",
+            channel.pre_score
+        );
         assert_eq!(result.combined_pre_score, channel.pre_score);
         assert_eq!(result.combined_post_score, channel.post_score);
         assert_eq!(result.metadata.pre_score, channel.pre_score);
@@ -3260,10 +5193,18 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         let mut result = single_channel_room_result("left");
         let flat = result.channel_results["left"].initial_curve.clone();
         let peak = math_audio_iir_fir::Biquad::new(
-            math_audio_iir_fir::BiquadFilterType::Peak, 1000.0, 48_000.0, 0.7, 6.0,
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            1000.0,
+            48_000.0,
+            0.7,
+            6.0,
         );
         let cut = math_audio_iir_fir::Biquad::new(
-            math_audio_iir_fir::BiquadFilterType::Peak, 1000.0, 48_000.0, 0.7, -6.0,
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            1000.0,
+            48_000.0,
+            0.7,
+            -6.0,
         );
         let chain = result.channels.get_mut("left").unwrap();
         chain.plugins = vec![roomeq_engine::output::create_eq_plugin(&[peak])];
@@ -3274,7 +5215,8 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 roomeq_engine::output::create_crossover_plugin("LR24", 160.0, "high"),
             ),
         ];
-        let final_curve = apply_logical_channel_chain(chain, &initial, 48_000.0, Path::new(".")).unwrap();
+        let final_curve =
+            apply_logical_channel_chain(chain, &initial, 48_000.0, Path::new(".")).unwrap();
         chain.initial_curve = Some((&initial).into());
         chain.final_curve = Some((&final_curve).into());
         let channel = result.channel_results.get_mut("left").unwrap();
@@ -3284,10 +5226,28 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         // correction when only the post score includes intentional routing.
         channel.pre_score = 1.0;
         channel.post_score = 2.0;
-        apply_final_correction_safety_gate(&mut result, 48_000.0, 3,
-            (20.0, 20_000.0), Path::new("."), roomeq_model::ProcessingMode::LowLatency, None);
-        assert!(result.channels["left"].plugins.iter().any(|plugin| plugin.plugin_type == "eq"));
-        assert!(result.metadata.stage_outcomes.iter().all(|outcome| outcome.stage != "final_correction_safety_left"));
+        apply_final_correction_safety_gate(
+            &mut result,
+            48_000.0,
+            3,
+            (20.0, 20_000.0),
+            Path::new("."),
+            roomeq_model::ProcessingMode::LowLatency,
+            None,
+        );
+        assert!(
+            result.channels["left"]
+                .plugins
+                .iter()
+                .any(|plugin| plugin.plugin_type == "eq")
+        );
+        assert!(
+            result
+                .metadata
+                .stage_outcomes
+                .iter()
+                .all(|outcome| outcome.stage != "final_correction_safety_left")
+        );
     }
 
     #[test]
@@ -3300,13 +5260,18 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 let mut known = roomeq_engine::output::create_convolution_plugin("known.wav");
                 known.parameters["correction_design_delay_ms"] = serde_json::json!(delay);
                 known.parameters["room_eq_stage"] = serde_json::json!("post_route");
-                chain.plugins = vec![known,
-                    roomeq_engine::output::create_convolution_plugin("unknown.wav")];
+                chain.plugins = vec![
+                    known,
+                    roomeq_engine::output::create_convolution_plugin("unknown.wav"),
+                ];
                 remove_correction_stage(chain, CorrectionStage::Fir);
                 assert_eq!(chain.plugins.len(), 1);
                 assert_eq!(chain.plugins[0].plugin_type, "delay");
                 assert_eq!(chain.plugins[0].parameters["room_eq_stage"], "post_route");
-                assert_eq!(chain.plugins[0].parameters["delay_ms"], serde_json::json!(delay));
+                assert_eq!(
+                    chain.plugins[0].parameters["delay_ms"],
+                    serde_json::json!(delay)
+                );
                 let once = serde_json::to_value(&chain.plugins).unwrap();
                 remove_correction_stage(chain, CorrectionStage::Fir);
                 assert_eq!(serde_json::to_value(&chain.plugins).unwrap(), once);
@@ -3323,6 +5288,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         channel.final_curve = channel.initial_curve.clone();
         result.channels.get_mut("lfe").unwrap().drivers =
             Some(vec![roomeq_model::DriverDspChain {
+                measured_acoustics: None,
                 name: "subs_1".to_string(),
                 index: 0,
                 plugins: vec![
@@ -3330,6 +5296,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                     roomeq_engine::output::create_delay_plugin(2.0),
                 ],
                 initial_curve: None,
+                measured_band_hz: None,
             }]);
 
         apply_final_correction_safety_gate(
@@ -3365,6 +5332,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             roomeq_engine::output::create_crossover_plugin("LR24", 120.0, "low"),
         )];
         chain.drivers = Some(vec![roomeq_model::DriverDspChain {
+            measured_acoustics: None,
             name: "sub1".into(),
             index: 0,
             plugins: vec![
@@ -3372,6 +5340,10 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 roomeq_engine::output::create_delay_plugin(2.0),
             ],
             initial_curve: Some((&initial).into()),
+            measured_band_hz: match (initial.freq.first(), initial.freq.last()) {
+                (Some(&low), Some(&high)) => Some([low, high]),
+                _ => None,
+            },
         }]);
         let drivers = chain.drivers.clone();
         let final_curve =
@@ -3472,12 +5444,17 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
             .expect("acceptance report");
         assert_eq!(report.decision, CorrectionDecision::RevertedStage);
         assert_eq!(report.reverted_stages, ["left:peq"]);
-        let assessment = result.metadata.stage_outcomes.iter().find(|stage| {
-            stage.stage == "final_correction_candidate_assessment_left"
-        }).expect("pre-reversion candidate evidence");
-        let check = assessment.checks.iter().find(|check| {
-            check.id == "candidate_topology_score_regression"
-        }).unwrap();
+        let assessment = result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .find(|stage| stage.stage == "final_correction_candidate_assessment_left")
+            .expect("pre-reversion candidate evidence");
+        let check = assessment
+            .checks
+            .iter()
+            .find(|check| check.id == "candidate_topology_score_regression")
+            .unwrap();
         assert!(!check.passed);
         assert_eq!(check.observed, Some(6.0));
         assert_eq!(result.channel_results["left"].post_score, 0.0);
@@ -3528,6 +5505,27 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         );
         assert_eq!(report.decision, CorrectionDecision::RevertedStage);
         assert_eq!(report.reverted_stages, ["left:peq"]);
+        let refusal = result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .find(|stage| stage.stage == "final_runtime_acceptance")
+            .unwrap();
+        let check = refusal
+            .checks
+            .iter()
+            .find(|check| check.id == "realization_error_limit_exceeded")
+            .unwrap();
+        assert!(check.observed.unwrap() > check.limit.unwrap());
+        assert!(
+            report
+                .realization_quality
+                .as_ref()
+                .unwrap()
+                .max_abs_error_db
+                .unwrap()
+                < check.observed.unwrap()
+        );
     }
 
     #[test]
@@ -3565,6 +5563,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         result.channels.insert(
             "WideLeft_support".to_string(),
             roomeq_model::ChannelDspChain {
+                physical_correction_target: None,
                 channel: "WideLeft_support".to_string(),
                 plugins: vec![
                     roomeq_engine::output::create_gain_plugin(-140.0),
@@ -3579,11 +5578,20 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
         result.channel_results.insert(
             "WideLeft_support".to_string(),
             roomeq_engine::room_result::ChannelOptimizationResult {
+                measurement_conditioning: None,
                 name: "WideLeft_support".to_string(),
                 pre_score: 0.0,
                 post_score: 0.0,
@@ -3592,6 +5600,8 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 biquads: Vec::new(),
                 fir_coeffs: None,
                 optimizer_evidence: Vec::new(),
+                audibility_veto: Vec::new(),
+                veto_adjudication: None,
             },
         );
         result.metadata.supporting_source = Some(HashMap::from([(
@@ -3660,6 +5670,7 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
         result.channels.insert(
             "WideLeft_support".to_string(),
             roomeq_model::ChannelDspChain {
+                physical_correction_target: None,
                 channel: "WideLeft_support".to_string(),
                 plugins: vec![
                     roomeq_engine::output::create_gain_plugin(-140.0),
@@ -3674,11 +5685,20 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
         result.channel_results.insert(
             "WideLeft_support".to_string(),
             roomeq_engine::room_result::ChannelOptimizationResult {
+                measurement_conditioning: None,
                 name: "WideLeft_support".to_string(),
                 pre_score: 0.0,
                 post_score: 0.0,
@@ -3687,6 +5707,8 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
                 biquads: Vec::new(),
                 fir_coeffs: None,
                 optimizer_evidence: Vec::new(),
+                audibility_veto: Vec::new(),
+                veto_adjudication: None,
             },
         );
         result.metadata.supporting_source = Some(HashMap::from([(
@@ -3768,52 +5790,104 @@ fn to_dsp_chain_output_includes_channels_and_metadata() {
 #[test]
 fn combined_boost_replay_failure_does_not_mutate_the_chain() {
     let mut result = crate::test_fixtures::single_channel_room_result("left");
-    result.channel_results.get_mut("left").unwrap().biquads = vec![
-        math_audio_iir_fir::Biquad::new(
-            math_audio_iir_fir::BiquadFilterType::Peak, 120.0, 48_000.0, 1.0, 6.0,
-        ),
-    ];
+    result.channel_results.get_mut("left").unwrap().biquads =
+        vec![math_audio_iir_fir::Biquad::new(
+            math_audio_iir_fir::BiquadFilterType::Peak,
+            120.0,
+            48_000.0,
+            1.0,
+            6.0,
+        )];
     result.channels.get_mut("left").unwrap().plugins = vec![
-        roomeq_model::PluginConfigWrapper { plugin_type: "eq".into(), parameters: serde_json::json!({
-            "filters": [{"filter_type":"peak", "freq":120.0, "q":1.0, "db_gain":6.0}]
-        }) },
-        roomeq_model::PluginConfigWrapper { plugin_type: "convolution".into(), parameters: serde_json::json!({
-            "ir_file":"missing-boost-limiter-ir.wav"
-        }) },
+        roomeq_model::PluginConfigWrapper {
+            plugin_type: "eq".into(),
+            parameters: serde_json::json!({
+                "filters": [{"filter_type":"peak", "freq":120.0, "q":1.0, "db_gain":6.0}]
+            }),
+        },
+        roomeq_model::PluginConfigWrapper {
+            plugin_type: "convolution".into(),
+            parameters: serde_json::json!({
+                "ir_file":"missing-boost-limiter-ir.wav"
+            }),
+        },
     ];
     let before = serde_json::to_value(&result.channels["left"]).unwrap();
     let before_curve = result.channel_results["left"].final_curve.clone();
     let before_coefficients = result.channel_results["left"].biquads[0].constants();
     let dir = tempfile::tempdir().unwrap();
-    assert!(!limit_runtime_combined_boost(&mut result, 6.0, 3.0, 48_000.0,
-        12, (20.0, 20_000.0), dir.path()));
-    assert_eq!(serde_json::to_value(&result.channels["left"]).unwrap(), before,
-        "failed replay left a scaled PEQ paired with the old cached response");
-    assert_eq!(result.channel_results["left"].final_curve.spl, before_curve.spl);
-    assert_eq!(result.channel_results["left"].biquads[0].constants(), before_coefficients);
+    assert!(!limit_runtime_combined_boost(
+        &mut result,
+        6.0,
+        3.0,
+        48_000.0,
+        12,
+        (20.0, 20_000.0),
+        dir.path()
+    ));
+    assert_eq!(
+        serde_json::to_value(&result.channels["left"]).unwrap(),
+        before,
+        "failed replay left a scaled PEQ paired with the old cached response"
+    );
+    assert_eq!(
+        result.channel_results["left"].final_curve.spl,
+        before_curve.spl
+    );
+    assert_eq!(
+        result.channel_results["left"].biquads[0].constants(),
+        before_coefficients
+    );
     assert_eq!(result.channel_results["left"].biquads[0].db_gain, 6.0);
 }
 
 #[test]
 fn combined_boost_limit_deselects_superseded_optimizer_candidate() {
     let mut result = crate::test_fixtures::single_channel_room_result("left");
-    result.channels.get_mut("left").unwrap().plugins = vec![
-        roomeq_model::PluginConfigWrapper { plugin_type: "eq".into(), parameters: serde_json::json!({
+    result.channels.get_mut("left").unwrap().plugins = vec![roomeq_model::PluginConfigWrapper {
+        plugin_type: "eq".into(),
+        parameters: serde_json::json!({
             "filters": [{"filter_type":"peak", "freq":120.0, "q":1.0, "db_gain":6.0}]
-        }) },
-    ];
+        }),
+    }];
     let mut run = roomeq_engine::OptimizerRunEvidence::from_backend_result(
-        "autoeq:cobyla", Ok(("converged".into(), 0.5)), &[0.0], &[-1.0], &[1.0], 40, Some(7),
+        "autoeq:cobyla",
+        Ok(("converged".into(), 0.5)),
+        &[0.0],
+        &[-1.0],
+        &[1.0],
+        40,
+        Some(7),
     );
     run.selected_for_output = true;
-    result.channel_results.get_mut("left").unwrap().optimizer_evidence = vec![run];
-    assert!(limit_runtime_combined_boost(&mut result, 6.0, 3.0, 48_000.0,
-        12, (20.0, 20_000.0), Path::new(".")));
+    result
+        .channel_results
+        .get_mut("left")
+        .unwrap()
+        .optimizer_evidence = vec![run];
+    assert!(limit_runtime_combined_boost(
+        &mut result,
+        6.0,
+        3.0,
+        48_000.0,
+        12,
+        (20.0, 20_000.0),
+        Path::new(".")
+    ));
     assert!(!result.channel_results["left"].optimizer_evidence[0].selected_for_output);
     assert!(result.metadata.optimizer_evidence.is_some());
-    assert!(!serde_json::to_string(&result.metadata.optimizer_evidence).unwrap()
-        .contains("\"selected_for_output\":true"));
-    assert!(result.metadata.stage_outcomes.iter().any(|stage| stage.stage == "combined_boost_limit_left"));
+    assert!(
+        !serde_json::to_string(&result.metadata.optimizer_evidence)
+            .unwrap()
+            .contains("\"selected_for_output\":true")
+    );
+    assert!(
+        result
+            .metadata
+            .stage_outcomes
+            .iter()
+            .any(|stage| stage.stage == "combined_boost_limit_left")
+    );
 }
 
 #[test]
@@ -3828,22 +5902,29 @@ fn combined_boost_limit_refreshes_biquad_coefficients_and_ir_report() {
             Biquad::new(BiquadFilterType::Highpass, 25.0, sample_rate, 0.7, 0.0),
         ];
         let mut expected_filters = filters.clone();
-        expected_filters[0] = Biquad::new(
-            BiquadFilterType::Peak, 120.0, sample_rate, 1.0, 3.0,
-        );
+        expected_filters[0] = Biquad::new(BiquadFilterType::Peak, 120.0, sample_rate, 1.0, 3.0);
         let channel = result.channel_results.get_mut("left").unwrap();
-        channel.initial_curve.phase = Some(ndarray::Array1::zeros(channel.initial_curve.freq.len()));
+        channel.initial_curve.phase =
+            Some(ndarray::Array1::zeros(channel.initial_curve.freq.len()));
         channel.biquads = filters.clone();
         let initial = channel.initial_curve.clone();
-        result.channels.get_mut("left").unwrap().plugins = vec![
-            roomeq_engine::output::create_eq_plugin(&filters),
-        ];
+        result.channels.get_mut("left").unwrap().plugins =
+            vec![roomeq_engine::output::create_eq_plugin(&filters)];
         super::reports::refresh_temporal_ir_evidence(
-            &mut result, &RoomConfig::default(), sample_rate, Path::new("."),
+            &mut result,
+            &RoomConfig::default(),
+            sample_rate,
+            Path::new("."),
         );
         let old_ir = result.channels["left"].post_ir.clone().unwrap();
         assert!(limit_runtime_combined_boost(
-            &mut result, 6.0, 3.0, sample_rate, 12, (20.0, 20_000.0), Path::new("."),
+            &mut result,
+            6.0,
+            3.0,
+            sample_rate,
+            12,
+            (20.0, 20_000.0),
+            Path::new("."),
         ));
         assert_eq!(
             result.channels["left"].plugins[0].parameters,
@@ -3852,14 +5933,20 @@ fn combined_boost_limit_refreshes_biquad_coefficients_and_ir_report() {
         );
         let actual_filters = &result.channel_results["left"].biquads;
         let expected_response = roomeq_engine::response::compute_peq_complex_response(
-            &expected_filters, &initial.freq, sample_rate,
+            &expected_filters,
+            &initial.freq,
+            sample_rate,
         );
         let actual_response = roomeq_engine::response::compute_peq_complex_response(
-            actual_filters, &initial.freq, sample_rate,
+            actual_filters,
+            &initial.freq,
+            sample_rate,
         );
         for (actual, expected) in actual_response.iter().zip(&expected_response) {
-            assert!((*actual - *expected).norm() < 1e-12,
-                "cached coefficients still describe the pre-limit gain at {sample_rate} Hz");
+            assert!(
+                (*actual - *expected).norm() < 1e-12,
+                "cached coefficients still describe the pre-limit gain at {sample_rate} Hz"
+            );
         }
         assert_eq!(actual_filters[1].db_gain, -4.0);
         assert_eq!(actual_filters[2].db_gain, 0.0);
@@ -3867,13 +5954,33 @@ fn combined_boost_limit_refreshes_biquad_coefficients_and_ir_report() {
         assert!(result.channels["left"].post_ir.is_none());
 
         super::reports::refresh_final_reports(
-            &mut result, &RoomConfig::default(), sample_rate, Path::new("."),
+            &mut result,
+            &RoomConfig::default(),
+            sample_rate,
+            Path::new("."),
         );
         let (_, expected_ir) = roomeq_engine::analysis::ir_waveform::compute_channel_ir_waveforms(
-            &initial, &expected_filters, None, 0.0, sample_rate,
-        ).unwrap();
+            &initial,
+            &expected_filters,
+            None,
+            0.0,
+            sample_rate,
+        )
+        .unwrap();
         let actual_ir = result.channels["left"].post_ir.as_ref().unwrap();
-        assert_eq!(actual_ir.amplitude, expected_ir.amplitude);
+        assert_eq!(actual_ir.amplitude.len(), expected_ir.amplitude.len());
+        let max_delta = actual_ir
+            .amplitude
+            .iter()
+            .zip(&expected_ir.amplitude)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_delta < 1e-12,
+            "serialized IR differs from expected biquad IR by {max_delta} at {sample_rate} Hz; first actual={}, expected={}",
+            actual_ir.amplitude[0],
+            expected_ir.amplitude[0]
+        );
         assert_ne!(actual_ir.amplitude, old_ir.amplitude);
     }
 }
@@ -3894,10 +6001,17 @@ mod per_driver_latency_tests {
                     plugin.parameters["room_eq_fir_placement"] = serde_json::json!("per_driver");
                     plugin.parameters["correction_design_delay_ms"] = serde_json::json!(42.6666667);
                     roomeq_model::DriverDspChain {
+                        measured_acoustics: None,
                         index,
                         name: format!("driver{index}"),
                         plugins: vec![plugin],
                         initial_curve: chain.initial_curve.clone(),
+                        measured_band_hz: chain.initial_curve.as_ref().and_then(|curve| {
+                            match (curve.freq.first(), curve.freq.last()) {
+                                (Some(&low), Some(&high)) => Some([low, high]),
+                                _ => None,
+                            }
+                        }),
                     }
                 })
                 .collect(),

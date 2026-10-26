@@ -21,7 +21,9 @@ pub mod x2peq {
     pub use autoeq_core::x2peq::*;
 }
 pub mod roomeq {
-    pub use crate::roomeq_types::{AudibilityDeadbandConfig, MultiMeasurementStrategy};
+    pub use crate::roomeq_types::{
+        AudibilityDeadbandConfig, ModeProximityEvidence, MultiMeasurementStrategy,
+    };
     pub mod phase_utils {
         pub use autoeq_core::phase_utils::*;
     }
@@ -34,10 +36,14 @@ pub mod initial_guess;
 pub mod loss;
 pub mod optim;
 pub mod penalty_mode;
+pub mod perceptual_promotion;
 pub mod problem;
 pub mod rerank;
 pub mod roomeq_types;
 pub mod smoothness_penalty_config;
+
+#[cfg(test)]
+mod psycho_fast;
 
 pub use driver_optimization::{
     DriverOptimizationResult, create_driver_optimization_params, optimize_drivers_crossover,
@@ -45,7 +51,7 @@ pub use driver_optimization::{
 };
 pub use loss::{CrossoverType, HeadphoneLossData, LossType, SpeakerLossData};
 pub use math_audio_optimisation as de;
-pub use optim::params::OptimParams;
+pub use optim::params::{FrequencyQPolicy, OptimParams, TiltBandsHz};
 pub use optim::run_descriptor::{
     OptimizationRunDescriptor, OptimizationRunResult, OptimizerExecutionPlatform, ParameterBounds,
 };
@@ -53,6 +59,14 @@ pub use optim::{MultiObjectiveData, ObjectiveData, ObjectiveDataBuilder};
 pub use penalty_mode::PenaltyMode;
 pub use problem::{ObjectiveEvaluator, OptimizationProblem, OptimizationResult};
 pub use smoothness_penalty_config::SmoothnessPenaltyConfig;
+
+/// Fallback seed for optimizer stages without an explicit seed.
+///
+/// Unspecified never means nondeterministic: every stochastic stage seeds
+/// from this value when its config seed is `None`. The value is arbitrary
+/// but stable; changing it perturbs all unseeded optimization results.
+/// Pass an explicit seed when the run needs experiment identity.
+pub const DEFAULT_SEED: u64 = 0x5EED_5EED;
 
 /// Adapter implemented by higher-level RoomEQ configuration crates.
 pub trait RoomOptimizerConfig {

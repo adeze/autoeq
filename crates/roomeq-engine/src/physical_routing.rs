@@ -90,6 +90,8 @@ pub fn resolve_physical_routing(
         .map(|name| {
             let chain = channels.get(name);
             if chain.is_none()
+                && roomeq_model::home_cinema::role_for_channel(name)
+                    != roomeq_model::HomeCinemaRole::Lfe
                 && (graph
                     .routes
                     .iter()
@@ -109,7 +111,9 @@ pub fn resolve_physical_routing(
         .iter()
         .map(|name| {
             let plugins = if let Some(driver) = shared_drivers.iter().find(|d| &d.name == name) {
-                if channels.contains_key(name) {
+                // The shared parent may use its first driver's output name.
+                // It owns common processing, not a second physical output.
+                if channels.contains_key(name) && name != &graph.physical_sub_output {
                     return Err(invalid(
                         "physical output has both driver and channel ownership",
                     ));
@@ -124,9 +128,39 @@ pub fn resolve_physical_routing(
                     }
                     match plugin.plugin_type.as_str() {
                         // These controls are already included in the producer's route values.
+                        "gain"
+                            if plugin
+                                .parameters
+                                .get("room_eq_correction_gain")
+                                .and_then(|v| v.as_bool())
+                                == Some(true) =>
+                        {
+                            plugins.push(plugin.clone())
+                        }
+                        "delay"
+                            if plugin
+                                .parameters
+                                .get("room_eq_correction_delay")
+                                .and_then(|v| v.as_bool())
+                                == Some(true) =>
+                        {
+                            let valid = plugin
+                                .parameters
+                                .get("delay_ms")
+                                .and_then(|v| v.as_f64())
+                                .is_some_and(|delay| delay.is_finite() && delay >= 0.0);
+                            if !valid {
+                                return Err(invalid(
+                                    "correction-owned physical delay must be finite and nonnegative",
+                                ));
+                            }
+                            plugins.push(plugin.clone())
+                        }
                         "gain" | "delay" => (),
                         // Linear residual processing stays after the common sub correction.
-                        "eq" | "convolution" => plugins.push(plugin.clone()),
+                        "eq" | "convolution" | "crossover" | "limiter" => {
+                            plugins.push(plugin.clone())
+                        }
                         _ => return Err(invalid("unsupported physical sub driver processing")),
                     }
                 }
@@ -171,9 +205,15 @@ pub fn resolve_physical_routing(
                     c != &route.source_channel && !(is_sub && c == &graph.physical_sub_output)
                 })
             {
-                return Err(invalid(
-                    "physical route has inconsistent endpoint chain ownership",
-                ));
+                return Err(invalid(format!(
+                    "physical route has inconsistent endpoint chain ownership: source='{}' source_index={} destination='{}' destination_index={} pre={:?} post={:?}",
+                    route.source_channel,
+                    route.source_index,
+                    route.destination,
+                    route.destination_index,
+                    route.pre_chain_channel,
+                    route.post_chain_channel
+                )));
             }
             if hierarchical && driver_names.contains(&route.destination) && !is_sub {
                 return Err(invalid(
@@ -336,20 +376,26 @@ mod tests {
             .push(tagged("gain", json!({"gain_db": 4.0}), "route_owned"));
         sub.drivers = Some(vec![
             DriverDspChain {
+                measured_acoustics: None,
                 name: "subs_1".into(),
                 index: 0,
                 initial_curve: None,
+                measured_band_hz: None,
                 plugins: vec![tagged("delay", json!({"delay_ms": 9.0}), "post_route")],
             },
             DriverDspChain {
+                measured_acoustics: None,
                 name: "subs_2".into(),
                 index: 1,
                 initial_curve: None,
+                measured_band_hz: None,
                 plugins: vec![tagged("gain", json!({"gain_db": -5.0}), "post_route")],
             },
         ]);
         let mut graph = BassManagementRoutingGraph {
             physical_sub_output: "LFE".into(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
             input_channels: vec!["L".into(), "R".into(), "LFE".into()],
             output_channels: vec![
                 "L".into(),
@@ -361,6 +407,7 @@ mod tests {
             routes: vec![],
             matrix: None,
             input_trim_db: HashMap::from([("L".into(), -3.0)]),
+            post_dsp_main_alignment_band_hz: None,
             advisories: vec![],
         };
         for (source_index, source) in ["L", "R", "LFE"].into_iter().enumerate() {
@@ -450,6 +497,107 @@ mod tests {
     }
 
     #[test]
+    fn physical_routing_preserves_correction_owned_output_attenuation_once() {
+        let (mut channels, graph) = fixture();
+        channels.get_mut("LFE").unwrap().drivers.as_mut().unwrap()[0]
+            .plugins
+            .push(tagged(
+                "gain",
+                json!({"gain_db": -4.0, "room_eq_correction_gain": true}),
+                "post_route",
+            ));
+        let physical = resolve_physical_routing(&channels, &graph).unwrap();
+        let owned: Vec<_> = physical.outputs[3]
+            .plugins
+            .iter()
+            .filter(|plugin| {
+                plugin
+                    .parameters
+                    .get("room_eq_correction_gain")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+            })
+            .collect();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].parameters["gain_db"], -4.0);
+        assert!(
+            physical.outputs[4]
+                .plugins
+                .iter()
+                .all(|plugin| plugin.parameters.get("room_eq_correction_gain").is_none())
+        );
+        assert_eq!(
+            physical
+                .routes
+                .iter()
+                .find(|route| route.output_index == 3)
+                .unwrap()
+                .gain_db,
+            4.0
+        );
+    }
+
+    #[test]
+    fn physical_routing_preserves_correction_owned_output_delay_once() {
+        let (mut channels, graph) = fixture();
+        let baseline = resolve_physical_routing(&channels, &graph).unwrap();
+        channels.get_mut("LFE").unwrap().drivers.as_mut().unwrap()[0]
+            .plugins
+            .push(tagged(
+                "delay",
+                json!({"delay_ms": 0.5, "room_eq_correction_delay": true}),
+                "post_route",
+            ));
+        let physical = resolve_physical_routing(&channels, &graph).unwrap();
+        let owned: Vec<_> = physical.outputs[3]
+            .plugins
+            .iter()
+            .filter(|plugin| {
+                plugin.plugin_type == "delay"
+                    && plugin.parameters["room_eq_correction_delay"] == true
+            })
+            .collect();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].parameters["delay_ms"], 0.5);
+        assert!(
+            physical.outputs[4]
+                .plugins
+                .iter()
+                .all(|plugin| plugin.parameters["room_eq_correction_delay"] != true)
+        );
+        assert_eq!(physical.routes[3].delay_ms, graph.routes[3].delay_ms);
+
+        let response = |plugins: &[PluginConfigWrapper]| {
+            let mut chain = channels["LFE"].clone();
+            chain.plugins = plugins.to_vec();
+            chain.drivers = None;
+            let mut sidecars = crate::dsp_realization::NoConvolutionIr;
+            let mut realized =
+                crate::dsp_realization::RealizedDsp::new(&chain, 48_000.0, &mut sidecars).unwrap();
+            realized.response_at(100.0).unwrap()
+        };
+        let before = response(&baseline.outputs[3].plugins);
+        let after = response(&physical.outputs[3].plugins);
+        let expected = num_complex::Complex64::from_polar(
+            1.0,
+            -2.0 * std::f64::consts::PI * 100.0 * 0.5 / 1_000.0,
+        );
+        assert!(((after / before) - expected).norm() < 1e-9);
+
+        for bad_delay in [json!(-0.5), json!("invalid")] {
+            let mut changed = channels.clone();
+            let driver = &mut changed.get_mut("LFE").unwrap().drivers.as_mut().unwrap()[0];
+            driver
+                .plugins
+                .iter_mut()
+                .find(|plugin| plugin.parameters["room_eq_correction_delay"] == true)
+                .unwrap()
+                .parameters["delay_ms"] = bad_delay;
+            assert!(resolve_physical_routing(&changed, &graph).is_err());
+        }
+    }
+
+    #[test]
     fn physical_routing_is_permutation_invariant_and_roundtrips() {
         let (channels, mut graph) = fixture();
         let before =
@@ -470,9 +618,14 @@ mod tests {
         driver
             .plugins
             .push(tagged("eq", json!({"filters": []}), "post_route"));
+        driver.plugins.push(tagged(
+            "crossover",
+            json!({"type": "LR24", "frequency": 80.0, "output": "low"}),
+            "post_route",
+        ));
         graph.routes[0].delay_ms = 0.0001;
         let physical = resolve_physical_routing(&channels, &graph).unwrap();
-        assert_eq!(physical.outputs[3].plugins.len(), 4);
+        assert_eq!(physical.outputs[3].plugins.len(), 5);
         let plugins = physical_route_plugins(
             physical
                 .routes
@@ -482,6 +635,60 @@ mod tests {
         );
         assert_eq!(plugins.last().unwrap().parameters["delay_ms"], 0.0001);
         assert_eq!(plugins[1].parameters["type"], "LR48");
+    }
+
+    #[test]
+    fn physical_routing_allows_shared_parent_named_after_driver() {
+        let (mut channels, mut graph) = fixture();
+        // Keep LFE as a program input, without the legacy unused output slot.
+        graph.output_channels.remove(2);
+        for route in &mut graph.routes {
+            if route.destination_index > 2 {
+                route.destination_index -= 1;
+            }
+        }
+        channels.get_mut("LFE").unwrap().drivers.as_mut().unwrap()[0]
+            .plugins
+            .push(tagged("eq", json!({"filters": []}), "post_route"));
+        let expected = resolve_physical_routing(&channels, &graph).unwrap();
+
+        let mut shared = channels.remove("LFE").unwrap();
+        let mut input_only = shared.clone();
+        input_only.plugins = selected(&shared, "pre_route");
+        input_only.drivers = None;
+        channels.insert("LFE".into(), input_only);
+        shared.channel = "subs_1".into();
+        channels.insert("subs_1".into(), shared);
+        graph.physical_sub_output = "subs_1".into();
+        for route in &mut graph.routes {
+            if route.pre_chain_channel.as_deref() == Some("LFE") {
+                route.pre_chain_channel = Some("subs_1".into());
+            }
+        }
+
+        let actual = resolve_physical_routing(&channels, &graph).unwrap();
+        // Shared and driver processing, plus route controls, remain identical:
+        // no output loses processing or receives the shared chain twice.
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn physical_routing_rejects_separate_channel_named_after_driver() {
+        let (mut channels, graph) = fixture();
+        let chain = serde_json::from_value(json!({
+            "channel": "subs_2", "plugins": []
+        }))
+        .unwrap();
+        channels.insert("subs_2".into(), chain);
+        let error = resolve_physical_routing(&channels, &graph).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("both driver and channel ownership")
+        );
     }
 
     #[test]

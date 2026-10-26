@@ -176,12 +176,27 @@ pub fn optimize_dba_detailed(
         )
         .into());
     }
+    // Emission-side record: non-PEQ gain/delay layouts pass the envelope
+    // choke-point untouched, but the diagnostics still attach so the DBA
+    // return path is judged like every other emission site.
+    crate::evidence_gate::verify_emission_candidate(
+        "dba-array",
+        &x,
+        &objective_data,
+        &optim_params,
+        &mut optimizer_evidence,
+    )
+    .map_err(|reason| format!("DBA candidate refused at emission: {reason}"))?;
 
     if !post_objective.is_finite() || post_objective > pre_objective + 1e-9 {
         log::warn!("DBA objective regressed; retaining the initial array controls");
         x = initial_x;
         optimizer_evidence.selected_for_output = false;
     }
+    // Acceptance-side budget record: the emitted array gains/delays must
+    // honor the DBA search budgets on the accepted vector.
+    autoeq_optim::optim::verify_joint_budgets("dba-array", &x, &lower_bounds, &upper_bounds)
+        .map_err(|reason| format!("DBA candidate refused at emission: {reason}"))?;
 
     // Recompute scores
     // Note: compute_base_fitness uses args.loss_type which we set to MultiSubFlat
@@ -281,6 +296,7 @@ pub fn sum_array_response(curves: &[Curve]) -> Result<Curve, Box<dyn Error>> {
         .unzip();
 
     Ok(Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         freq: ref_freq,
         spl: Array1::from(spl),
         phase: Some(Array1::from(phase)),
@@ -341,6 +357,10 @@ fn compute_dba_combined_curve(
         .unzip();
 
     Ok(Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine([
+            front_curve,
+            rear_curve,
+        ]),
         freq: freq_grid.clone(),
         spl: Array1::from(spl),
         phase: Some(Array1::from(phase)),
@@ -351,6 +371,48 @@ fn compute_dba_combined_curve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dba_array_and_front_rear_sum_retain_original_sampling_and_smoothing() {
+        let sparse = Curve {
+            freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: Array1::from_elem(5, 80.0),
+            phase: Some(Array1::zeros(5)),
+            ..Default::default()
+        };
+        let dense_grid = Array1::linspace(20.0, 200.0, 128);
+        let dense = autoeq_core::interpolate_response(&dense_grid, &sparse);
+        let front = sum_array_response(&[dense.clone(), dense.clone()]).unwrap();
+        assert_eq!(front.retained_resolution().width_octaves(80.0), Some(2.0));
+        let mut smoothed = dense;
+        smoothed.resolution = smoothed
+            .retained_resolution()
+            .with_smoothing(vec![(20.0, 4.0), (200.0, 4.0)]);
+        let rear = invert_polarity(&sum_array_response(&[smoothed]).unwrap());
+        assert_eq!(rear.retained_resolution().width_octaves(80.0), Some(4.0));
+        let combined = compute_dba_combined_curve(
+            &front,
+            &rear,
+            &[0.0, 0.0],
+            &[0.0, 0.0],
+            &dense_grid,
+            48_000.0,
+        )
+        .unwrap();
+        assert_eq!(
+            combined.retained_resolution().width_octaves(80.0),
+            Some(4.0)
+        );
+        // Two front units minus one rear unit retain the original pressure.
+        assert!(combined.spl.iter().all(|level| (level - 80.0).abs() < 1e-9));
+        assert!(
+            combined
+                .phase
+                .unwrap()
+                .iter()
+                .all(|phase| phase.abs() < 1e-9)
+        );
+    }
 
     #[test]
     fn test_invert_polarity() {

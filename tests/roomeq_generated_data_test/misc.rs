@@ -150,6 +150,8 @@ fn test_mixedphase_with_phase_data() {
                 pre_ringing_threshold_db: -30.0,
                 min_spatial_depth: 0.5,
                 phase_smoothing_octaves: 0.167,
+                assessment: Default::default(),
+                max_correction_latency_ms: None,
             }),
             fir: Some(FirConfig {
                 placement: Default::default(),
@@ -165,7 +167,9 @@ fn test_mixedphase_with_phase_data() {
         provenance: Default::default(),
         recording_config: None,
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
+        measured_impulse_responses: Default::default(),
     };
 
     let output_dir = workspace_root().join("data_generated/roomeq_comparison/mixedphase_synthetic");

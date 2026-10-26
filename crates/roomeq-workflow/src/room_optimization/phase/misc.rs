@@ -280,6 +280,7 @@ mod tests {
     fn total_chain_delay_ms_sums_delay_plugins() {
         use serde_json::json;
         let chain = roomeq_model::ChannelDspChain {
+            physical_correction_target: None,
             channel: "test".to_string(),
             plugins: vec![
                 roomeq_model::PluginConfigWrapper {
@@ -304,6 +305,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         assert_eq!(super::super::total_chain_delay_ms(&chain), 4.0);
     }

@@ -20,16 +20,33 @@ pub mod roomeq {
 pub mod auto_tune;
 pub mod config;
 pub mod contracts;
+pub mod crossover_cancellation;
+pub mod decision_ledger;
+pub mod designer_limits;
+pub use designer_limits::DesignerLimits;
+pub mod eligibility;
 pub mod home_cinema;
+pub use crossover_cancellation::*;
+pub mod headroom;
 pub mod home_cinema_resolution;
 pub mod ir_waveform;
+pub mod joint_sub_report;
+pub mod physical_drive;
+#[doc(inline)]
+pub use joint_sub_report::{
+    JointSubDiagnostics, JointSubGainApplication, JointSubObjectiveReport, JointSubSeatReport,
+};
+pub mod acceptance_evidence;
 pub mod optimizer_settings;
 pub mod output;
+pub mod payload_binding;
 pub mod physical_routing;
 pub mod preset;
+pub mod reference_registry;
 pub mod report_contracts;
 pub mod rir_prototype_config;
 pub mod target_tilt;
+pub mod target_transition;
 pub mod validation_rules;
 pub use config::*;
 pub use contracts::{ChannelChain, DspGraph, Plugin};

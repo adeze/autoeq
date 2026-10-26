@@ -1,0 +1,656 @@
+{
+  "report": {
+    "graph_id": "candidate",
+    "status": "rejected",
+    "exit_code": 1,
+    "verified_captures": 1,
+    "detail": "held-out seat failed",
+    "comparisons": [
+      {
+        "source": "<source>",
+        "seat": "seat",
+        "capture_views": {
+          "candidate_graph_id": "candidate",
+          "baseline_graph_id": "baseline",
+          "source": "<source>",
+          "seat": "seat",
+          "scope": "<operator scope>",
+          "evidence_kind": "synthetic_capture_pair",
+          "unavailable": {
+            "decay": "<missing>"
+          },
+          "ir_step": {
+            "provenance": {
+              "graph_identity": "candidate"
+            },
+            "common_reference": "<clock>",
+            "times_ms": [
+              0.0,
+              1.0,
+              2.0
+            ],
+            "pre_ir": [
+              0.0,
+              0.25,
+              0.0
+            ],
+            "post_ir": [
+              0.5,
+              0.0,
+              0.0
+            ],
+            "pre_step": [
+              0.0,
+              0.25,
+              0.25
+            ],
+            "post_step": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "settings": {
+            "timing_reference_id": "shared"
+          },
+          "valid_band_hz": [
+            20.0,
+            20000.0
+          ],
+          "stimulus_hash": "stimulus",
+          "sample_rate_hz": 48000.0,
+          "octave_t60": {
+            "method": "octave_schroeder_t30_t20_v1",
+            "min_r2": 0.9,
+            "valid_band_hz": [
+              20.0,
+              20000.0
+            ],
+            "scope": "<T60 scope>",
+            "pre": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.4,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              }
+            ],
+            "post": [
+              {
+                "centre_hz": 63,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 125,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 250,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 500,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 1000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 2000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 4000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 8000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              },
+              {
+                "centre_hz": 16000,
+                "t60_s": 0.3,
+                "fit_range": "T30",
+                "r2": 0.98,
+                "valid": true,
+                "reason": ""
+              }
+            ]
+          },
+          "decay": {
+            "provenance": {
+              "graph_identity": "candidate"
+            },
+            "method": "finite_window_octave_schroeder_v1",
+            "scope": "<finite observation>",
+            "settings": {
+              "noise_window_ms": [
+                80,
+                100
+              ],
+              "minimum_fit_margin_db": 10,
+              "minimum_r_squared": 0.95
+            },
+            "bands": [
+              {
+                "center_hz": 500,
+                "times_ms": [
+                  0,
+                  10,
+                  20
+                ],
+                "pre_db": [
+                  0,
+                  -10,
+                  -20
+                ],
+                "post_db": [
+                  -6,
+                  -16,
+                  -26
+                ],
+                "pre_normalized_db": [
+                  0,
+                  -10,
+                  -20
+                ],
+                "post_normalized_db": [
+                  0,
+                  -10,
+                  -20
+                ],
+                "pre_fit": null,
+                "post_fit": null,
+                "pre_fit_unavailable": "<noise limited>",
+                "post_fit_unavailable": "<noise limited>"
+              }
+            ]
+          },
+          "waterfall": {
+            "method": "hann_stft_waterfall_v1",
+            "reference": "each_full_grid_peak",
+            "valid_band_hz": [
+              20,
+              1000
+            ],
+            "window_ms": 32,
+            "hop_ms": 2,
+            "post_ms": 500,
+            "scope": "<waterfall scope>",
+            "pre": {
+              "grid": {
+                "times_ms": [
+                  -5,
+                  60,
+                  200,
+                  500
+                ],
+                "freqs_hz": [
+                  100,
+                  125,
+                  250
+                ],
+                "mags_db": [
+                  [
+                    -30,
+                    -10,
+                    -50
+                  ],
+                  [
+                    -35,
+                    -15,
+                    -55
+                  ],
+                  [
+                    -50,
+                    -40,
+                    -70
+                  ],
+                  [
+                    -80,
+                    -75,
+                    -90
+                  ]
+                ]
+              },
+              "resonances": [
+                {
+                  "freq_hz": 125,
+                  "level_db": -15,
+                  "decay_time_s": 0.35
+                }
+              ]
+            },
+            "post": {
+              "grid": {
+                "times_ms": [
+                  -5,
+                  60,
+                  200,
+                  500
+                ],
+                "freqs_hz": [
+                  100,
+                  125,
+                  250
+                ],
+                "mags_db": [
+                  [
+                    -30,
+                    -10,
+                    -50
+                  ],
+                  [
+                    -35,
+                    -15,
+                    -55
+                  ],
+                  [
+                    -50,
+                    -40,
+                    -70
+                  ],
+                  [
+                    -80,
+                    -75,
+                    -90
+                  ]
+                ]
+              },
+              "resonances": [
+                {
+                  "freq_hz": 125,
+                  "level_db": -15,
+                  "decay_time_s": 0.35
+                }
+              ]
+            }
+          },
+          "wavelet": {
+            "method": "complex_morlet_three_cycle_v1",
+            "reference": "each_full_grid_peak",
+            "valid_band_hz": [
+              20,
+              1000
+            ],
+            "cycles": 3,
+            "freqs_per_octave": 6,
+            "hop_ms": 1,
+            "display_range_db": [
+              -30,
+              0
+            ],
+            "scope": "<wavelet scope>",
+            "pre": {
+              "freqs_hz": [
+                100,
+                200,
+                400
+              ],
+              "times_ms": [
+                -5,
+                0,
+                100,
+                500
+              ],
+              "mags_db": [
+                [
+                  -30,
+                  -20,
+                  -25,
+                  -30
+                ],
+                [
+                  -28,
+                  0,
+                  -15,
+                  -30
+                ],
+                [
+                  -30,
+                  -10,
+                  -20,
+                  -30
+                ]
+              ]
+            },
+            "post": {
+              "freqs_hz": [
+                100,
+                200,
+                400
+              ],
+              "times_ms": [
+                -5,
+                0,
+                100,
+                500
+              ],
+              "mags_db": [
+                [
+                  -30,
+                  -20,
+                  -25,
+                  -30
+                ],
+                [
+                  -28,
+                  0,
+                  -15,
+                  -30
+                ],
+                [
+                  -30,
+                  -10,
+                  -20,
+                  -30
+                ]
+              ]
+            }
+          },
+          "ambient_noise": {
+            "evidence_kind": "synthetic_noise_capture",
+            "conditions": "<HVAC state>",
+            "analysis": {
+              "method": "periodic_hann_welch_pressure_v1",
+              "scope": "<operator declared>",
+              "duration_seconds": 2,
+              "bin_spacing_hz": 10,
+              "window_enbw_hz": 15,
+              "calibration": {
+                "pascals_per_sample": 2,
+                "self_noise_note": "<not characterized>"
+              },
+              "bin_freqs_hz": [
+                990,
+                1000,
+                1010
+              ],
+              "pressure_psd_pa2_per_hz": [
+                0,
+                1e-06,
+                2e-06
+              ],
+              "spectrum": {
+                "provenance": {
+                  "graph_identity": "candidate"
+                },
+                "freqs": [
+                  1000
+                ],
+                "noise_spl_db": [
+                  50
+                ]
+              },
+              "octave_edges_hz": [
+                [
+                  707,
+                  1415
+                ]
+              ],
+              "octave_bin_centers_hz": [
+                [
+                  990,
+                  1010
+                ]
+              ],
+              "unavailable_bands": {
+                "63": "<insufficient support>"
+              }
+            }
+          },
+          "early_reflections": {
+            "method": "bandlimited_early_reflection_table_v1",
+            "band_hz": [
+              1000,
+              8000
+            ],
+            "threshold_dbfs": -15,
+            "direct_reference": "<direct peak>",
+            "pre_direct_sample": 480,
+            "post_direct_sample": 490,
+            "scope": "<diagnostic scope>",
+            "pre": [
+              {
+                "gain_dbfs": -6.02,
+                "time_ms": 5,
+                "distance_cm": 171.5,
+                "first_dip_hz": 100,
+                "ripple_db": 9.54
+              }
+            ],
+            "post": [
+              {
+                "gain_dbfs": -8,
+                "time_ms": 5,
+                "distance_cm": 171.5,
+                "first_dip_hz": 100,
+                "ripple_db": null
+              }
+            ]
+          },
+          "early_late_curves": {
+            "method": "incoherent_band_energy",
+            "reference": "full_peak_band",
+            "smoothing": "third_octave",
+            "split_ms": 20,
+            "direct_reference": "broadband envelope peak",
+            "valid_band_hz": [
+              80,
+              12000
+            ],
+            "scope": "<matched captures>",
+            "pre": {
+              "direct_sample": 480,
+              "full": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  0,
+                  -1,
+                  -2,
+                  -3
+                ]
+              },
+              "early": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  -1,
+                  -2,
+                  -3,
+                  -4
+                ]
+              },
+              "late": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  -7,
+                  -8,
+                  -9,
+                  -10
+                ]
+              }
+            },
+            "post": {
+              "direct_sample": 480,
+              "full": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  0,
+                  -1,
+                  -2,
+                  -3
+                ]
+              },
+              "early": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  -1,
+                  -2,
+                  -3,
+                  -4
+                ]
+              },
+              "late": {
+                "freq": [
+                  1000,
+                  2000,
+                  4000,
+                  8000
+                ],
+                "spl": [
+                  -7,
+                  -8,
+                  -9,
+                  -10
+                ]
+              }
+            }
+          }
+        },
+        "capture_views_binding": {
+          "algorithm": "sha256-json-typed-v1",
+          "graph_identity": "candidate",
+          "sha256": "25fce97a237f21b41d5ea7050ce552856002875dd09df413308bf10553ee1588"
+        }
+      }
+    ]
+  },
+  "verification": {
+    "graph_id": "candidate",
+    "comparisons": [
+      {
+        "index": 0,
+        "source": "<source>",
+        "seat": "seat",
+        "payload_sha256": "25fce97a237f21b41d5ea7050ce552856002875dd09df413308bf10553ee1588",
+        "verified": true,
+        "reason": "verified"
+      }
+    ]
+  },
+  "expected": "<section class=\"capture-views\"><h1>Capture acceptance diagnostics</h1><p>These plots do not establish safety, improved room damping, or listener benefit. Hashes check artifact consistency, not operator declarations or hardware authenticity.</p><p>Recorded capture verification status: <strong>rejected</strong>; 1 pre-result capture check(s); process exit code 1. This is the report’s recorded verdict, not a new validation by the viewer.</p><p>Recorded detail: held-out seat failed</p><h2>&lt;source&gt; / seat</h2><p>Matched IR evidence: synthetic_capture_pair; baseline baseline; candidate candidate</p><p>&lt;operator scope&gt;</p><p>Common sample-zero reference: &lt;clock&gt;</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;IR&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 2.0}, &quot;y&quot;: {&quot;label&quot;: &quot;raw sample units&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [0.0, 1.0, 2.0], &quot;y&quot;: [0.0, 0.25, 0.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [0.0, 1.0, 2.0], &quot;y&quot;: [0.5, 0.0, 0.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;STEP&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 2.0}, &quot;y&quot;: {&quot;label&quot;: &quot;raw sample units&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [0.0, 1.0, 2.0], &quot;y&quot;: [0.0, 0.25, 0.25], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [0.0, 1.0, 2.0], &quot;y&quot;: [0.5, 0.5, 0.5], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><h3>Matched octave decay</h3><p>&lt;finite observation&gt;</p><p>Finite-window T20 slope extrapolation, not passive-room RT. Noise-window and fit budgets are operator declarations: {&#x27;noise_window_ms&#x27;: [80, 100], &#x27;minimum_fit_margin_db&#x27;: 10, &#x27;minimum_r_squared&#x27;: 0.95}</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Common-reference decay 500 Hz&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 20}, &quot;y&quot;: {&quot;label&quot;: &quot;dB relative to the same baseline-band integrated energy&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [0.0, -10.0, -20.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [-6.0, -16.0, -26.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Normalized decay 500 Hz&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 20}, &quot;y&quot;: {&quot;label&quot;: &quot;dB relative to each capture’s own initial band energy&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [0.0, -10.0, -20.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [0.0, 10.0, 20.0], &quot;y&quot;: [0.0, -10.0, -20.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><p>pre fit unavailable: &lt;noise limited&gt;</p><p>post fit unavailable: &lt;noise limited&gt;</p><h3>Capture IR octave T60 diagnostic</h3><p>&lt;T60 scope&gt;</p><p>Declared supported band: 20–20000 Hz; minimum fit R²: 0.9. No invalid or EDT-only band is plotted; gaps are unavailable fits.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Baseline: measured octave-band T60&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 20, &quot;max&quot;: 20000}, &quot;y&quot;: {&quot;label&quot;: &quot;T60 (s)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [44.54772721475249, 88.74119674649424, 88.74119674649424, 176.7766952966369, 176.7766952966369, 353.5533905932738, 353.5533905932738, 707.1067811865476, 707.1067811865476, 1414.213562373095, 1414.213562373095, 2828.42712474619, 2828.42712474619, 5656.85424949238, 5656.85424949238, 11313.70849898476, 11313.70849898476, 22627.41699796952], &quot;y&quot;: [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4], &quot;color&quot;: &quot;#3089c5&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [44.54772721475249, 88.74119674649424, 88.74119674649424, 176.7766952966369, 176.7766952966369, 353.5533905932738, 353.5533905932738, 707.1067811865476, 707.1067811865476, 1414.213562373095, 1414.213562373095, 2828.42712474619, 2828.42712474619, 5656.85424949238, 5656.85424949238, 11313.70849898476, 11313.70849898476, 22627.41699796952], &quot;y&quot;: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><table><caption>Per-band T30/T20 estimates from matched IR captures</caption><tr><th>Hz</th><th>Baseline T60 (s)</th><th>Candidate T60 (s)</th><th>Baseline fit</th><th>Candidate fit</th></tr><tr><td>63</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>125</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>250</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>500</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>1000</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>2000</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>4000</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>8000</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr><tr><td>16000</td><td>0.400</td><td>0.300</td><td>T30; R²=0.980</td><td>T30; R²=0.980</td></tr></table><h3>Early reflection candidates (1–8 kHz)</h3><p>&lt;diagnostic scope&gt;</p><p>&lt;direct peak&gt;; reflections below −15 dB relative to direct are omitted. Filtered direct samples: baseline 480, candidate 490; table times are relative to each direct peak.</p><h4>Baseline (1 candidates)</h4><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Baseline: early-reflection candidates&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time after direct peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 15}, &quot;y&quot;: {&quot;label&quot;: &quot;Level relative to direct (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -40, &quot;max&quot;: 3}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Baseline&quot;, &quot;x&quot;: [5.0, 5.0, 5.0], &quot;y&quot;: [-40.0, -6.02, null], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><table><tr><th>Reflection</th><th>Gain (dB re direct)</th><th>Time (ms)</th><th>Extra path (cm)</th><th>First dip (Hz)</th><th>Comb ripple (dB p-p)</th></tr><tr><td>1</td><td>-6.02</td><td>5.00</td><td>171.5</td><td>100.0</td><td>9.54</td></tr></table><h4>Candidate (1 candidates)</h4><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Candidate: early-reflection candidates&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time after direct peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 15}, &quot;y&quot;: {&quot;label&quot;: &quot;Level relative to direct (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -40, &quot;max&quot;: 3}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Candidate&quot;, &quot;x&quot;: [5.0, 5.0, 5.0], &quot;y&quot;: [-40.0, -8.0, null], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><table><tr><th>Reflection</th><th>Gain (dB re direct)</th><th>Time (ms)</th><th>Extra path (cm)</th><th>First dip (Hz)</th><th>Comb ripple (dB p-p)</th></tr><tr><td>1</td><td>-8.00</td><td>5.00</td><td>171.5</td><td>100.0</td><td>unbounded</td></tr></table><h3>Captured IR early and late energy</h3><p>&lt;matched captures&gt;</p><p>20 ms split from broadband envelope peak; full, early, and late use one peak-band reference within each capture. Baseline and candidate levels have separate references.</p><h4>Baseline</h4><p>Direct sample: 480.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Baseline: early vs late energy&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y&quot;: {&quot;label&quot;: &quot;Level vs full peak band (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Full&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [0.0, -1.0, -2.0, -3.0], &quot;color&quot;: &quot;#202020&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Early&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [-1.0, -2.0, -3.0, -4.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Late&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [-7.0, -8.0, -9.0, -10.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><p>1–8 kHz mean early minus late: +6.00 dB (arithmetic mean of third-octave differences).</p><h4>Candidate</h4><p>Direct sample: 480.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Candidate: early vs late energy&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y&quot;: {&quot;label&quot;: &quot;Level vs full peak band (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Full&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [0.0, -1.0, -2.0, -3.0], &quot;color&quot;: &quot;#202020&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Early&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [-1.0, -2.0, -3.0, -4.0], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}, {&quot;name&quot;: &quot;Late&quot;, &quot;x&quot;: [1000.0, 2000.0, 4000.0, 8000.0], &quot;y&quot;: [-7.0, -8.0, -9.0, -10.0], &quot;color&quot;: &quot;#c56816&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><p>1–8 kHz mean early minus late: +6.00 dB (arithmetic mean of third-octave differences).</p><h3>Captured IR waterfall and resonance decay</h3><p>&lt;waterfall scope&gt;</p><p>Declared supported band: 20–1000 Hz. Each grid is referenced to its own full-grid peak; colors and levels do not compare absolute output between captures.</p><h4>Baseline</h4><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Captured IR waterfall&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 250}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -1, &quot;max&quot;: 500}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;125.0 Hz&quot;, &quot;x&quot;: [], &quot;y&quot;: [], &quot;color&quot;: &quot;#8847cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 125, 250], &quot;y&quot;: [-5, 60, 200, 500], &quot;z&quot;: [[-30, -10, -50], [-35, -15, -55], [-50, -40, -70], [-80, -75, -90]], &quot;surface&quot;: true, &quot;zmin&quot;: -60, &quot;zmax&quot;: 0, &quot;highlights&quot;: [1], &quot;colormap&quot;: &quot;turbo&quot;, &quot;show_surface&quot;: false, &quot;show_contours&quot;: true}}\"></div><table><caption>Detected 60 ms peaks and fitted 20–200 ms decay</caption><tr><th>Frequency (Hz)</th><th>Level (dB re own grid peak)</th><th>Fitted decay (s)</th></tr><tr><td>125</td><td>-15.00</td><td>0.35</td></tr></table><p>Highlighted: up to two longest fitted decays, then strongest 60 ms peak. Curves retain the full-grid peak reference; no fitted intercept is exported, so no extrapolated fit line is invented.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Baseline: decay of highlighted resonances&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 500}, &quot;y&quot;: {&quot;label&quot;: &quot;Level relative to full grid peak (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -60, &quot;max&quot;: 0}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;125.0 Hz — T60 0.350 s&quot;, &quot;x&quot;: [-5.0, 60.0, 200.0, 500.0], &quot;y&quot;: [-10.0, -15.0, -40.0, -75.0], &quot;color&quot;: &quot;#8847cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><h4>Candidate</h4><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Captured IR waterfall&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 250}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -1, &quot;max&quot;: 500}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;125.0 Hz&quot;, &quot;x&quot;: [], &quot;y&quot;: [], &quot;color&quot;: &quot;#8847cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 125, 250], &quot;y&quot;: [-5, 60, 200, 500], &quot;z&quot;: [[-30, -10, -50], [-35, -15, -55], [-50, -40, -70], [-80, -75, -90]], &quot;surface&quot;: true, &quot;zmin&quot;: -60, &quot;zmax&quot;: 0, &quot;highlights&quot;: [1], &quot;colormap&quot;: &quot;turbo&quot;, &quot;show_surface&quot;: false, &quot;show_contours&quot;: true}}\"></div><table><caption>Detected 60 ms peaks and fitted 20–200 ms decay</caption><tr><th>Frequency (Hz)</th><th>Level (dB re own grid peak)</th><th>Fitted decay (s)</th></tr><tr><td>125</td><td>-15.00</td><td>0.35</td></tr></table><p>Highlighted: up to two longest fitted decays, then strongest 60 ms peak. Curves retain the full-grid peak reference; no fitted intercept is exported, so no extrapolated fit line is invented.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Candidate: decay of highlighted resonances&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: 0, &quot;max&quot;: 500}, &quot;y&quot;: {&quot;label&quot;: &quot;Level relative to full grid peak (dB)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -60, &quot;max&quot;: 0}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;125.0 Hz — T60 0.350 s&quot;, &quot;x&quot;: [-5.0, 60.0, 200.0, 500.0], &quot;y&quot;: [-10.0, -15.0, -40.0, -75.0], &quot;color&quot;: &quot;#8847cc&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><h3>Captured IR three-cycle wavelet</h3><p>&lt;wavelet scope&gt;</p><p>Blue = −30 dB, red = 0 dB relative to each capture’s own full wavelet-grid peak. Colors do not compare absolute output levels.</p><p>Three-cycle wavelet; first 15 ms (1 exported time samples). Log-frequency x-axis, time y-axis. Colours retain the full-grid peak reference. The cyan dashed ridge marks peak energy arrival time per frequency. Display cells reflect the exported sampling; zoom cannot restore omitted samples.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Captured three-cycle wavelet heatmap&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 400}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -1, &quot;max&quot;: 15}, &quot;y2&quot;: null, &quot;series&quot;: [], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 200, 400], &quot;y&quot;: [-5, 0, 100, 500], &quot;z&quot;: [[-30, -28, -30], [-20, 0, -10], [-25, -15, -20], [-30, -30, -30]], &quot;surface&quot;: false, &quot;zmin&quot;: -30, &quot;zmax&quot;: 0, &quot;highlights&quot;: []}}\"></div><p>Three-cycle wavelet; first 15 ms (1 exported time samples). Log-frequency x-axis, time y-axis. Colours retain the full-grid peak reference. The cyan dashed ridge marks peak energy arrival time per frequency. Display cells reflect the exported sampling; zoom cannot restore omitted samples.</p><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;grid&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Captured three-cycle wavelet heatmap&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: 100, &quot;max&quot;: 400}, &quot;y&quot;: {&quot;label&quot;: &quot;Time from broadband peak (ms)&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: -1, &quot;max&quot;: 15}, &quot;y2&quot;: null, &quot;series&quot;: [], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null, &quot;grid&quot;: {&quot;x&quot;: [100, 200, 400], &quot;y&quot;: [-5, 0, 100, 500], &quot;z&quot;: [[-30, -28, -30], [-20, 0, -10], [-25, -15, -20], [-30, -30, -30]], &quot;surface&quot;: false, &quot;zmin&quot;: -30, &quot;zmax&quot;: 0, &quot;highlights&quot;: []}}\"></div><h3>Calibrated ambient noise</h3><p>synthetic_noise_capture; &lt;HVAC state&gt;</p><p>&lt;operator declared&gt;</p><p>Observation: 2 s; bin spacing: 10 Hz; Hann ENBW: 15 Hz. Bin spacing is not resolving power. No self-noise subtraction.</p><details><summary>Numeric calibration and acquisition limitations</summary><pre>{\n  &quot;pascals_per_sample&quot;: 2,\n  &quot;self_noise_note&quot;: &quot;&lt;not characterized&gt;&quot;\n}</pre></details><div class=\"report-figure\" data-section=\"{&quot;kind&quot;: &quot;figure&quot;, &quot;figure&quot;: {&quot;title&quot;: &quot;Calibrated ambient pressure PSD&quot;, &quot;x&quot;: {&quot;label&quot;: &quot;Frequency (Hz)&quot;, &quot;scale&quot;: &quot;log&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y&quot;: {&quot;label&quot;: &quot;dB re (20 µPa)²/Hz&quot;, &quot;scale&quot;: &quot;linear&quot;, &quot;min&quot;: null, &quot;max&quot;: null}, &quot;y2&quot;: null, &quot;series&quot;: [{&quot;name&quot;: &quot;Pressure PSD&quot;, &quot;x&quot;: [990.0, 1000.0, 1010.0], &quot;y&quot;: [null, 33.979400086720375, 36.98970004336019], &quot;color&quot;: &quot;#2864b4&quot;, &quot;width&quot;: 2.0, &quot;dash&quot;: &quot;solid&quot;, &quot;visible&quot;: true, &quot;y_axis&quot;: 0}], &quot;hlines&quot;: [], &quot;vlines&quot;: [], &quot;xranges&quot;: [], &quot;annotations&quot;: [], &quot;legend&quot;: true}, &quot;tab&quot;: null}\"></div><table><caption>FFT-bin-summed nominal octave levels, unweighted dB SPL re 20 µPa; not certified octave filters</caption><tr><th>Center (Hz)</th><th>Nominal band (Hz)</th><th>Summed bin centers (Hz)</th><th>dB SPL</th></tr><tr><td>1000</td><td>707–1415</td><td>990–1010</td><td>50</td></tr></table><p>Noise 63 Hz unavailable: &lt;insufficient support&gt;</p><ul><li>decay unavailable: &lt;missing&gt;</li></ul></section>"
+}

@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{PAGE_TITLE}}</title>
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: #f5f5f5;
+}
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+h1 {
+    color: #333;
+    border-bottom: 2px solid #4a90d9;
+    padding-bottom: 10px;
+}
+h2 {
+    color: #444;
+    margin-top: 30px;
+}
+.plot-container {
+    position: relative;
+    background: white;
+    border-radius: 8px;
+    padding: 12px;
+    max-width: 800px;
+    margin: 0 auto 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.freq-presets {
+    position: absolute;
+    right: 16px;
+    bottom: 70px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 5;
+}
+.db-presets {
+    position: absolute;
+    left: 16px;
+    top: 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 5;
+}
+.freq-presets button, .db-presets button {
+    font: inherit;
+    /* gpui-toolkit ButtonSetSize::Xs: text_xs (0.75rem = 12px), 6px x / 2px y. */
+    font-size: 12px;
+    padding: 2px 6px;
+    border: 1px solid #b9c8d8;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.92);
+    color: #244f72;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.freq-presets button:hover, .db-presets button:hover {
+    background: #e8f1fa;
+}
+.rubber-band {
+    position: absolute;
+    display: none;
+    border: 1px solid #4a90d9;
+    background: rgba(74,144,217,0.15);
+    z-index: 4;
+    pointer-events: none;
+}
+.plot-container canvas {
+    display: block;
+    width: 100%;
+    touch-action: manipulation;
+}
+.plot-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.plot-toolbar button, .plot-toolbar select {
+    font: inherit;
+    font-size: 0.88em;
+    min-height: 30px;
+    border: 1px solid #b9c8d8;
+    border-radius: 5px;
+    background: #fff;
+    color: #244f72;
+    padding: 4px 9px;
+}
+.plot-toolbar button {
+    cursor: pointer;
+}
+.plot-toolbar button.active {
+    background: #4a90d9;
+    color: #fff;
+    border-color: #4a90d9;
+}
+.plot-toolbar label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: #405365;
+    font-size: 0.88em;
+}
+.plot-container canvas.pan-enabled {
+    cursor: grab;
+    touch-action: none;
+}
+.plot-container canvas.panning {
+    cursor: grabbing;
+}
+.html-section {
+    background: white;
+    border-radius: 8px;
+    padding: 15px 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    overflow-x: auto;
+}
+.capture-quality-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.capture-quality-actions[hidden] {
+    display: none;
+}
+.capture-quality-actions button {
+    font: inherit;
+    font-size: 0.88em;
+    min-height: 30px;
+    border: 1px solid #b9c8d8;
+    border-radius: 5px;
+    background: #fff;
+    color: #244f72;
+    padding: 4px 9px;
+    cursor: pointer;
+}
+.capture-quality-actions button:hover {
+    background: #e8f1fa;
+}
+.capture-quality-actions button:focus-visible {
+    outline: 2px solid #4a90d9;
+    outline-offset: 2px;
+}
+html[data-report-theme="dark"] .capture-quality-actions button {
+    border-color: #596578;
+    background: #202630;
+    color: #e7eef8;
+}
+html[data-report-theme="dark"] .capture-quality-actions button:hover {
+    background: #303b4b;
+}
+/* Single-card rule: `.html-section` is the only card. Producer grouping
+   wrappers render flat inside it, and `flat` sections (self-framed
+   verdicts) skip the card entirely. */
+.html-section.flat {
+    background: none;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
+    overflow-x: visible;
+}
+.html-section .filters-section,
+.html-section .plot-container {
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0 0 12px;
+}
+.html-section .filters-section:last-child,
+.html-section .plot-container:last-child {
+    margin-bottom: 0;
+}
+/* Table wrappers carry no canvas and fill the card; embedded figures keep
+   the graph cap and stay centered. */
+.html-section .plot-container:not(:has(canvas)) {
+    max-width: none;
+}
+.html-section .plot-container:has(canvas) {
+    margin-left: auto;
+    margin-right: auto;
+}
+.bucket-bar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin: 4px 0 20px;
+}
+.bucket-bar button {
+    font: inherit;
+    font-size: 1.1em;
+    font-weight: 600;
+    padding: 10px 30px;
+    border: 1px solid #ccc;
+    border-radius: 8px 8px 0 0;
+    background: #e8e8e8;
+    color: #333;
+    cursor: pointer;
+}
+.bucket-bar button.active {
+    background: white;
+    color: #2a6496;
+    border-color: #4a90d9;
+    border-bottom: 2px solid #4a90d9;
+}
+.bucket-page {
+    display: none;
+}
+.bucket-page.active {
+    display: block;
+}
+.subpage {
+    display: none;
+}
+.subpage.active {
+    display: block;
+}
+table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 0.9em;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 6px 10px;
+    text-align: left;
+}
+th {
+    background: #f0f4f8;
+}
+.header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+}
+.header-row h1 {
+    flex: 1 1 200px;
+    margin: 0;
+}
+.header-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+#report-provenance {
+    font-size: 12px;
+    color: #666;
+}
+#report-provenance:empty {
+    display: none;
+}
+.viewbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+.viewbar button {
+    font: inherit;
+    padding: 6px 14px;
+    border: 1px solid #4a90d9;
+    border-radius: 6px;
+    background: white;
+    color: #2a6496;
+    cursor: pointer;
+}
+.viewbar button.active {
+    background: #4a90d9;
+    color: white;
+}
+.viewbar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+.render-error {
+    background: #fdecea;
+    color: #b00020;
+    border: 1px solid #f5c6cb;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    white-space: pre-wrap;
+}
+.report-group { margin: 18px 0; border: 1px solid #ccd3dd; border-radius: 8px; background: white; }
+.report-group > summary { cursor: pointer; padding: 18px; font-size: 1.25rem; font-weight: 650; }
+.report-group-body { padding: 0 18px 18px; }
+.tabbar, .subhead-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+.tabbar button, .subhead-bar button {
+    font: inherit;
+    font-size: 0.9em;
+    padding: 6px 14px;
+    border: 1px solid #ccc;
+    border-radius: 6px 6px 0 0;
+    background: #e8e8e8;
+    color: #333;
+    cursor: pointer;
+}
+.tabbar button.active, .subhead-bar button.active {
+    background: white;
+    color: #2a6496;
+    border-color: #4a90d9;
+    border-bottom: 2px solid #4a90d9;
+}
+.subhead-bar button {
+    font-weight: 600;
+}
+.tabpage {
+    display: none;
+}
+.tabpage.active {
+    display: block;
+}
+.epa-footer {
+    color: #555;
+    font-size: 0.88em;
+}
+.plot-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+.plot-row .plot-container {
+    flex: 1 1 480px;
+}
+#report-gpui {
+    min-height: 80vh;
+}
+#gpui-report-canvas {
+    width: 100%;
+}
+.filters-section {
+    background: white;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.filter-list {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85em;
+    white-space: pre-wrap;
+}
+.bm-table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 0.88em;
+}
+.eq-tabs {
+    margin: 10px 0;
+}
+.eq-tab-header {
+    display: flex;
+    gap: 4px;
+}
+.eq-tab-btn {
+    font: inherit;
+    font-size: 0.85em;
+    padding: 5px 12px;
+    border: 1px solid #ccc;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    background: #eee;
+    cursor: pointer;
+}
+.eq-tab-btn.active {
+    background: #f8f8f8;
+    color: #4a90d9;
+    border-top: 2px solid #4a90d9;
+}
+.eq-tab-panel {
+    display: none;
+}
+.eq-tab-panel.active {
+    display: block;
+}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header-row">
+<h1 id="report-title"></h1>
+<div class="header-meta">
+<div id="report-provenance" role="note"></div>
+<span id="renderer-status" role="status" style="font-size:12px;color:#666">Renderer: initializing</span>
+</div>
+</div>
+<div id="report-2d"></div>
+<div id="report-errors"></div>
+</div>
+<script id="report-payload" type="application/json">{{PAYLOAD_JSON}}</script>
+<script type="module">
+"use strict";
+const SCHEMA = "autoeq-report-data-v1";
+const WASM_2D_B64 = "{{WASM_2D_B64}}";
+const GLUE_2D_B64 = "{{GLUE_2D_B64}}";
+
+function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+function showError(msg) {
+    const message = String(msg);
+    const box = document.getElementById("report-errors");
+    if (box) {
+        const div = document.createElement("div");
+        div.className = "render-error";
+        div.textContent = message;
+        box.appendChild(div);
+    }
+    const host = readyReportHost();
+    if (host) {
+        try {
+            host.send({action: "error", message});
+        } catch (error) {
+            console.warn("SotF report host error notification failed:", error);
+        }
+    }
+}
+async function importGlue(glueText) {
+    // Blob URLs in browsers (no size limits); data: URLs where blobs cannot
+    // be imported (e.g. headless harnesses).
+    try {
+        const url = URL.createObjectURL(new Blob([glueText], { type: "text/javascript" }));
+        try {
+            return await import(url);
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    } catch (e) {
+        return await import("data:text/javascript;base64," + btoa(glueText));
+    }
+}
+async function loadBundle(wasmB64, glueB64) {
+    const wasmBytes = b64ToBytes(wasmB64);
+    const glueText = new TextDecoder().decode(b64ToBytes(glueB64));
+    const mod = await importGlue(glueText);
+    // BufferSource init: no fetch, works from file:// too.
+    await mod.default({ module_or_path: wasmBytes });
+    return mod;
+}
+
+let payload = null;
+try {
+    payload = JSON.parse(document.getElementById("report-payload").textContent);
+} catch (e) {
+    showError("Report payload is not valid JSON: " + e);
+}
+if (payload && payload.schema !== SCHEMA) {
+    showError("Unsupported report schema " + JSON.stringify(payload.schema) + " (want " + SCHEMA + ").");
+    payload = null;
+}
+if (payload) {
+    document.title = payload.title || document.title;
+    document.getElementById("report-title").textContent = payload.title || "";
+    const provenance = payload.provenance || {};
+    const parts = [];
+    if (provenance.roomeq_version) parts.push("RoomEQ " + provenance.roomeq_version);
+    if (provenance.data_timestamp) parts.push("Data " + provenance.data_timestamp);
+    if (provenance.generated_at) parts.push("Report " + provenance.generated_at);
+    // Text assignment: provenance values are never interpreted as HTML.
+    document.getElementById("report-provenance").textContent = parts.join(" · ");
+}
+
+const canvases = []; // {id, section, originalSection, el, tab, smoothing, viewport, panEnabled}
+let wasm2d = null;
+let reportRendererReady = false;
+let readySentReportId = null;
+
+const captureActionLabels = {
+    en: {select: "Select", retake: "Review retake"},
+    fr: {select: "Sélectionner", retake: "Examiner une nouvelle prise"},
+    de: {select: "Auswählen", retake: "Neuaufnahme prüfen"},
+    es: {select: "Seleccionar", retake: "Revisar nueva toma"},
+};
+
+function readyReportHost() {
+    const host = window.sotfReportHost;
+    if (!host || host.version !== 1 || typeof host.send !== "function" ||
+        typeof host.reportId !== "string" || !host.reportId.trim()) return null;
+    return host;
+}
+
+function reportLocale(value) {
+    return Object.prototype.hasOwnProperty.call(captureActionLabels, value) ? value : "en";
+}
+
+function applyHostPresentation(hostValues) {
+    if (!hostValues || typeof hostValues !== "object") return;
+    const root = document.documentElement;
+    if (hostValues.theme === "light" || hostValues.theme === "dark") {
+        root.dataset.reportTheme = hostValues.theme;
+    } else {
+        delete root.dataset.reportTheme;
+    }
+    const labels = captureActionLabels[reportLocale(hostValues.locale)];
+    for (const button of document.querySelectorAll("[data-report-capture-action]")) {
+        const action = button.dataset.reportCaptureAction;
+        if (labels[action]) button.textContent = labels[action];
+    }
+}
+
+function refreshCaptureQualityActions(root = document) {
+    const host = readyReportHost();
+    const enabled = host !== null;
+    const labels = captureActionLabels[reportLocale(host?.locale)];
+    for (const controls of root.querySelectorAll(".capture-quality-actions")) {
+        controls.hidden = !enabled;
+        for (const button of controls.querySelectorAll("button[data-report-capture-action]")) {
+            const action = button.dataset.reportCaptureAction;
+            if (labels[action]) button.textContent = labels[action];
+            button.disabled = !enabled;
+        }
+    }
+}
+
+function notifyReportViewerReady() {
+    reportRendererReady = true;
+    const host = readyReportHost();
+    if (!host || readySentReportId === host.reportId) return;
+    try {
+        host.send({action: "ready", renderer: "autoeq-report-wasm"});
+        readySentReportId = host.reportId;
+    } catch (error) {
+        console.warn("SotF report host readiness notification failed:", error);
+    }
+}
+
+window.addEventListener("sotf-report-host-ready", event => {
+    const detail = event.detail;
+    if (!detail || detail.version !== 1) return;
+    const host = readyReportHost();
+    if (!host || host.reportId !== detail.reportId) return;
+    applyHostPresentation(detail);
+    refreshCaptureQualityActions();
+    if (reportRendererReady) notifyReportViewerReady();
+});
+
+document.addEventListener("click", event => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest("button[data-report-capture-action]");
+    const host = readyReportHost();
+    if (!button || !host || button.disabled) return;
+    const controls = button.closest(".capture-quality-actions[data-capture-source-id]");
+    const sourceId = controls?.dataset.captureSourceId;
+    const action = button.dataset.reportCaptureAction;
+    if (!sourceId || (action !== "select" && action !== "retake")) return;
+    try {
+        host.send({
+            action,
+            selection: {source_id: sourceId, microphone_id: null, take_id: null},
+        });
+    } catch (error) {
+        console.warn("SotF capture-quality action failed:", error);
+    }
+});
+
+if (readyReportHost()) applyHostPresentation(window.sotfReportHost);
+refreshCaptureQualityActions();
+
+function sectionHeight(kind, cssW) {
+    if (kind === "sankey") return Math.min(560, Math.max(320, cssW * 0.5));
+    if (kind === "bar") return Math.min(480, Math.max(300, cssW * 0.5));
+    return Math.min(520, Math.max(300, cssW * 0.55));
+}
+
+// Nested driver-tab switcher for html sections (roomeq per-driver tables).
+window.openEqTab = function (evt, panelId) {
+    const container = evt.currentTarget.closest(".eq-tabs");
+    if (!container) return;
+    for (const p of container.querySelectorAll(".eq-tab-panel")) p.classList.remove("active");
+    for (const b of container.querySelectorAll(".eq-tab-btn")) b.classList.remove("active");
+    container.querySelector("#" + CSS.escape(panelId)).classList.add("active");
+    evt.currentTarget.classList.add("active");
+};
+
+function appendSection(host, sec, i) {
+    if (sec.kind === "html") {
+        const div = document.createElement("div");
+        div.className = "html-section" + (sec.flat ? " flat" : "");
+        div.innerHTML = sec.html;
+        refreshCaptureQualityActions(div);
+        host.appendChild(div);
+        for (const placeholder of div.querySelectorAll(".report-figure[data-section]")) {
+            const chart = JSON.parse(placeholder.dataset.section);
+            chart.tab = sec.tab;
+            appendSection(placeholder, chart, canvases.length);
+            placeholder.removeAttribute("data-section");
+        }
+        return;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "plot-container";
+    const toolbar = document.createElement("div");
+    toolbar.className = "plot-toolbar";
+    const zoomOut = document.createElement("button");
+    zoomOut.type = "button";
+    zoomOut.textContent = "− Zoom";
+    zoomOut.title = "Zoom out";
+    const zoomIn = document.createElement("button");
+    zoomIn.type = "button";
+    zoomIn.textContent = "+ Zoom";
+    zoomIn.title = "Zoom in";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Reset";
+    reset.title = "Reset zoom and position";
+    const move = document.createElement("button");
+    move.type = "button";
+    move.textContent = "Move";
+    move.title = "Enable drag-to-pan (Shift-drag or right-drag pans without it)";
+    if (sec.grid?.surface) {
+        move.textContent = "Rotate";
+        move.title = "Drag to rotate the surface; Reset restores the default camera";
+        move.classList.add("active");
+    }
+    toolbar.append(zoomOut, zoomIn, reset, move);
+    let smoothing = null;
+    // Viewer smoothing re-smooths the shipped (1/6-octave) curves in place.
+    if (sec.kind === "figure") {
+        const label = document.createElement("label");
+        label.textContent = "Smoothing";
+        smoothing = document.createElement("select");
+        smoothing.setAttribute("aria-label", "Smoothing");
+        smoothing.disabled = sec.figure.x.scale !== "log";
+        if (smoothing.disabled) smoothing.title = "Octave smoothing applies only to frequency plots";
+        for (const [value, text] of [["none", "None"], ["48", "1/48 octave"], ["24", "1/24 octave"], ["12", "1/12 octave"], ["6", "1/6 octave"], ["3", "1/3 octave"], ["2", "1/2 octave"], ["1", "1/1 octave"], ["var", "Var"], ["psycho", "Psychoacoustic"], ["erb", "ERB"]]) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = text;
+            smoothing.appendChild(option);
+        }
+        label.appendChild(smoothing);
+        toolbar.appendChild(label);
+    }
+    // Surface views (waterfalls) default to REW-style contours; the filled
+    // surface and its colormap are opt-in per figure.
+    let surfaceControls = null;
+    if (sec.grid?.surface) {
+        const label = document.createElement("label");
+        label.textContent = "Colormap";
+        const cmap = document.createElement("select");
+        cmap.setAttribute("aria-label", "Surface colormap");
+        for (const [value, text] of [["turbo", "Turbo"], ["viridis", "Viridis"],
+                ["plasma", "Plasma"], ["inferno", "Inferno"], ["magma", "Magma"],
+                ["rainbow", "Rainbow"]]) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = text;
+            cmap.appendChild(option);
+        }
+        if ([...cmap.options].some(o => o.value === sec.grid.colormap)) {
+            cmap.value = sec.grid.colormap;
+        }
+        label.appendChild(cmap);
+        const surfaceBtn = document.createElement("button");
+        surfaceBtn.type = "button";
+        surfaceBtn.textContent = "Surface";
+        surfaceBtn.title = "Show or hide the filled surface";
+        const contourBtn = document.createElement("button");
+        contourBtn.type = "button";
+        contourBtn.textContent = "Contours";
+        contourBtn.title = "Show or hide the time-slice contours";
+        toolbar.append(label, surfaceBtn, contourBtn);
+        surfaceControls = { cmap, surfaceBtn, contourBtn };
+    }
+    const canvas = document.createElement("canvas");
+    if (Number.isFinite(sec.min_width) && sec.min_width > 0) {
+        wrap.style.overflowX = "auto";
+        canvas.style.minWidth = Math.min(sec.min_width, 6000) + "px";
+    }
+    const id = "plot-" + canvases.length;
+    canvas.id = id;
+    canvas.setAttribute("aria-label", sec.figure?.title || sec.chart?.title || "Report graph");
+    wrap.appendChild(toolbar);
+    wrap.appendChild(canvas);
+    host.appendChild(wrap);
+    const graph = {
+        id,
+        section: structuredClone(sec),
+        originalSection: structuredClone(sec),
+        el: canvas,
+        tab: sec.tab || null,
+        smoothing,
+        viewport: null,
+        panEnabled: Boolean(sec.grid?.surface),
+        geomZoom: 1,
+    };
+    // Sankey and bar cards have no data viewport: +/− Zoom magnifies the
+    // whole card instead, and the (viewport-only) Move toggle is hidden.
+    const viewportZoom = ["figure", "grid"].includes(sec.kind);
+    if (!viewportZoom) move.style.display = "none";
+    zoomOut.addEventListener("click", () => viewportZoom ? zoomGraph(graph, 1.5) : geomZoom(graph, 1 / 1.25));
+    zoomIn.addEventListener("click", () => viewportZoom ? zoomGraph(graph, 1 / 1.5) : geomZoom(graph, 1.25));
+    reset.addEventListener("click", () => {
+        graph.viewport = null;
+        graph.geomZoom = 1;
+        if (graph.section.grid?.surface) graph.section.grid.rotation = null;
+        if (surfaceControls && graph.originalSection.grid) {
+            const src = graph.originalSection.grid;
+            graph.section.grid.colormap = src.colormap;
+            graph.section.grid.show_surface = src.show_surface;
+            graph.section.grid.show_contours = src.show_contours;
+            syncSurfaceControls(graph, surfaceControls);
+        }
+        renderOne(graph);
+    });
+    move.addEventListener("click", () => {
+        graph.panEnabled = !graph.panEnabled;
+        move.classList.toggle("active", graph.panEnabled);
+        canvas.classList.toggle("pan-enabled", graph.panEnabled);
+    });
+    if (smoothing) {
+        smoothing.addEventListener("change", () => {
+            graph.section = smoothedSection(graph.originalSection, smoothing.value);
+            renderOne(graph);
+        });
+    }
+    if (surfaceControls) {
+        const { cmap, surfaceBtn, contourBtn } = surfaceControls;
+        cmap.addEventListener("change", () => {
+            graph.section.grid.colormap = cmap.value;
+            renderOne(graph);
+        });
+        surfaceBtn.addEventListener("click", () => {
+            graph.section.grid.show_surface = !graph.section.grid.show_surface;
+            syncSurfaceControls(graph, surfaceControls);
+            renderOne(graph);
+        });
+        contourBtn.addEventListener("click", () => {
+            graph.section.grid.show_contours = graph.section.grid.show_contours === false;
+            syncSurfaceControls(graph, surfaceControls);
+            renderOne(graph);
+        });
+        syncSurfaceControls(graph, surfaceControls);
+    }
+    wireGraphPan(graph);
+    if (hasFreqPresets(sec)) {
+        const presets = document.createElement("div");
+        presets.className = "freq-presets";
+        // Spectrogram cards reserve a taller bottom axis zone than figures.
+        if (sec.kind === "grid") presets.style.bottom = "90px";
+        for (const [text, lo, hi] of [["20–200", 20, 200], ["20–20k", 20, 20000]]) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = text;
+            btn.title = "Zoom the frequency axis to " + lo + "–" + hi + " Hz";
+            btn.setAttribute("aria-label", "Zoom frequency to " + lo + " to " + hi + " hertz");
+            btn.addEventListener("click", () => setFreqPreset(graph, lo, hi));
+            presets.appendChild(btn);
+        }
+        wrap.appendChild(presets);
+        // Vertical-span presets only where the y axis reads dB (SPL
+        // figures); spectrogram time axes have no dB span.
+        if (sec.kind === "figure") {
+            const db = document.createElement("div");
+            db.className = "db-presets";
+            for (const span of [20, 50]) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.textContent = span + "dB";
+                btn.title = "Set the vertical span to " + span + " dB around the current center";
+                btn.setAttribute("aria-label", "Set vertical span to " + span + " decibels");
+                btn.addEventListener("click", () => setDbSpan(graph, span));
+                db.appendChild(btn);
+            }
+            wrap.appendChild(db);
+        }
+    }
+    canvases.push(graph);
+}
+
+function hasFreqPresets(sec) {
+    if (sec.kind === "grid") return sec.figure?.x?.label === "Frequency (Hz)";
+    return sec.kind === "figure"
+        && sec.figure.x.scale === "log"
+        && sec.figure.x.label === "Frequency (Hz)"
+        && sec.figure.y.label === "SPL (dB)";
+}
+
+function setFreqPreset(c, lo, hi) {
+    const view = ensureViewport(c);
+    if (!view) return;
+    view.x = [lo, hi];
+    renderOne(c);
+}
+
+function setDbSpan(c, spanDb) {
+    const view = ensureViewport(c);
+    if (!view) return;
+    const mid = (view.y[0] + view.y[1]) / 2;
+    view.y = [mid - spanDb / 2, mid + spanDb / 2];
+    renderOne(c);
+}
+
+// Missing keys mean an older export: contours on, surface fill off.
+function syncSurfaceControls(c, controls) {
+    const grid = c.section.grid || {};
+    const showSurface = Boolean(grid.show_surface);
+    const showContours = grid.show_contours !== false;
+    if ([...controls.cmap.options].some(o => o.value === grid.colormap)) {
+        controls.cmap.value = grid.colormap;
+    }
+    controls.surfaceBtn.classList.toggle("active", showSurface);
+    controls.surfaceBtn.setAttribute("aria-pressed", String(showSurface));
+    controls.contourBtn.classList.toggle("active", showContours);
+    controls.contourBtn.setAttribute("aria-pressed", String(showContours));
+}
+
+function buildSectionGroup(root, sections) {
+    const tabs = [];
+    for (const sec of sections) {
+        if (sec.tab && !tabs.includes(sec.tab)) tabs.push(sec.tab);
+    }
+    // Summary (untabbed) sections render first, at the top of the page.
+    sections.forEach((sec, i) => {
+        if (!sec.tab && !sec.footer) appendSection(root, sec, i);
+    });
+    if (!tabs.length) {
+        sections.forEach((sec, i) => { if (sec.footer) appendSection(root, sec, i); });
+        return;
+    }
+    // The channel tab bar lives below the summaries, where the per-channel
+    // content it switches between starts.
+    const activeTab = tabs[0];
+    const bar = document.createElement("div");
+    bar.className = "tabbar";
+    tabs.forEach((name, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = name;
+        btn.setAttribute("aria-pressed", String(i === 0));
+        if (i === 0) btn.classList.add("active");
+        btn.addEventListener("click", () => {
+            for (const [label, page] of Object.entries(pages)) {
+                page.classList.toggle("active", label === name);
+            }
+            for (const button of bar.children) {
+                const selected = button.textContent === name;
+                button.classList.toggle("active", selected);
+                button.setAttribute("aria-pressed", String(selected));
+            }
+            renderVisible();
+        });
+        bar.appendChild(btn);
+    });
+    root.appendChild(bar);
+    const pages = {};
+    sections.forEach((sec, i) => {
+        if (!sec.tab) return;
+        if (!pages[sec.tab]) {
+            const page = document.createElement("div");
+            page.className = "tabpage" + (sec.tab === activeTab ? " active" : "");
+            page.dataset.tab = sec.tab;
+            root.appendChild(page);
+            pages[sec.tab] = page;
+        }
+        appendSection(pages[sec.tab], sec, i);
+    });
+    sections.forEach((sec, i) => { if (sec.footer) appendSection(root, sec, i); });
+}
+
+// Top-level report buckets in canonical order; unknown buckets follow in
+// first-occurrence order. Inside a bucket, `subhead` titles render as tabs
+// (one tab bar per bucket); a lone subhead renders directly with no bar.
+const BUCKET_ORDER = ["DSP analysis", "Acoustics analysis", "Psychoacoustic report"];
+
+function buildBucketPage(page, sections) {
+    const subheads = [];
+    for (const sec of sections) {
+        const sub = sec.subhead || "";
+        if (!subheads.includes(sub)) subheads.push(sub);
+    }
+    const named = subheads.filter(Boolean);
+    if (named.length < 2) {
+        buildSectionGroup(page, sections);
+        return;
+    }
+    const bar = document.createElement("div");
+    bar.className = "subhead-bar";
+    bar.setAttribute("role", "tablist");
+    const pages = {};
+    named.forEach((name, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = name;
+        btn.setAttribute("role", "tab");
+        btn.setAttribute("aria-selected", String(i === 0));
+        if (i === 0) btn.classList.add("active");
+        btn.addEventListener("click", () => {
+            for (const [label, subpage] of Object.entries(pages)) {
+                subpage.classList.toggle("active", label === name);
+            }
+            for (const button of bar.children) {
+                const selected = button.textContent === name;
+                button.classList.toggle("active", selected);
+                button.setAttribute("aria-selected", String(selected));
+            }
+            renderVisible();
+        });
+        bar.appendChild(btn);
+    });
+    page.appendChild(bar);
+    // Sections without a subhead join the first page; every tab stays reachable.
+    const untagged = sections.filter(s => !(s.subhead || ""));
+    named.forEach((name, i) => {
+        const subpage = document.createElement("div");
+        subpage.className = "subpage" + (i === 0 ? " active" : "");
+        subpage.dataset.subhead = name;
+        page.appendChild(subpage);
+        pages[name] = subpage;
+        const own = sections.filter(s => (s.subhead || "") === name);
+        buildSectionGroup(subpage, i === 0 ? untagged.concat(own) : own);
+    });
+}
+
+function buildDom() {
+    const root = document.getElementById("report-2d");
+    const sections = payload.sections || [];
+    const buckets = [];
+    for (const sec of sections) {
+        if (sec.bucket && !buckets.includes(sec.bucket)) buckets.push(sec.bucket);
+    }
+    if (buckets.length) {
+        buckets.sort((a, b) => {
+            const ia = BUCKET_ORDER.indexOf(a), ib = BUCKET_ORDER.indexOf(b);
+            return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        });
+        // Unbucketed verdict sections stay visible above the bucket tabs.
+        buildSectionGroup(root, sections.filter(s => !s.bucket));
+        const bar = document.createElement("div");
+        bar.className = "bucket-bar";
+        bar.setAttribute("role", "tablist");
+        const pages = {};
+        buckets.forEach((name, i) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = name;
+            btn.setAttribute("role", "tab");
+            btn.setAttribute("aria-selected", String(i === 0));
+            if (i === 0) btn.classList.add("active");
+            btn.addEventListener("click", () => {
+                for (const [label, page] of Object.entries(pages)) {
+                    page.classList.toggle("active", label === name);
+                }
+                for (const button of bar.children) {
+                    const selected = button.textContent === name;
+                    button.classList.toggle("active", selected);
+                    button.setAttribute("aria-selected", String(selected));
+                }
+                renderVisible();
+            });
+            bar.appendChild(btn);
+        });
+        root.appendChild(bar);
+        buckets.forEach((name, i) => {
+            const page = document.createElement("div");
+            page.className = "bucket-page" + (i === 0 ? " active" : "");
+            page.dataset.bucket = name;
+            root.appendChild(page);
+            pages[name] = page;
+            buildBucketPage(page, sections.filter(s => s.bucket === name));
+        });
+        return;
+    }
+    buildSectionGroup(root, sections.filter(s => !s.group));
+    for (const title of new Set(sections.map(s => s.group).filter(Boolean))) {
+        const details = document.createElement("details");
+        details.className = "report-group";
+        details.open = true;
+        const summary = document.createElement("summary");
+        summary.textContent = title;
+        details.appendChild(summary);
+        const body = document.createElement("div");
+        body.className = "report-group-body";
+        details.appendChild(body);
+        root.appendChild(details);
+        buildSectionGroup(body, sections.filter(s => s.group === title));
+        details.addEventListener("toggle", renderVisible);
+    }
+}
+
+function isVisible(c) {
+    return c.el.getClientRects().length > 0
+        && !c.el.closest("details:not([open])");
+}
+
+function axisBounds(fig, axis) {
+    const spec = fig[axis];
+    const log = axis === "x" && spec.scale === "log";
+    const valid = v => Number.isFinite(v) && (!log || v > 0);
+    const transform = v => log ? Math.log(v) : v;
+    const y2Active = fig.y2 && fig.series.some(s => s.visible && s.y_axis === 1);
+    let lo = Infinity, hi = -Infinity;
+    for (const series of fig.series) {
+        if (!series.visible) continue;
+        if (axis === "y2" && series.y_axis !== 1) continue;
+        if (axis === "y" && y2Active && series.y_axis === 1) continue;
+        for (const value of axis === "x" ? series.x : series.y) {
+            if (!valid(value)) continue;
+            const v = transform(value);
+            lo = Math.min(lo, v); hi = Math.max(hi, v);
+        }
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
+    if (!(hi > lo)) { lo -= 1; hi += 1; }
+    const hasMin = valid(spec.min), hasMax = valid(spec.max);
+    if (hasMin) lo = transform(spec.min);
+    if (hasMax) hi = transform(spec.max);
+    if (!(hi > lo)) hi = lo + 1;
+    const pad = (hi - lo) * 0.03;
+    if (!hasMin) lo -= pad;
+    if (!hasMax) hi += pad;
+    return log ? [Math.exp(lo), Math.exp(hi)] : [lo, hi];
+}
+
+function figureForRender(c) {
+    const section = structuredClone(c.section);
+    if (!["figure", "grid"].includes(section.kind) || !c.viewport) return section;
+    const fig = section.figure;
+    fig.x.min = c.viewport.x[0]; fig.x.max = c.viewport.x[1];
+    fig.y.min = c.viewport.y[0]; fig.y.max = c.viewport.y[1];
+    if (fig.y2 && c.viewport.y2) {
+        fig.y2.min = c.viewport.y2[0]; fig.y2.max = c.viewport.y2[1];
+    }
+    return section;
+}
+
+function ensureViewport(c) {
+    if (!["figure", "grid"].includes(c.section.kind)) return null;
+    if (!c.viewport) {
+        const fig = c.section.figure;
+        c.viewport = { x: axisBounds(fig, "x"), y: axisBounds(fig, "y") };
+        if (fig.y2) c.viewport.y2 = axisBounds(fig, "y2");
+    }
+    return c.viewport;
+}
+
+function zoomGraph(c, factor, anchorX = 0.5, anchorY = 0.5) {
+    const view = ensureViewport(c);
+    if (!view) return;
+    const fig = c.section.figure;
+    const zoomAxis = (range, anchor, log) => {
+        if (log) {
+            const lo = Math.log(range[0]), hi = Math.log(range[1]);
+            const at = lo + (hi - lo) * anchor;
+            return [Math.exp(at + (lo - at) * factor), Math.exp(at + (hi - at) * factor)];
+        }
+        const at = range[0] + (range[1] - range[0]) * anchor;
+        return [at + (range[0] - at) * factor, at + (range[1] - at) * factor];
+    };
+    view.x = zoomAxis(view.x, anchorX, fig.x.scale === "log");
+    view.y = zoomAxis(view.y, 1 - anchorY, false);
+    if (view.y2) view.y2 = zoomAxis(view.y2, 1 - anchorY, false);
+    renderOne(c);
+}
+
+// Geometric zoom for cards without a data viewport (sankey, bar): scale the
+// canvas CSS size around the fit size and re-render, so output stays crisp.
+// The card scrolls once the canvas outgrows it. Range 0.5–4x.
+function geomZoom(c, factor) {
+    c.geomZoom = Math.min(4, Math.max(0.5, (c.geomZoom || 1) * factor));
+    if (Math.abs(c.geomZoom - 1) < 0.01) c.geomZoom = 1;
+    renderOne(c);
+}
+
+function wireGraphPan(c) {
+    let start = null;
+    let band = null;
+    const rubberBand = () => {
+        if (!band) {
+            band = document.createElement("div");
+            band.className = "rubber-band";
+            c.el.parentElement.appendChild(band);
+        }
+        return band;
+    };
+    const canvasPos = ev => {
+        const rect = c.el.getBoundingClientRect();
+        const wrap = c.el.parentElement.getBoundingClientRect();
+        return {
+            x: ev.clientX - rect.left, y: ev.clientY - rect.top,
+            ox: ev.clientX - wrap.left, oy: ev.clientY - wrap.top,
+        };
+    };
+    c.el.addEventListener("pointerdown", ev => {
+        if (!["figure", "grid"].includes(c.section.kind)) return;
+        if (c.section.grid?.surface) {
+            if (!c.panEnabled) return;
+            start = { mode: "rotate", x: ev.clientX, y: ev.clientY,
+                      view: structuredClone(ensureViewport(c)),
+                      rotation: c.section.grid?.rotation || [65, -12] };
+            c.el.setPointerCapture(ev.pointerId);
+            c.el.classList.add("panning");
+            return;
+        }
+        // Plain left-drag crops a zoom box on figures; Shift/right/middle
+        // drag (or the Move toggle, the touch path) pans instead.
+        const panDrag = c.panEnabled || ev.shiftKey || ev.button !== 0;
+        if (!panDrag && c.section.kind === "figure") {
+            const p = canvasPos(ev);
+            start = { mode: "zoom", x0: p.x, y0: p.y, ox0: p.ox, oy0: p.oy,
+                      x1: p.x, y1: p.y };
+            c.el.setPointerCapture(ev.pointerId);
+            c.el.style.cursor = "crosshair";
+            return;
+        }
+        if (!panDrag) return;
+        start = { mode: "pan", x: ev.clientX, y: ev.clientY,
+                  view: structuredClone(ensureViewport(c)) };
+        c.el.setPointerCapture(ev.pointerId);
+        c.el.classList.add("panning");
+    });
+    c.el.addEventListener("pointermove", ev => {
+        if (!start) return;
+        if (start.mode === "zoom") {
+            const p = canvasPos(ev);
+            start.x1 = p.x; start.y1 = p.y;
+            const el = rubberBand();
+            el.style.display = "block";
+            el.style.left = Math.min(start.ox0, p.ox) + "px";
+            el.style.top = Math.min(start.oy0, p.oy) + "px";
+            el.style.width = Math.abs(p.ox - start.ox0) + "px";
+            el.style.height = Math.abs(p.oy - start.oy0) + "px";
+            return;
+        }
+        const rect = c.el.getBoundingClientRect();
+        const dx = (ev.clientX - start.x) / rect.width;
+        const dy = (ev.clientY - start.y) / rect.height;
+        if (c.section.grid?.surface) {
+            c.section.grid.rotation = [Math.max(10, Math.min(170, start.rotation[0] + dy * 160)),
+                                       start.rotation[1] + dx * 180];
+            if (!c.rotateFrame) c.rotateFrame = requestAnimationFrame(() => {
+                c.rotateFrame = null;
+                renderOne(c);
+            });
+            return;
+        }
+        const fig = c.section.figure;
+        const panAxis = (range, delta, log) => {
+            if (log) {
+                const shift = (Math.log(range[1]) - Math.log(range[0])) * delta;
+                return [Math.exp(Math.log(range[0]) - shift), Math.exp(Math.log(range[1]) - shift)];
+            }
+            const shift = (range[1] - range[0]) * delta;
+            return [range[0] - shift, range[1] - shift];
+        };
+        c.viewport.x = panAxis(start.view.x, dx, fig.x.scale === "log");
+        c.viewport.y = panAxis(start.view.y, -dy, false);
+        if (start.view.y2) c.viewport.y2 = panAxis(start.view.y2, -dy, false);
+        renderOne(c);
+    });
+    const end = () => {
+        if (start && start.mode === "zoom") {
+            if (band) band.style.display = "none";
+            c.el.style.cursor = "";
+            const w = Math.abs((start.x1 ?? start.x0) - start.x0);
+            const h = Math.abs((start.y1 ?? start.y0) - start.y0);
+            if (w > 6 && h > 6 && typeof wasm2d !== "undefined" && wasm2d?.selection_domain_json) {
+                try {
+                    const sel = JSON.parse(wasm2d.selection_domain_json(c.id, start.x0, start.y0, start.x1, start.y1));
+                    if (sel && sel.x && sel.y) {
+                        ensureViewport(c);
+                        c.viewport.x = sel.x;
+                        c.viewport.y = sel.y;
+                        c.suppressClick = true;
+                        renderOne(c);
+                    }
+                } catch (e) { /* keep the current view on mapping failure */ }
+            }
+        }
+        start = null;
+        c.el.classList.remove("panning");
+    };
+    c.el.addEventListener("pointerup", end);
+    c.el.addEventListener("pointercancel", end);
+    c.el.addEventListener("dblclick", () => {
+        if (!["figure", "grid"].includes(c.section.kind)) return;
+        if (c.section.grid?.surface) return;
+        c.viewport = null;
+        renderOne(c);
+    });
+    c.el.addEventListener("contextmenu", ev => ev.preventDefault());
+    c.el.addEventListener("wheel", ev => {
+        if (!["figure", "grid"].includes(c.section.kind)) return;
+        ev.preventDefault();
+        const rect = c.el.getBoundingClientRect();
+        zoomGraph(c, ev.deltaY < 0 ? 1 / 1.2 : 1.2, (ev.clientX - rect.left) / rect.width, (ev.clientY - rect.top) / rect.height);
+    }, { passive: false });
+}
+
+// Full-width fraction-of-octave window for the variable REW-style modes:
+// Var is 1/48 below 100 Hz, 1/3 above 10 kHz, linear in log-frequency
+// between (1/6 at 1 kHz); Psychoacoustic is 1/3 below 100 Hz, 1/6 above
+// 1 kHz, varying between. Fixed 1/N modes bypass this helper.
+function smoothFractionFor(mode, freqHz) {
+    if (mode === "var") {
+        if (freqHz <= 100) return 1 / 48;
+        if (freqHz >= 10000) return 1 / 3;
+        return 1 / 48 + (1 / 3 - 1 / 48) * Math.log(freqHz / 100) / Math.log(100);
+    }
+    if (mode === "psycho") {
+        if (freqHz <= 100) return 1 / 3;
+        if (freqHz >= 1000) return 1 / 6;
+        return 1 / 3 + (1 / 6 - 1 / 3) * Math.log(freqHz / 100) / Math.log(10);
+    }
+    return 0;
+}
+
+// Equivalent rectangular bandwidth in Hz (Glasberg–Moore constants as
+// quoted by REW: 107.77·f + 24.673 with f in kHz).
+function erbHz(freqHz) {
+    return 107.77 * (freqHz / 1000) + 24.673;
+}
+
+function smoothedSection(section, smoothing) {
+    const out = structuredClone(section);
+    if (out.kind !== "figure" || smoothing === "none" || out.figure.x.scale !== "log") return out;
+    const erb = smoothing === "erb";
+    const psycho = smoothing === "psycho";
+    const fixedHalf = (!erb && smoothing !== "var" && !psycho) ? 0.5 / Number(smoothing) : 0;
+    // Psychoacoustic weights peaks via a cubic mean of linear amplitudes.
+    const acc = psycho ? v => Math.pow(10, 0.15 * v) : v => v;
+    const unacc = psycho ? m => (20 / 3) * Math.log10(m) : m => m;
+    const key = x => erb ? x : Math.log2(x);
+    const edges = x => {
+        if (erb) {
+            const half = erbHz(x) / 2;
+            return [x - half, x + half];
+        }
+        const half = fixedHalf || smoothFractionFor(smoothing, x) / 2;
+        const center = Math.log2(x);
+        return [center - half, center + half];
+    };
+    for (const series of out.figure.series) {
+        // Reference lines and candidate stems are markers, not sampled spectra.
+        if (series.x.some((x, i) => !(x > 0) || (i > 0 && x <= series.x[i - 1]))) continue;
+        // Window edges stay monotone in i (bandwidth slopes are far below
+        // 1 octave/octave), so the two-pointer sweep holds for every mode.
+        const source = series.y.slice();
+        let left = 0, right = 0, sum = 0, count = 0;
+        for (let i = 0; i < series.x.length; i++) {
+            const x = series.x[i];
+            if (!(x > 0) || !Number.isFinite(source[i])) continue;
+            const [lo, hi] = edges(x);
+            while (left < series.x.length && key(series.x[left]) < lo) {
+                if (Number.isFinite(source[left])) { sum -= acc(source[left]); count--; }
+                left++;
+            }
+            while (right < series.x.length && key(series.x[right]) <= hi) {
+                if (Number.isFinite(source[right])) { sum += acc(source[right]); count++; }
+                right++;
+            }
+            series.y[i] = count ? unacc(sum / count) : source[i];
+        }
+    }
+    return out;
+}
+
+function renderOne(c) {
+    if (!wasm2d || !isVisible(c)) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW0 = c.el.clientWidth || c.el.parentElement.clientWidth || 800;
+    let cssW = cssW0;
+    let cssH = Math.max(sectionHeight(c.section.kind, cssW),
+        Math.min(6000, Number(c.section.min_height) || 0));
+    const z = c.geomZoom || 1;
+    if (z !== 1 && !["figure", "grid"].includes(c.section.kind)) {
+        // Magnify around the fit size captured before zooming, so repeated
+        // renders (resize, tab switches) keep the same magnification.
+        if (!c.geomBase) c.geomBase = { w: cssW0, h: cssH };
+        cssW = Math.round(c.geomBase.w * z);
+        cssH = Math.round(c.geomBase.h * z);
+        c.el.style.width = cssW + "px";
+        c.el.parentElement.style.overflow = "auto";
+    } else if (c.geomBase) {
+        c.geomBase = null;
+        c.el.style.width = "";
+        c.el.parentElement.style.overflow = "";
+    }
+    c.el.style.height = cssW ? cssH + "px" : c.el.style.height;
+    c.el.dataset.renderer = "canvas";
+    const rc = wasm2d.render_section(c.id, JSON.stringify(figureForRender(c)), cssW, cssH, dpr);
+    if (rc !== 0) showError("render_section(" + c.id + ") failed with code " + rc);
+}
+
+function renderVisible() {
+    if (!wasm2d) return;
+    for (const c of canvases) {
+        if (isVisible(c)) renderOne(c);
+    }
+}
+
+function wireLegendClicks() {
+    for (const c of canvases) {
+        if (!["figure", "bar", "grid"].includes(c.section.kind)) continue;
+        c.el.addEventListener("click", (ev) => {
+            // A rubber-band release also fires click; it already zoomed.
+            if (c.suppressClick) { c.suppressClick = false; return; }
+            let rects = [];
+            try { rects = JSON.parse(wasm2d.legend_json(c.id)); } catch (e) { return; }
+            const r = c.el.getBoundingClientRect();
+            const x = ev.clientX - r.left, y = ev.clientY - r.top;
+            for (const g of rects) {
+                if (x >= g.x && x <= g.x + g.w && y >= g.y && y <= g.y + g.h) {
+                    wasm2d.toggle_series(c.id, g.series);
+                    if (["figure", "grid"].includes(c.section.kind) && c.section.figure.series[g.series]) {
+                        c.section.figure.series[g.series].visible = !c.section.figure.series[g.series].visible;
+                    }
+                    return;
+                }
+            }
+        });
+    }
+}
+
+let resizeTimer = 0;
+window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderVisible, 200);
+});
+
+async function boot2d() {
+    try {
+        wasm2d = await loadBundle(WASM_2D_B64, GLUE_2D_B64);
+        if (wasm2d.schema_version && wasm2d.schema_version() !== SCHEMA) {
+            throw new Error("Renderer/payload schema mismatch.");
+        }
+        buildDom();
+        renderVisible();
+        wireLegendClicks();
+        notifyReportViewerReady();
+    } catch (error) {
+        showError("Could not start the 2D report renderer: " + error);
+    }
+}
+
+// One report and one d3rs/WASM geometry path. WebGPU only changes rasterization.
+async function bootGpu() {
+    const status = document.getElementById("renderer-status");
+    let device, buffer, attachment, context;
+    const fallback = reason => {
+        window.__reportTriangles = undefined;
+        status.textContent = "Renderer: Canvas fallback";
+        status.title = reason;
+        if (buffer) buffer.destroy();
+        if (attachment) attachment.destroy();
+        if (context) context.unconfigure();
+        if (device) device.destroy();
+    };
+    try {
+        // Explicit diagnostic override; normal reports always select automatically.
+        if (new URLSearchParams(location.search).get("renderer") === "canvas") {
+            fallback("Canvas renderer requested by the diagnostic URL option."); return;
+        }
+        if (!navigator.gpu) { fallback("WebGPU API is not exposed in this browser context."); return; }
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) { fallback("No WebGPU adapter is available."); return; }
+        device = await adapter.requestDevice();
+        const canvas = document.createElement("canvas");
+        context = canvas.getContext("webgpu");
+        if (!context) throw new Error("WebGPU canvas context unavailable");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({device, format, alphaMode: "premultiplied"});
+        const shader = device.createShaderModule({code: `
+struct Vertex { @builtin(position) position: vec4f, @location(0) color: vec4f };
+@vertex fn vs(@location(0) position: vec2f, @location(1) color: vec4f) -> Vertex {
+    var out: Vertex; out.position = vec4f(position, 0.0, 1.0); out.color = color; return out;
+}
+@fragment fn fs(in: Vertex) -> @location(0) vec4f { return in.color; }
+`});
+        const pipeline = await device.createRenderPipelineAsync({
+            layout: "auto",
+            vertex: {module: shader, entryPoint: "vs", buffers: [{arrayStride: 24, attributes: [
+                {shaderLocation: 0, offset: 0, format: "float32x2"},
+                {shaderLocation: 1, offset: 8, format: "float32x4"}]}]},
+            fragment: {module: shader, entryPoint: "fs", targets: [{format}]},
+            primitive: {topology: "triangle-list"}, multisample: {count: 4},
+        });
+        let capacity = 0;
+        let failed = false;
+        const fail = reason => {
+            if (failed) return;
+            failed = true;
+            console.warn("Report WebGPU fallback:", reason);
+            fallback(String(reason));
+            requestAnimationFrame(renderVisible);
+        };
+        device.lost.then(info => { if (info.reason !== "destroyed") fail(info.message); });
+        device.addEventListener("uncapturederror", event => fail(event.error.message));
+        window.__reportTriangles = (ctx, vertices) => {
+            try {
+                if (!vertices.length) return true;
+                const width = ctx.canvas.width, height = ctx.canvas.height;
+                if (width > device.limits.maxTextureDimension2D || height > device.limits.maxTextureDimension2D)
+                    throw new Error("Plot exceeds GPU texture dimensions");
+                if (canvas.width !== width || canvas.height !== height || !attachment) {
+                    canvas.width = width; canvas.height = height;
+                    if (attachment) attachment.destroy();
+                    attachment = device.createTexture({size: [width, height], sampleCount: 4,
+                        format, usage: GPUTextureUsage.RENDER_ATTACHMENT});
+                }
+                // Preserve the current CSS-pixel transform and d3rs painter order.
+                const m = ctx.getTransform();
+                for (let i = 0; i < vertices.length; i += 6) {
+                    const x = vertices[i], y = vertices[i + 1];
+                    vertices[i] = 2 * (m.a * x + m.c * y + m.e) / width - 1;
+                    vertices[i + 1] = 1 - 2 * (m.b * x + m.d * y + m.f) / height;
+                }
+                if (vertices.byteLength > capacity) {
+                    if (buffer) buffer.destroy();
+                    capacity = vertices.byteLength;
+                    buffer = device.createBuffer({size: capacity, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST});
+                }
+                device.queue.writeBuffer(buffer, 0, vertices);
+                const encoder = device.createCommandEncoder();
+                const pass = encoder.beginRenderPass({colorAttachments: [{
+                    view: attachment.createView(), resolveTarget: context.getCurrentTexture().createView(),
+                    clearValue: [0, 0, 0, 0], loadOp: "clear", storeOp: "discard"}]});
+                pass.setPipeline(pipeline); pass.setVertexBuffer(0, buffer);
+                pass.draw(vertices.length / 6); pass.end();
+                device.queue.submit([encoder.finish()]);
+                // Canvas compositing preserves axes behind and highlights in front.
+                ctx.save(); ctx.resetTransform();
+                try { ctx.drawImage(canvas, 0, 0); } finally { ctx.restore(); }
+                ctx.canvas.dataset.renderer = "webgpu";
+                return true;
+            } catch (error) { fail(error); return false; }
+        };
+        status.textContent = "Renderer: WebGPU";
+        status.title = "d3rs/WASM geometry; GPU-accelerated surfaces; shared axes and controls.";
+    } catch (error) {
+        console.warn("Report WebGPU initialization failed:", error);
+        fallback(String(error));
+    }
+}
+
+if (payload) {
+    // Render immediately, then upgrade surfaces when the adapter is ready.
+    boot2d();
+    bootGpu().then(() => { if (wasm2d) renderVisible(); }).catch(error => {
+        showError("Could not finish report rendering: " + error);
+    });
+}
+</script>
+</body>
+</html>

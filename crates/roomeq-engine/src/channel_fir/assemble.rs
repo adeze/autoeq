@@ -16,6 +16,8 @@ pub(super) fn assemble_fir_result(
     optimizer_output: FirOptimizerOutput,
     optimizer_evidence: Vec<OptimizerRunEvidence>,
     design_target: Option<&Curve>,
+    audibility_veto: Vec<roomeq_model::FilterVetoVerdict>,
+    veto_adjudication: Option<roomeq_model::VetoAdjudicationReport>,
 ) -> Result<ChannelProcessingResult> {
     let dsp = assemble_dsp_chain(request, &optimizer_output);
     let target_curve = if let Some(design_target) = design_target {
@@ -31,19 +33,23 @@ pub(super) fn assemble_fir_result(
             spl: display_target.spl.to_vec(),
             phase: None,
             norm_range: request.preprocessed.norm_range,
+            ..Default::default()
         })
     } else {
-        request.target.target_tilt_curve.as_ref().map(|tilt| {
-            let display_tilt = autoeq_core::interpolate_log_space(
-                &request.prepared.measurements().representative().freq,
-                tilt,
-            );
-            CurveData {
-                freq: display_tilt.freq.to_vec(),
-                spl: (&display_tilt.spl + request.target.mean_spl).to_vec(),
-                phase: None,
-                norm_range: request.preprocessed.norm_range,
-            }
+        // Mixed-phase may have no magnitude FIR design target. Its realized
+        // score must still use the configured external target, exactly as IIR
+        // does, rather than silently comparing the response against flat.
+        let raw = request.prepared.measurements().representative();
+        let shape = request.target.target_tilt_curve.as_ref().map_or_else(
+            || crate::eq::resources::target_curve(raw, Some(request.eq_resources)),
+            |tilt| autoeq_core::interpolate_log_space(&raw.freq, tilt),
+        );
+        Some(CurveData {
+            freq: shape.freq.to_vec(),
+            spl: (&shape.spl + request.target.mean_spl).to_vec(),
+            phase: None,
+            norm_range: request.preprocessed.norm_range,
+            ..Default::default()
         })
     };
     let raw_curve = request.prepared.measurements().representative();
@@ -53,15 +59,20 @@ pub(super) fn assemble_fir_result(
     let score_curve = if let Some(tilt_curve) = &request.target.target_tilt_curve {
         Curve {
             freq: final_curve.freq.clone(),
-            spl: &final_curve.spl - &tilt_curve.spl,
+            spl: &final_curve.spl
+                - &autoeq_core::interpolate_log_space(&final_curve.freq, tilt_curve).spl,
             phase: final_curve.phase.clone(),
             ..Curve::default()
         }
     } else {
         final_curve.clone()
     };
+    // Score on usable support only: multi-segment gap bins are display
+    // samples, not measurements. Single-band and unrestricted channels
+    // select an identical range, so their scores are unchanged.
+    let usable_score = request.prepared.usable_curve(&score_curve)?;
     let post_score = channel_target::flatness_score_in_range(
-        &score_curve,
+        usable_score.as_ref(),
         request.preprocessed.score_min_freq,
         request.target.max_freq,
     );
@@ -77,6 +88,7 @@ pub(super) fn assemble_fir_result(
     let eq_response = output::compute_eq_response(&initial_data, &final_data);
     let filters = optimizer_output.eq_filters().to_vec();
     let channel = ChannelDspChain {
+        physical_correction_target: None,
         channel: request.channel_name.to_string(),
         plugins: dsp.plugins,
         drivers: None,
@@ -87,7 +99,15 @@ pub(super) fn assemble_fir_result(
         post_ir: None,
         fir_temporal_masking: None,
         direct_early_late_correction: None,
+        joint_sub: None,
+        early_reflections: None,
+        t60_octaves: None,
+        speech_transmission: None,
+        waterfall: None,
+        resonance_decays: None,
+        wavelet: None,
         target_curve,
+        early_late_curves: None,
     };
     let (fir_coeffs, convolution_sidecar) = sidecar_output(optimizer_output);
 
@@ -103,6 +123,11 @@ pub(super) fn assemble_fir_result(
         fir_coeffs,
         convolution_sidecar,
         optimizer_evidence,
+        audibility_veto,
+        veto_adjudication,
+        // Multi-segment authorization runs once per channel in
+        // `execute_prepared_channel`, after every processing mode assembles.
+        segment_support: None,
     })
 }
 
@@ -163,13 +188,12 @@ fn assemble_dsp_chain(
             }
         }
     }
-    // Magnitude-only Kirkeby design explicitly centers the zero-phase IFFT
-    // at taps/2. Keep that known scheduling delay separate from correction
+    // Kirkeby centers its inverse IFFT at taps/2 regardless of excess phase.
+    // Keep that known scheduling delay separate from correction
     // so a routed rollback does not move only one branch in time.
     if !matches!(optimizer_output, FirOptimizerOutput::MixedPhase { .. })
         && let Some(fir) = request.optimizer.fir.as_ref()
         && fir.phase.eq_ignore_ascii_case("kirkeby")
-        && !fir.correct_excess_phase
         && fir.pre_ringing.is_none()
     {
         for plugin in &mut plugins {

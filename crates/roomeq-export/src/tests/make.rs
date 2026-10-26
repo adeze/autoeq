@@ -28,6 +28,7 @@ pub(super) fn make_test_output() -> DspGraph {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![
                 PluginConfigWrapper {
@@ -58,6 +59,14 @@ pub(super) fn make_test_output() -> DspGraph {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
 
@@ -65,6 +74,7 @@ pub(super) fn make_test_output() -> DspGraph {
     channels.insert(
         "right".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "right".to_string(),
             plugins: vec![
                 PluginConfigWrapper {
@@ -90,12 +100,21 @@ pub(super) fn make_test_output() -> DspGraph {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
 
     DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: Some(OptimizationMetadata {
@@ -123,11 +142,20 @@ pub(super) fn make_test_output() -> DspGraph {
             final_convolution_sha256: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: None,
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         }),
+        correction_decisions: None,
     }
 }
 
@@ -150,6 +178,7 @@ fn make_single_filter_output(filter_type: &str, gain_db: f64) -> DspGraph {
     channels.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: vec![PluginConfigWrapper {
                 plugin_type: "eq".to_string(),
@@ -173,15 +202,25 @@ fn make_single_filter_output(filter_type: &str, gain_db: f64) -> DspGraph {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
 
     DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: None,
+        correction_decisions: None,
     }
 }
 
@@ -196,6 +235,7 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
         channels.insert(
             channel.to_string(),
             ChannelDspChain {
+                physical_correction_target: None,
                 channel: channel.to_string(),
                 plugins: vec![
                     PluginConfigWrapper {
@@ -219,6 +259,14 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
                 post_ir: None,
                 fir_temporal_masking: None,
                 direct_early_late_correction: None,
+                joint_sub: None,
+                early_reflections: None,
+                t60_octaves: None,
+                speech_transmission: None,
+                waterfall: None,
+                resonance_decays: None,
+                wavelet: None,
+                early_late_curves: None,
             },
         );
     }
@@ -318,6 +366,8 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
 
     let routing_graph = BassManagementRoutingGraph {
         physical_sub_output: "LFE".to_string(),
+        physical_sub_outputs: Vec::new(),
+        stereo_routing: None,
         input_channels: vec!["L".to_string(), "R".to_string(), "LFE".to_string()],
         output_channels: vec!["L".to_string(), "R".to_string(), "LFE".to_string()],
         routes,
@@ -332,12 +382,14 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
             route_count: 3,
         }),
         input_trim_db: Default::default(),
+        post_dsp_main_alignment_band_hz: None,
         advisories: vec!["ok".to_string()],
     };
 
     DspGraph {
         deployed_source_curves: Default::default(),
         version: "1.3.0".to_string(),
+        artifact_bundle_schema_version: None,
         global_plugins: Vec::new(),
         channels,
         metadata: Some(OptimizationMetadata {
@@ -357,20 +409,24 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
             multi_seat_coverage: None,
             multi_seat_correction: None,
             bass_management: Some(BassManagementReport {
+                crossover_cancellation: Vec::new(),
+                routing_title: "Home-Cinema Bass Management Routing".to_string(),
                 enabled: true,
                 crossover_type: "LR24".to_string(),
                 crossover_frequency_hz: Some(80.0),
-                lfe_low_pass_hz: 120.0,
                 redirected_bass_enabled: true,
-                lfe_channel: "LFE".to_string(),
-                lfe_playback_gain_db: 10.0,
-                lfe_gain_applied_to_chain: false,
+                lfe: Some(roomeq_model::LfeBassManagementReport {
+                    input_channel: "LFE".to_string(),
+                    playback_gain_db: 10.0,
+                    low_pass_hz: 120.0,
+                    gain_applied_to_chain: false,
+                }),
                 sub_trim_db: 0.0,
                 max_sub_boost_db: 6.0,
                 headroom_margin_db: 6.0,
                 applied_sub_gain_db: Some(0.0),
                 gain_limited: false,
-                physical_sub_output: "LFE".to_string(),
+                physical_sub_outputs: vec!["LFE".to_string()],
                 redirected_bass_channel_count: 2,
                 main_high_pass_hz: Some(80.0),
                 sub_low_pass_hz: Some(80.0),
@@ -392,11 +448,20 @@ pub(super) fn make_routed_bass_output() -> DspGraph {
             final_convolution_sha256: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: None,
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         }),
+        correction_decisions: None,
     }
 }
 

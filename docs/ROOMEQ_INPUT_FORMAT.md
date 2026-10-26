@@ -13,11 +13,39 @@ npx ajv validate -s input_schema.json -d your_config.json
 check-jsonschema --schemafile input_schema.json your_config.json
 ```
 
+## Verified capture handoff
+
+New canonical capture configurations set
+`recording_config.capture_handoff_file` to `capture-handoff.json`. Keep that
+sidecar and its inventory files with the configuration. RoomEQ verifies the
+configuration, raw and processed audio, response and calibration identities;
+missing or changed files are refused. Captured responses are parsed from the
+verified bytes and retained in memory for later optimization loads.
+
+Relative inventory paths support moving a whole capture directory. Optimization
+settings can be overridden; overrides cannot replace acquisition identities or
+measurements. Cancelled/failed sessions and repeated takes require an explicit
+review/selection projection before correction. Hashes detect changed bytes;
+physical calibration, coherent phase and device accuracy still need their own
+evidence. Legacy recording imports remain available with their stated unknowns.
+
+## Legacy recording import
+
+`convert_recording input.json output.json` preserves recorded response arrays,
+channel names, original CSV/WAV references and recording settings. File-only
+summaries require a CSV reference. Missing or malformed responses and duplicate
+channel names are refused. Legacy driver groups require explicit topology and
+crossover configuration before import.
+
+A saved calibration filename does not prove calibration was applied. Legacy
+imports retain unknown acquisition quality, absolute-level and coherent-timing
+evidence; raw IR and analysis summaries do not become verified captures.
+
 ## Root Structure
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "system": { ... },
   "speakers": { ... },
   "crossovers": { ... },
@@ -39,9 +67,85 @@ check-jsonschema --schemafile input_schema.json your_config.json
 | `target_curve` | string | No | - | Target frequency response curve |
 | `optimizer` | object | No | defaults | Optimization parameters |
 | `recording_config` | object | No | - | Recording configuration (device settings, signal parameters used during capture) |
+| `measured_impulse_responses` | object | No | - | Native measured room IRs backing independent channel or driver acoustic reports |
 | `ctc` | object | No | - | Cross-talk cancellation / binaural-aware correction using measured two-ear IRs or HRTF/SOFA data |
 
 ---
+
+## Recording Configuration (`recording_config`)
+
+This optional root-level object describes the physical room and the measurement
+session. All its fields are optional; omit unknown values rather than inventing
+them. It does not replace the measurement paths in `speakers` or the measured IR
+declarations in `measured_impulse_responses`.
+
+Measured IR entries contain `path`, optional `sample_rate_hz` (1–192 kHz),
+optional `timing_reference_id`, and optional `output_channel`/`driver` targeting
+the exact delivered driver. Without `output_channel`, the map key is the channel.
+Native samples and time origins are preserved; 3 kHz subwoofer captures are
+supported with unavailable high-frequency bands. A driver capture is never
+substituted for a measured whole-speaker response. Independent acoustic reports
+can omit unknown timing IDs; coherent sums and relative timing still require
+separate, explicit shared-clock evidence. See the measured-IR section in
+[`INPUT_FORMAT.md`](../src/bin/roomeq/INPUT_FORMAT.md) for details.
+
+```json
+{
+  "recording_config": {
+    "room_dimensions": { "length": 5.0, "width": 4.0, "height": 2.5 },
+    "setup_description": "Treated room; microphone at the main listening seat",
+    "channel_names": ["L", "R"],
+    "channel_speakers": { "L": "Adam T7V", "R": "Adam T7V" },
+    "recording_sample_rate": 48000,
+    "signal_type": "Sweep",
+    "signal_duration_secs": 10.0,
+    "sweep_start_freq": 20.0,
+    "sweep_end_freq": 20000.0
+  }
+}
+```
+
+### Room dimensions: single source of truth
+
+`recording_config.room_dimensions` contains `length`, `width`, and `height`, all
+required when the object is present, in **meters**. Each dimension and their
+product must be finite and positive. The example describes a 50 m³ room.
+
+Both Schroeder split and decomposed correction use this declaration. RoomEQ
+resolves the dimensions into runtime engine settings on file load and again
+before optimization, including for programmatically constructed configurations.
+Supplying dimensions does not enable either correction mode. Without dimensions,
+the existing explicit/default Schroeder frequency remains the fallback.
+
+**Migration:** move the whole `room_dimensions` object out of
+`optimizer.schroeder_split` or `optimizer.decomposed_correction` and into
+`recording_config`. The old nested fields are rejected with migration guidance;
+there is no optimizer-level override. Saved effective configurations retain only
+the recording-level declaration, so reports can use the same room volume.
+
+### Measurement-session fields
+
+| Fields | Type / units | Purpose |
+|---|---|---|
+| `setup_description` | string | Room treatment, seating and placement notes |
+| `speaker_configuration`, `channel_names`, `channel_speakers` | string, string array, channel-to-string map | Layout and speaker identity |
+| `playback_device_name`, `playback_device_id`, `recording_device_name`, `recording_device_id` | strings | Capture device identities |
+| `recording_sample_rate`, `recording_channels`, `recording_directory` | Hz, count, string | Capture settings and location |
+| `signal_type`, `signal_duration_secs`, `signal_level_db` | string, seconds, dB | Emitted measurement signal settings |
+| `sweep_start_freq`, `sweep_end_freq` | Hz | Sweep endpoints |
+| `mic_calibration_path`, `mic_phase_calibration_path` | strings | Magnitude/phase calibration file references |
+| `mic_calibration_paths`, `mic_phase_calibration_paths` | arrays of strings or nulls | Per-channel calibration references |
+| `probe_results`, `bass_anchor_results` | objects | Recorded timing/phase evidence; use the generated schema for their nested contracts |
+| `probe_wav_relative`, `bass_anchor_wav_relative` | strings | Raw probe paths relative to the recording directory |
+| `bass_octave_duration_s`, `pre_silence_s`, `post_silence_s`, `bass_probe_duration_s` | seconds | Sweep/probe acquisition timing |
+| `num_sweeps`, `num_positions`, `recording_seed` | integers | Capture repetition, positions and reproducibility |
+| `coherence_threshold`, `bass_probe_freq_hz` | ratio, Hz | Bass phase confidence and probe frequency |
+| `sweep_level_db_spl`, `spl_calibration` | dB SPL, object | Calibrated level and calibration evidence |
+
+Device names and setup notes are provenance, not proof of calibration or a shared
+timing reference. Merely filling this object does not turn an arbitrary WAV into
+a valid room IR. See the [generated schema](../src/bin/roomeq/input_schema.json)
+for nested evidence objects and exact accepted types.
 
 ## Cross-talk Cancellation (CTC)
 
@@ -131,24 +235,22 @@ Raw sweep CTC input can deconvolve and align takes inside roomEQ. Use `matrix_so
 
 ## System Configuration
 
-The `system` section decouples logical channel roles (e.g., "L", "R", "LFE") from physical measurement files. This allows for explicit topology definitions and automatic subwoofer alignment strategies.
+Input format `3.0.0` separates logical programme inputs from measured physical outputs. Stereo always has exactly `L` and `R`; home cinema adds the canonical `LFE` programme input implicitly.
 
 ```json
 {
+  "version": "3.0.0",
   "system": {
     "model": "stereo",
     "speakers": {
       "L": "left_meas",
-      "R": "right_meas",
-      "LFE": "sub_meas"
+      "R": "right_meas"
     },
     "subwoofers": {
-      "config": "single",
-      "crossover": "bass_xover",
-      "sub_meas": "L"
-    },
-    "bass_management": {
-      "lfe_low_pass_hz": 120.0
+      "strategy": "single",
+      "routing": "optimize",
+      "outputs": [{ "id": "Sub1", "speaker": "sub_meas" }],
+      "crossover": ["bass_xover"]
     }
   },
   "crossovers": {
@@ -165,8 +267,8 @@ The `system` section decouples logical channel roles (e.g., "L", "R", "LFE") fro
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `model` | string | No | `"custom"` | Topology model: `"stereo"`, `"home_cinema"`, `"custom"` |
-| `speakers` | map | **Yes** | - | Map of Logical Role → Measurement Key. The key must exist in the root `speakers` object. |
-| `subwoofers` | object | No | - | Subwoofer configuration and alignment mapping |
+| `speakers` | map | **Yes** | - | Measured main/surround/height outputs. Stereo must contain exactly `L` and `R`; home cinema must not contain `LFE`. |
+| `subwoofers` | object | No | - | Physical subwoofer output definitions and routing policy |
 | `bass_management` | object | No | cinema defaults | Bass routing policy. `lfe_low_pass_hz` defaults to 120 Hz and is independent of the main-speaker crossover. |
 | `supporting_source_outputs` | object | No | `{"suffix": "_support"}` | Naming convention for supporting-source physical outputs |
 
@@ -174,9 +276,10 @@ The `system` section decouples logical channel roles (e.g., "L", "R", "LFE") fro
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `config` | string | No | `"single"` | Strategy: `"single"`, `"mso"`, `"dba"` |
-| `crossover` | string | No | - | Reference to a crossover definition in the `crossovers` map |
-| `*` | string | - | - | Any other key is treated as: `Subwoofer Measurement Key` → `Main Speaker Logical Role` (for alignment) |
+| `strategy` | string | No | `"single"` | Strategy: `"single"`, `"mso"`, `"dba"` |
+| `routing` | string | No | `"optimize"` | Stereo routing topology selection policy |
+| `outputs` | array | **Yes** | - | Ordered `{id, speaker}` physical outputs; `speaker` references the root `speakers` map |
+| `crossover` | array | **Yes** | - | One crossover key per physical output; each key must exist in `crossovers` |
 
 ---
 
@@ -1154,14 +1257,12 @@ Applies different Q constraints below and above the Schroeder frequency:
 With automatic Schroeder frequency from room dimensions:
 ```json
 {
+  "recording_config": {
+    "room_dimensions": { "length": 6.0, "width": 4.5, "height": 2.8 }
+  },
   "optimizer": {
     "schroeder_split": {
-      "enabled": true,
-      "room_dimensions": {
-        "length": 6.0,
-        "width": 4.5,
-        "height": 2.8
-      }
+      "enabled": true
     }
   }
 }
@@ -1173,11 +1274,10 @@ With automatic Schroeder frequency from room dimensions:
 |-------|------|---------|-------------|
 | `enabled` | boolean | `false` | Enable Schroeder split optimization |
 | `schroeder_freq` | number (Hz) | `300` | Schroeder frequency (typical: 200-500 Hz for domestic rooms) |
-| `room_dimensions` | object | - | Room dimensions for automatic Schroeder frequency calculation |
 | `low_freq_config` | object | - | Low frequency filter configuration (below Schroeder) |
 | `high_freq_config` | object | - | High frequency filter configuration (above Schroeder) |
 
-**RoomDimensions Fields:**
+**RoomDimensions Fields** (under `recording_config.room_dimensions`):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -1557,16 +1657,17 @@ Applies frequency-dependent correction weights based on acoustic decomposition. 
 The feature is opt-in: omitting `decomposed_correction` disables it. When the
 object is present, its nested `enabled` field defaults to `true`.
 
+With `recording_config.room_dimensions` and a measured IR, the optimizer can
+derive the Schroeder frequency as `2000 · √(RT60 / V)` using measured RT60.
+
 ```json
 {
+  "recording_config": {
+    "room_dimensions": { "length": 4.0, "width": 3.0, "height": 2.5 }
+  },
   "optimizer": {
     "decomposed_correction": {
       "schroeder_freq": 300,
-      "room_dimensions": {
-        "length": 4.0,
-        "width": 3.0,
-        "height": 2.5
-      },
       "min_mode_q": 3.0,
       "min_mode_prominence_db": 3.0,
       "mode_correction_weight": 1.0,
@@ -1584,8 +1685,7 @@ object is present, its nested `enabled` field defaults to `true`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `schroeder_freq` | number (Hz) | `300` | Fallback Schroeder frequency when no IR or no `room_dimensions`. Below: modal, above: statistical. |
-| `room_dimensions` | object | - | Optional L × W × H in metres. When both this and `ssir_wav_path` are set, the optimizer measures RT60 from the recorded impulse response (Schroeder backward integration) and computes the Schroeder frequency as `2000 · √(RT60 / V)`, overriding the fallback `schroeder_freq` above. |
+| `schroeder_freq` | number (Hz) | `300` | Fallback when no usable IR or no `recording_config.room_dimensions`. Below: modal, above: statistical. |
 | `min_mode_q` | number | `3.0` | Minimum Q to qualify as a room mode |
 | `min_mode_prominence_db` | number | `3.0` | Minimum prominence (dB) for mode detection |
 | `mode_correction_weight` | number | `1.0` | Correction weight for room modes (0.0-1.0) |
@@ -1698,18 +1798,18 @@ freq,spl,phase
 
 ```json
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "system": {
     "model": "stereo",
     "speakers": {
       "L": "left",
-      "R": "right",
-      "LFE": "sub"
+      "R": "right"
     },
     "subwoofers": {
-      "config": "single",
-      "crossover": "bass_xover",
-      "sub": "L"
+      "strategy": "single",
+      "routing": "optimize",
+      "outputs": [{ "id": "Sub1", "speaker": "sub" }],
+      "crossover": ["bass_xover"]
     }
   },
   "speakers": {
@@ -1732,6 +1832,12 @@ freq,spl,phase
   }
 }
 ```
+
+Stereo `.1`/`.2` counts physical subwoofer outputs; it never adds an `LFE`
+programme input. A stereo 2.1 route uses `0.5L + 0.5R`. For 2.2, RoomEQ
+independently evaluates direct-pair, crossed-pair, and dual-mono routing and
+reports the selected matrix. Home cinema implicitly adds the canonical `LFE`
+programme input while keeping physical sub measurements under `outputs`.
 
 ### Example 3: 2-Way Active Speaker
 

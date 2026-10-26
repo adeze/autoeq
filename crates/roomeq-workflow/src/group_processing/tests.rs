@@ -35,7 +35,9 @@ fn cardioid_rejects_missing_phase() {
         optimizer: OptimizerConfig::default(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -120,7 +122,9 @@ fn cardioid_flat_response_does_not_regress() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -153,22 +157,51 @@ fn phased_sub_curve(spl_offset: f64, phase_offset: f64) -> Curve {
     }
 }
 
+// Analytic fixtures share one explicit time origin; this declaration is not
+// evidence for any measured archive. Keep stable physical seat labels as well.
+fn analytic_sub_seats(curves: Vec<Curve>) -> MeasurementSource {
+    let measurements = curves
+        .into_iter()
+        .enumerate()
+        .map(|(seat, curve)| {
+            roomeq_model::MeasurementRef::Inline(roomeq_model::InlineMeasurement {
+                frequencies: curve.freq.to_vec(),
+                magnitude_db: curve.spl.to_vec(),
+                phase_deg: curve.phase.map(|phase| phase.to_vec()),
+                name: Some(format!("analytic-seat-{seat}")),
+                wav_path: None,
+                csv_path: None,
+            })
+        })
+        .collect();
+    let mut source = roomeq_model::MeasurementMultiple {
+        measurements,
+        speaker_name: None,
+        provenance: Default::default(),
+        estimated_position: None,
+    };
+    source.provenance.capture_kind = autoeq_core::ProvenanceCaptureKind::StationaryIr;
+    source.provenance.timing_reference_id = Some("analytic-common-time-origin".to_string());
+    MeasurementSource::Multiple(source)
+}
+
 #[test]
-fn multisub_uses_production_multiseat_path_when_subs_have_seat_measurements() {
+fn multisub_requires_shared_timing_for_production_multiseat_processing() {
     let group = MultiSubGroup {
         name: "subs".to_string(),
         speaker_name: None,
         subwoofers: vec![
-            MeasurementSource::InMemoryMultiple(vec![
+            analytic_sub_seats(vec![
                 phased_sub_curve(0.0, 0.0),
                 phased_sub_curve(2.0, 12.0),
             ]),
-            MeasurementSource::InMemoryMultiple(vec![
+            analytic_sub_seats(vec![
                 phased_sub_curve(-1.0, 45.0),
                 phased_sub_curve(1.0, 60.0),
             ]),
         ],
         allpass_optimization: false,
+        joint_optimization: false,
     };
     let room_config = RoomConfig {
         version: roomeq_model::default_config_version(),
@@ -194,7 +227,9 @@ fn multisub_uses_production_multiseat_path_when_subs_have_seat_measurements() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -234,6 +269,40 @@ fn multisub_uses_production_multiseat_path_when_subs_have_seat_measurements() {
     );
     let drivers = chain.drivers.expect("multi-sub output should have drivers");
     assert_eq!(drivers.len(), 2);
+
+    for invalid_evidence in ["unknown", "mismatched", "moving", "missing-phase"] {
+        let mut unqualified = group.clone();
+        let MeasurementSource::Multiple(source) = &mut unqualified.subwoofers[1] else {
+            panic!("analytic fixture should use named inline measurements");
+        };
+        match invalid_evidence {
+            "unknown" => source.provenance.timing_reference_id = None,
+            "mismatched" => {
+                source.provenance.timing_reference_id = Some("different-time-origin".to_string());
+            }
+            "moving" => {
+                source.provenance.capture_kind =
+                    autoeq_core::ProvenanceCaptureKind::SpatialMagnitude;
+            }
+            "missing-phase" => {
+                let roomeq_model::MeasurementRef::Inline(measurement) = &mut source.measurements[0]
+                else {
+                    panic!("analytic fixture should be inline");
+                };
+                measurement.phase_deg = None;
+            }
+            _ => unreachable!(),
+        }
+        let error =
+            process_multisub_group("LFE", &unqualified, &room_config, 48000.0, Path::new("."))
+                .expect_err("unqualified capture must refuse coherent legacy MSO")
+                .to_string();
+        assert!(
+            error.contains("shared timing reference"),
+            "{invalid_evidence}: {error}"
+        );
+        assert!(error.contains("no alternate optimizer was run"), "{error}");
+    }
 }
 
 #[test]
@@ -242,16 +311,17 @@ fn production_multiseat_path_emits_per_sub_and_global_eq_when_enabled() {
         name: "subs".to_string(),
         speaker_name: None,
         subwoofers: vec![
-            MeasurementSource::InMemoryMultiple(vec![
+            analytic_sub_seats(vec![
                 phased_sub_curve(0.0, 0.0),
                 phased_sub_curve(2.0, 12.0),
             ]),
-            MeasurementSource::InMemoryMultiple(vec![
+            analytic_sub_seats(vec![
                 phased_sub_curve(-1.0, 45.0),
                 phased_sub_curve(1.0, 60.0),
             ]),
         ],
         allpass_optimization: false,
+        joint_optimization: false,
     };
     let room_config = RoomConfig {
         version: roomeq_model::default_config_version(),
@@ -277,7 +347,9 @@ fn production_multiseat_path_emits_per_sub_and_global_eq_when_enabled() {
         },
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     };
 
@@ -357,7 +429,9 @@ mod coverage_tests {
             optimizer,
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -618,6 +692,7 @@ mod coverage_tests {
                 MeasurementSource::InMemory(flat_curve()),
             ],
             allpass_optimization: false,
+            joint_optimization: false,
         };
         let config = room_config_with_optimizer(sub_optimizer());
         let result = process_multisub_group("LFE", &group, &config, 48000.0, Path::new("."));

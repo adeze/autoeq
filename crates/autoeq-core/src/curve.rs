@@ -54,6 +54,11 @@ pub struct Curve {
     /// milliseconds. Never persisted.
     #[serde(default, skip_serializing)]
     pub excess_delay_ms: Option<f64>,
+    /// Original numerical sampling support, retained through interpolation.
+    /// Runtime-only metadata: denser derived grids do not establish finer
+    /// measurement resolution, and this does not authenticate acquisition.
+    #[serde(skip)]
+    pub resolution: Option<std::sync::Arc<crate::resolution::MeasurementResolution>>,
 }
 
 impl Default for Curve {
@@ -67,11 +72,119 @@ impl Default for Curve {
             min_phase: None,
             excess_phase: None,
             excess_delay_ms: None,
+            resolution: None,
         }
     }
 }
 
 impl Curve {
+    /// Select measured samples within a frequency band without extrapolation.
+    ///
+    /// Phase, coherence, and noise-floor arrays retain the same sample selection.
+    /// Derived phase caches are cleared because they may depend on excluded data.
+    /// The original curve is unchanged.
+    ///
+    /// # Errors
+    /// Returns an error for invalid arrays or band edges, or fewer than two
+    /// retained samples. Band edges must be finite with `0 < low < high`.
+    pub fn select_frequency_band(&self, [low, high]: [f64; 2]) -> Result<Self> {
+        if !low.is_finite() || !high.is_finite() || low <= 0.0 || low >= high {
+            return Err(AutoeqError::InvalidMeasurement {
+                message: "Usable frequency band must have finite edges with 0 < low < high".into(),
+            });
+        }
+        self.validate("usable measurement")?;
+        let indices: Vec<_> = self
+            .freq
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| (*f >= low && *f <= high).then_some(i))
+            .collect();
+        if indices.len() < 2 {
+            return Err(AutoeqError::InvalidMeasurement {
+                message: "Declared usable band does not overlap measurement support with at least two loaded samples".into(),
+            });
+        }
+        let select = |values: &Array1<f64>| values.select(ndarray::Axis(0), &indices);
+        Ok(Self {
+            freq: select(&self.freq),
+            spl: select(&self.spl),
+            phase: self.phase.as_ref().map(select),
+            coherence: self.coherence.as_ref().map(select),
+            noise_floor_db: self.noise_floor_db.as_ref().map(select),
+            min_phase: None,
+            excess_phase: None,
+            excess_delay_ms: None,
+            resolution: Some(self.retained_resolution()),
+        })
+    }
+
+    /// Select measured samples within the union of disjoint frequency bands.
+    ///
+    /// Bands must be non-empty, finite with `0 < low < high`, ordered, and
+    /// disjoint. Samples in internal gaps are dropped, never interpolated:
+    /// no measurement exists there, so smoothing, scoring, and optimization
+    /// must not see gap values. Phase, coherence, and noise-floor arrays
+    /// retain the same sample selection. Derived phase caches are cleared
+    /// because they may depend on excluded data. The original curve is
+    /// unchanged.
+    ///
+    /// # Errors
+    /// Returns an error for invalid arrays or band edges, for bands that are
+    /// not ordered and disjoint, or when any band retains fewer than two
+    /// loaded samples.
+    pub fn select_frequency_bands(&self, bands: &[[f64; 2]]) -> Result<Self> {
+        if bands.is_empty() {
+            return Err(AutoeqError::InvalidMeasurement {
+                message: "Usable frequency bands must not be empty".into(),
+            });
+        }
+        for (index, [low, high]) in bands.iter().copied().enumerate() {
+            if !low.is_finite() || !high.is_finite() || low <= 0.0 || low >= high {
+                return Err(AutoeqError::InvalidMeasurement {
+                    message: format!(
+                        "Usable frequency band {index} must have finite edges with 0 < low < high"
+                    ),
+                });
+            }
+            if index > 0 && low <= bands[index - 1][1] {
+                return Err(AutoeqError::InvalidMeasurement {
+                    message: "Usable frequency bands must be ordered and disjoint".into(),
+                });
+            }
+        }
+        self.validate("usable measurement")?;
+        let mut indices: Vec<usize> = Vec::new();
+        for (index, [low, high]) in bands.iter().copied().enumerate() {
+            let before = indices.len();
+            indices.extend(
+                self.freq
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, f)| (*f >= low && *f <= high).then_some(i)),
+            );
+            if indices.len() - before < 2 {
+                return Err(AutoeqError::InvalidMeasurement {
+                    message: format!(
+                        "Declared usable band {index} does not overlap measurement support with at least two loaded samples"
+                    ),
+                });
+            }
+        }
+        let select = |values: &Array1<f64>| values.select(ndarray::Axis(0), &indices);
+        Ok(Self {
+            freq: select(&self.freq),
+            spl: select(&self.spl),
+            phase: self.phase.as_ref().map(select),
+            coherence: self.coherence.as_ref().map(select),
+            noise_floor_db: self.noise_floor_db.as_ref().map(select),
+            min_phase: None,
+            excess_phase: None,
+            excess_delay_ms: None,
+            resolution: Some(self.retained_resolution()),
+        })
+    }
+
     /// Return the versioned canonical byte representation used for content
     /// identity. Derived cache fields are deliberately excluded: they are
     /// implementation details which are recomputed when a measurement loads.
@@ -287,6 +400,81 @@ mod validation_tests {
             phase: Some(Array1::from_vec(vec![0.0, -5.0, -20.0])),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn frequency_band_selection_validates_edges_and_retains_measured_phase() {
+        let curve = valid_curve();
+        let selected = curve.select_frequency_band([100.0, 1000.0]).unwrap();
+        assert_eq!(selected.freq, ndarray::array![100.0, 1000.0]);
+        assert_eq!(selected.spl, ndarray::array![81.0, 79.0]);
+        assert_eq!(selected.phase, Some(ndarray::array![-5.0, -20.0]));
+        assert_eq!(curve.freq.len(), 3);
+        for band in [
+            [0.0, 1000.0],
+            [1000.0, 100.0],
+            [100.0, 100.0],
+            [f64::NAN, 1000.0],
+            [100.0, f64::INFINITY],
+            [21.0, 99.0],
+            [99.0, 101.0],
+        ] {
+            assert!(curve.select_frequency_band(band).is_err(), "{band:?}");
+        }
+        let mut invalid = curve;
+        invalid.phase = Some(ndarray::array![0.0]);
+        assert!(invalid.select_frequency_band([100.0, 1000.0]).is_err());
+    }
+
+    #[test]
+    fn disjoint_band_selection_drops_gap_bins_without_interpolation() {
+        let curve = Curve {
+            freq: Array1::from_vec(vec![20.0, 100.0, 1_000.0, 8_000.0, 20_000.0]),
+            spl: Array1::from_vec(vec![80.0, 81.0, 99.0, 79.0, 78.0]),
+            phase: Some(Array1::from_vec(vec![0.0, -5.0, -50.0, -20.0, -30.0])),
+            ..Default::default()
+        };
+        let selected = curve
+            .select_frequency_bands(&[[20.0, 100.0], [8_000.0, 20_000.0]])
+            .unwrap();
+        assert_eq!(
+            selected.freq,
+            ndarray::array![20.0, 100.0, 8_000.0, 20_000.0]
+        );
+        assert_eq!(selected.spl, ndarray::array![80.0, 81.0, 79.0, 78.0]);
+        assert_eq!(
+            selected.phase,
+            Some(ndarray::array![0.0, -5.0, -20.0, -30.0])
+        );
+        // The 1 kHz gap sample (99 dB display value) must not leak in.
+        assert!(!selected.freq.iter().any(|f| *f == 1_000.0));
+        assert_eq!(curve.freq.len(), 5);
+    }
+
+    #[test]
+    fn disjoint_band_selection_rejects_unordered_overlapping_and_starved_bands() {
+        let curve = Curve {
+            freq: Array1::from_vec(vec![20.0, 100.0, 1_000.0, 8_000.0, 20_000.0]),
+            spl: Array1::from_vec(vec![80.0, 81.0, 82.0, 79.0, 78.0]),
+            ..Default::default()
+        };
+        // Unordered, overlapping/touching, empty, and invalid edges.
+        for bands in [
+            vec![[8_000.0, 20_000.0], [20.0, 100.0]],
+            vec![[20.0, 1_000.0], [1_000.0, 20_000.0]],
+            vec![[20.0, 1_000.0], [500.0, 20_000.0]],
+            vec![],
+            vec![[0.0, 100.0], [8_000.0, 20_000.0]],
+            vec![[20.0, 100.0], [8_000.0, f64::INFINITY]],
+        ] {
+            assert!(curve.select_frequency_bands(&bands).is_err(), "{bands:?}");
+        }
+        // A declared segment with fewer than two loaded samples is unusable.
+        assert!(
+            curve
+                .select_frequency_bands(&[[20.0, 100.0], [9_000.0, 9_500.0]])
+                .is_err()
+        );
     }
 
     #[test]

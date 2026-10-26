@@ -1,0 +1,129 @@
+{
+  "version": "3.0.0",
+  "measured_impulse_responses": {
+    "L": {
+      "path": "measured_ir/L_KEF_LS60_P2__ir.csv",
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
+    },
+    "R": {
+      "path": "measured_ir/R_KEF_LS60_P2__ir.csv",
+      "sample_rate_hz": 48000,
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
+    },
+    "sub_left": {
+      "path": "measured_ir/Sub_Left_P2__ir.csv",
+      "sample_rate_hz": 48000,
+      "output_channel": "Sub1",
+      "driver": "Sub1",
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
+    },
+    "sub_right": {
+      "path": "measured_ir/Sub_Right_P2__ir.csv",
+      "sample_rate_hz": 48000,
+      "output_channel": "Sub1",
+      "driver": "Sub2",
+      "timing_reference_id": "2.2_kefls60_p2_badroom"
+    }
+  },
+  "system": {
+    "model": "stereo",
+    "speakers": {
+      "L": "L",
+      "R": "R"
+    },
+    "subwoofers": {
+      "strategy": "mso",
+      "routing": "optimize",
+      "outputs": [
+        {
+          "id": "Sub1",
+          "speaker": "sub_left"
+        },
+        {
+          "id": "Sub2",
+          "speaker": "sub_right"
+        }
+      ],
+      "crossover": [
+        "bass_xover1",
+        "bass_xover2"
+      ]
+    }
+  },
+  "speakers": {
+    "L": {
+      "path": "left.csv",
+      "name": "Left"
+    },
+    "R": {
+      "path": "right.csv",
+      "name": "Right"
+    },
+    "sub_left": {
+      "path": "left_sub.csv",
+      "name": "Main listening position",
+      "speaker_name": "Left Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "2.2_kefls60_p2_badroom",
+        "has_measured_spl": true
+      }
+    },
+    "sub_right": {
+      "path": "right_sub.csv",
+      "name": "Main listening position",
+      "speaker_name": "Right Sub",
+      "provenance": {
+        "capture_kind": "stationary_ir",
+        "timing_reference_id": "2.2_kefls60_p2_badroom",
+        "has_measured_spl": true
+      }
+    }
+  },
+  "crossovers": {
+    "bass_xover1": {
+      "type": "LR24",
+      "frequency_range": [
+        80.0,
+        130.0
+      ]
+    },
+    "bass_xover2": {
+      "type": "LR24",
+      "frequency_range": [
+        80.0,
+        130.0
+      ]
+    }
+  },
+  "optimizer": {
+    "algorithm": "autoeq:cmaes",
+    "population": 14,
+    "max_iter": 500000,
+    "loss_type": "flat",
+    "min_freq": 20.0,
+    "max_freq": 16000.0,
+    "num_filters": 16,
+    "min_q": 0.5,
+    "max_q": 6.0,
+    "min_db": -12.0,
+    "max_db": 6.0,
+    "psychoacoustic": true,
+    "asymmetric_loss": true,
+    "phase_alignment": {
+      "enabled": true,
+      "min_freq": 30.0,
+      "max_freq": 120.0,
+      "optimize_polarity": true,
+      "max_delay_ms": 20.0
+    }
+  },
+  "recording_config": {
+    "room_dimensions": {
+      "length": 10.0,
+      "width": 6.0,
+      "height": 2.5
+    }
+  }
+}

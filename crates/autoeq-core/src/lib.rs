@@ -6,16 +6,28 @@
 
 pub use math_audio_iir_fir as iir;
 
+pub mod alignment;
 pub mod auditory_frequency;
+pub mod capture_arrival;
+pub mod capture_handoff;
+pub mod capture_provenance;
+pub mod constraint_envelope;
 pub mod curve;
 pub mod curve_transforms;
+pub mod direct_sound;
+pub mod display_smoothing;
+pub mod dsp_conventions;
 pub mod error;
+pub mod evidence;
+pub mod fir_response;
 pub mod measurement_contracts;
 pub mod measurement_quality;
 pub mod param_utils;
 pub mod peq_model;
 pub mod phase_utils;
+pub mod resolution;
 pub mod response;
+pub mod serialized_dsp;
 pub mod x2peq;
 
 #[cfg(test)]
@@ -26,14 +38,25 @@ mod curve_normalization_tests;
 mod curve_smoothing_tests;
 #[cfg(test)]
 mod measurement_quality_tests;
+#[cfg(test)]
+mod psycho_fast;
 
+pub use alignment::{
+    align_evidence_support, timing_uncertainty_to_phase_deg, validate_alignment_grid,
+};
 pub use auditory_frequency::*;
+pub use constraint_envelope::{LocalQEnvelope, LocalQKnot, effective_max_q};
 pub use curve::Curve;
 pub use curve_transforms::*;
 pub use error::{AutoeqError, Result};
+pub use evidence::{
+    CalibrationStatus, CaptureKind, CommonReferenceScope, EVIDENCE_ENVELOPE_VERSION, EvidenceBand,
+    EvidenceEnvelope, Uncertainty, UncertaintyKind,
+};
 pub use measurement_contracts::{
-    InlineMeasurement, MeasurementMultiple, MeasurementRef, MeasurementSingle, MeasurementSource,
-    SpinoramaBundle,
+    ESTIMATED_POSITION_MAX_RMS_M, ESTIMATED_POSITION_MAX_SIGMA_M, EstimatedPosition,
+    EstimatedRangeCell, InlineMeasurement, MeasurementMultiple, MeasurementProvenance,
+    MeasurementRef, MeasurementSingle, MeasurementSource, ProvenanceCaptureKind, SpinoramaBundle,
 };
 pub use measurement_quality::{
     MeasurementQuality, MeasurementQualityReport, assess_measurement_quality,
@@ -41,3 +64,11 @@ pub use measurement_quality::{
 };
 pub use param_utils::{FilterParams, ParamLayout, PeqLayout};
 pub use peq_model::PeqModel;
+
+pub mod serialized_plugins;
+
+pub mod serialized_chain;
+
+pub mod crossover;
+
+pub mod runtime_limiter;

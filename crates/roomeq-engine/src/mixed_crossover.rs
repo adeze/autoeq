@@ -19,9 +19,13 @@ use crate::output;
 /// Complete in-memory request for the legacy frequency-split Hybrid topology.
 pub struct MixedCrossoverRequest<'a> {
     pub channel_name: &'a str,
+    /// Original per-position measurements for native channel optimization.
+    pub prepared: Option<&'a crate::PreparedChannelInput>,
     pub curve: &'a Curve,
     pub target: &'a TargetContext,
     pub preference_filters: &'a [Biquad],
+    /// Excursion protection applied to the optimization curve and serialized before the crossover.
+    pub excursion_filters: &'a [Biquad],
     pub mixed_config: &'a MixedModeConfig,
     pub optimizer: &'a OptimizerConfig,
     pub eq_resources: &'a EqResources,
@@ -48,7 +52,11 @@ pub fn process_mixed_crossover(
         if fir_uses_low { "high" } else { "low" }
     );
 
-    let optimization_curve = subtract_target_tilt(request.curve, request.target);
+    let usable_curve = match request.prepared {
+        Some(prepared) => prepared.usable_curve(request.curve)?,
+        None => std::borrow::Cow::Borrowed(request.curve),
+    };
+    let optimization_curve = subtract_target_tilt(&usable_curve, request.target);
     let (low_curve, high_curve) = split_curve_at_frequency(&optimization_curve, crossover_freq);
     let (fir_curve, iir_curve) = if fir_uses_low {
         (&low_curve, &high_curve)
@@ -90,28 +98,41 @@ pub fn process_mixed_crossover(
             max_freq: iir_max_freq,
             ..request.optimizer.clone()
         };
-        (if let Some(callback) = request.callback {
-            eq::optimize_channel_eq_with_callback_detailed(
-                iir_curve,
+        if let Some(prepared) = request.prepared {
+            crate::channel_optimizer::optimize_maybe_multi(
+                request.channel_name,
+                prepared,
+                &optimization_curve,
                 &iir_config,
-                Some(request.eq_resources),
+                request.eq_resources,
                 request.sample_rate,
-                callback,
-            )
+                request.callback,
+                request.target.target_tilt_curve.as_ref(),
+            )?
         } else {
-            eq::optimize_channel_eq_detailed(
-                iir_curve,
-                &iir_config,
-                Some(request.eq_resources),
-                request.sample_rate,
-            )
-        })
-        .map_err(|error| AutoeqError::OptimizationFailed {
-            message: format!(
-                "IIR optimization failed for {} band: {error}",
-                if fir_uses_low { "high" } else { "low" }
-            ),
-        })?
+            (if let Some(callback) = request.callback {
+                eq::optimize_channel_eq_with_callback_detailed(
+                    iir_curve,
+                    &iir_config,
+                    Some(request.eq_resources),
+                    request.sample_rate,
+                    callback,
+                )
+            } else {
+                eq::optimize_channel_eq_detailed(
+                    iir_curve,
+                    &iir_config,
+                    Some(request.eq_resources),
+                    request.sample_rate,
+                )
+            })
+            .map_err(|error| AutoeqError::OptimizationFailed {
+                message: format!(
+                    "IIR optimization failed for {} band: {error}",
+                    if fir_uses_low { "high" } else { "low" }
+                ),
+            })?
+        }
     } else {
         info!(
             "  IIR stage skipped: {} band does not overlap configured optimization range {:.1}-{:.1} Hz",
@@ -176,6 +197,36 @@ pub fn process_mixed_crossover(
         fir_bulk_delay_ms,
         None,
     );
+    // A frequency split changes realization, not the requested acoustic target.
+    let target_shape = request.target.target_tilt_curve.as_ref().map_or_else(
+        || crate::eq::resources::target_curve(request.curve, Some(request.eq_resources)),
+        |tilt| autoeq_core::interpolate_log_space(&request.curve.freq, tilt),
+    );
+    channel.target_curve = Some(CurveData {
+        freq: target_shape.freq.to_vec(),
+        spl: (&target_shape.spl + request.mean_spl).to_vec(),
+        phase: None,
+        ..Default::default()
+    });
+    if !request.excursion_filters.is_empty() {
+        channel.plugins.insert(
+            0,
+            output::create_labeled_eq_plugin(request.excursion_filters, "excursion_protection"),
+        );
+    }
+    // Kirkeby centers its inverse IFFT at taps/2, regardless of requested
+    // excess phase. Preserve that reference for correction-strength blending.
+    if let Some(fir) = fir_config.fir.as_ref()
+        && fir.phase.eq_ignore_ascii_case("kirkeby")
+        && fir.pre_ringing.is_none()
+    {
+        for plugin in &mut channel.plugins {
+            if plugin.plugin_type == "convolution" {
+                plugin.parameters["correction_design_delay_ms"] =
+                    serde_json::json!((fir.taps / 2) as f64 * 1000.0 / request.sample_rate);
+            }
+        }
+    }
     let neutral_output_curve = apply_crossover_response(
         request.curve,
         &eq_filters,
@@ -202,12 +253,32 @@ pub fn process_mixed_crossover(
     let (norm_range, mean_final) =
         roomeq_analysis::response_metrics::detect_passband_and_mean(&neutral_final);
     let normalized_final_spl = &neutral_final.spl - mean_final;
-    let post_score = autoeq_optim::loss::flat_loss(
-        &final_curve.freq,
-        &normalized_final_spl,
-        request.min_freq,
-        request.max_freq,
-    );
+    // Score on usable support only: multi-segment gap bins are display
+    // samples, not measurements. Prepared-aware mixed requests select the
+    // union of declared segments; the unprepared path keeps legacy scoring.
+    let post_score = match request.prepared {
+        Some(prepared) => {
+            let score_curve = Curve {
+                freq: final_curve.freq.clone(),
+                spl: normalized_final_spl.clone(),
+                phase: final_curve.phase.clone(),
+                ..Curve::default()
+            };
+            let usable = prepared.usable_curve(&score_curve)?;
+            autoeq_optim::loss::flat_loss(
+                &usable.freq,
+                &usable.spl,
+                request.min_freq,
+                request.max_freq,
+            )
+        }
+        None => autoeq_optim::loss::flat_loss(
+            &final_curve.freq,
+            &normalized_final_spl,
+            request.min_freq,
+            request.max_freq,
+        ),
+    };
     info!(
         "  Pre-score: {:.6}, Post-score: {:.6}",
         request.pre_score, post_score
@@ -233,6 +304,11 @@ pub fn process_mixed_crossover(
     channel.final_curve = Some(final_data.clone());
     channel.eq_response = Some(output::compute_eq_response(&initial_data, &final_data));
 
+    let audibility_veto = eq_result.audibility_veto.clone();
+    let veto_adjudication = eq_result
+        .veto_adjudication
+        .as_ref()
+        .map(crate::eq::audibility_veto::VetoAdjudicationSummary::to_report);
     Ok(ChannelProcessingResult {
         channel,
         pre_score: request.pre_score,
@@ -248,6 +324,11 @@ pub fn process_mixed_crossover(
             required: true,
         }),
         optimizer_evidence: eq_result.optimizer_evidence,
+        audibility_veto,
+        veto_adjudication,
+        // Multi-segment authorization runs once per channel in
+        // `execute_prepared_channel`, after every processing mode assembles.
+        segment_support: None,
     })
 }
 
@@ -380,80 +461,103 @@ mod tests {
 
     #[test]
     fn mixed_crossover_returns_required_path_free_sidecar() {
-        let curve = curve();
-        let mixed_config = MixedModeConfig {
-            crossover_freq: 500.0,
-            fir_band: "low".to_string(),
-            ..MixedModeConfig::default()
-        };
-        let optimizer = OptimizerConfig {
-            min_freq: 100.0,
-            max_freq: 1_600.0,
-            num_filters: 1,
-            max_iter: 3,
-            population: 4,
-            seed: Some(2),
-            refine: false,
-            fir: Some(FirConfig {
-                taps: 64,
-                ..FirConfig::default()
-            }),
-            ..OptimizerConfig::default()
-        };
-        let target = TargetContext {
-            target_tilt_curve: None,
-            min_freq: 100.0,
-            max_freq: 1_600.0,
-            pre_score: 1.0,
-            mean_spl: 80.0,
-            cea2034_active: false,
-        };
-        let result = process_mixed_crossover(MixedCrossoverRequest {
-            channel_name: "left",
-            curve: &curve,
-            target: &target,
-            preference_filters: &[],
-            mixed_config: &mixed_config,
-            optimizer: &optimizer,
-            eq_resources: &EqResources::default(),
-            sample_rate: 48_000.0,
-            min_freq: 100.0,
-            max_freq: 1_600.0,
-            mean_spl: 80.0,
-            pre_score: 1.0,
-            arrival_time_ms: Some(2.5),
-            sidecar_reference: ConvolutionSidecarReference::new("left_band_fir_48000hz.wav")
-                .unwrap(),
-            callback: None,
-        })
-        .unwrap();
+        for phase in ["linear", "kirkeby"] {
+            // Analytic zero-phase fixture for the requested excess-phase design;
+            // missing phase falls back to magnitude-only in the prepared FIR
+            // entry point, which would not exercise the excess-phase path.
+            let mut curve = curve();
+            curve.phase = Some(ndarray::Array1::zeros(curve.freq.len()));
+            let mixed_config = MixedModeConfig {
+                crossover_freq: 500.0,
+                fir_band: "low".to_string(),
+                ..MixedModeConfig::default()
+            };
+            let optimizer = OptimizerConfig {
+                min_freq: 100.0,
+                max_freq: 1_600.0,
+                num_filters: 1,
+                max_iter: 3,
+                population: 4,
+                seed: Some(2),
+                refine: false,
+                fir: Some(FirConfig {
+                    taps: 64,
+                    phase: phase.into(),
+                    correct_excess_phase: true,
+                    ..FirConfig::default()
+                }),
+                ..OptimizerConfig::default()
+            };
+            let target = TargetContext {
+                target_tilt_curve: None,
+                min_freq: 100.0,
+                max_freq: 1_600.0,
+                pre_score: 1.0,
+                mean_spl: 80.0,
+                cea2034_active: false,
+            };
+            let result = process_mixed_crossover(MixedCrossoverRequest {
+                channel_name: "left",
+                prepared: None,
+                curve: &curve,
+                target: &target,
+                preference_filters: &[],
+                excursion_filters: &[],
+                mixed_config: &mixed_config,
+                optimizer: &optimizer,
+                eq_resources: &EqResources::default(),
+                sample_rate: 48_000.0,
+                min_freq: 100.0,
+                max_freq: 1_600.0,
+                mean_spl: 80.0,
+                pre_score: 1.0,
+                arrival_time_ms: Some(2.5),
+                sidecar_reference: ConvolutionSidecarReference::new("left_band_fir_48000hz.wav")
+                    .unwrap(),
+                callback: None,
+            })
+            .unwrap();
 
-        assert_eq!(result.arrival_time_ms, Some(2.5));
-        assert_eq!(result.fir_coeffs.as_ref().unwrap().len(), 64);
-        let generated = result.convolution_sidecar.unwrap();
-        assert!(generated.required);
-        assert_eq!(generated.reference.filename(), "left_band_fir_48000hz.wav");
-        assert_eq!(result.channel.plugins[0].plugin_type, "band_split");
-        assert!(result.channel.plugins.iter().any(|plugin| {
-            plugin.plugin_type == "convolution"
-                && plugin.parameters["ir_file"] == "left_band_fir_48000hz.wav"
-        }));
-        let alignment = result
-            .channel
-            .plugins
-            .iter()
-            .find(|plugin| plugin.parameters["label"] == "hybrid_fir_latency_alignment")
-            .expect("hybrid branch alignment delay");
-        assert_eq!(alignment.plugin_type, "delay");
-        assert_eq!(alignment.parameters["channels"], serde_json::json!([2, 3]));
-        assert_eq!(
-            alignment.parameters["delay_ms"].as_f64().unwrap(),
-            fir_bulk_delay_ms(result.fir_coeffs.as_ref().unwrap(), 48_000.0, 500.0)
-        );
-        assert_eq!(
-            result.channel.plugins.last().unwrap().plugin_type,
-            "band_merge"
-        );
+            assert_eq!(result.arrival_time_ms, Some(2.5));
+            assert_eq!(result.fir_coeffs.as_ref().unwrap().len(), 64);
+            let generated = result.convolution_sidecar.unwrap();
+            assert!(generated.required);
+            assert_eq!(generated.reference.filename(), "left_band_fir_48000hz.wav");
+            assert_eq!(result.channel.plugins[0].plugin_type, "band_split");
+            assert!(result.channel.plugins.iter().any(|plugin| {
+                plugin.plugin_type == "convolution"
+                    && plugin.parameters["ir_file"] == "left_band_fir_48000hz.wav"
+            }));
+            let alignment = result
+                .channel
+                .plugins
+                .iter()
+                .find(|plugin| plugin.parameters["label"] == "hybrid_fir_latency_alignment")
+                .expect("hybrid branch alignment delay");
+            assert_eq!(alignment.plugin_type, "delay");
+            assert_eq!(alignment.parameters["channels"], serde_json::json!([2, 3]));
+            assert_eq!(
+                alignment.parameters["delay_ms"].as_f64().unwrap(),
+                fir_bulk_delay_ms(result.fir_coeffs.as_ref().unwrap(), 48_000.0, 500.0)
+            );
+            assert_eq!(
+                result.channel.plugins.last().unwrap().plugin_type,
+                "band_merge"
+            );
+
+            if phase == "kirkeby" {
+                let plugin = result
+                    .channel
+                    .plugins
+                    .iter()
+                    .find(|p| p.plugin_type == "convolution")
+                    .unwrap();
+                assert_eq!(
+                    plugin.parameters["correction_design_delay_ms"],
+                    serde_json::json!(32.0 * 1000.0 / 48000.0)
+                );
+            }
+        }
     }
 
     #[test]
@@ -489,9 +593,11 @@ mod tests {
 
         let result = process_mixed_crossover(MixedCrossoverRequest {
             channel_name: "sub",
+            prepared: None,
             curve: &curve,
             target: &target,
             preference_filters: &[],
+            excursion_filters: &[],
             mixed_config: &mixed_config,
             optimizer: &optimizer,
             eq_resources: &EqResources::default(),

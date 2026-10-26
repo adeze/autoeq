@@ -1,6 +1,4 @@
 use super::average::average_flatness_from_responses;
-use super::consts::MSO_ALLPASS_Q_MAX;
-use super::consts::MSO_ALLPASS_Q_MIN;
 use super::consts::MSO_DELAY_MAX_MS;
 use super::consts::MSO_DELAY_MIN_MS;
 use super::consts::MSO_GAIN_MAX_DB;
@@ -101,8 +99,8 @@ pub(super) fn mso_bounds(num_subs: usize, options: MsoSearchOptions) -> (Vec<f64
         for _ in 0..options.allpass_filters_per_sub {
             lower.push(options.allpass_min_freq);
             upper.push(options.allpass_max_freq);
-            lower.push(MSO_ALLPASS_Q_MIN);
-            upper.push(MSO_ALLPASS_Q_MAX);
+            lower.push(options.allpass_min_q);
+            upper.push(options.allpass_max_q);
         }
     }
 

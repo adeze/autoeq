@@ -1,6 +1,6 @@
 [package]
 name = "autoeq-cli"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 description = "AutoEQ command-line parsing and user-facing orchestration"
 license = "GPL-3.0-or-later"
@@ -12,12 +12,11 @@ workspace = true
 
 [features]
 default = []
-plotly = ["dep:autoeq-plot", "autoeq-plot/plotly"]
-plotly_static = ["plotly", "autoeq-plot/plotly_static"]
+rerun-telemetry = ["dep:rerun", "dep:sha2", "dep:tempfile"]
 
 [dependencies]
 anyhow = { workspace = true }
-autoeq-plot = { workspace = true, optional = true }
+autoeq-plot = { workspace = true }
 autoeq-workflow = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -31,6 +30,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 urlencoding = { workspace = true }
+rerun = { version = "0.40.0", default-features = false, features = ["sdk"], optional = true }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

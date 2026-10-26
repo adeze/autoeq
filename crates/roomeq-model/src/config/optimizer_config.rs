@@ -49,6 +49,7 @@ use super::report_outcome::PruningBudget;
 use super::schroeder_split_config::SchroederSplitConfig;
 use super::sub_optimizer_config::SubOptimizerConfig;
 use super::target_response_config::TargetResponseConfig;
+use super::tilt_stage_config::TiltStageConfig;
 use super::types::FirConfig;
 use super::types::MixedPhaseSerdeConfig;
 use super::types::PerceptualPolicyPreset;
@@ -69,9 +70,22 @@ where
     ))
 }
 
+fn default_max_crossover_cancellation_db() -> f64 {
+    crate::DEFAULT_MAX_CROSSOVER_CANCELLATION_DB
+}
+
 /// Optimizer configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OptimizerConfig {
+    /// Maximum coherent crossover cancellation without baseline improvement, in dB.
+    #[serde(default = "default_max_crossover_cancellation_db")]
+    pub max_crossover_cancellation_db: f64,
+    /// Immutable run evidence, captured before automatic routing and EQ.
+    #[serde(skip)]
+    pub crossover_cancellation_baseline: Option<crate::CrossoverCancellationContext>,
+    /// Final graph electrical limits and cumulative correction selection.
+    #[serde(default)]
+    pub finalization: super::FinalizationConfig,
     /// Explicit authorized broadband output change by logical input, in dB.
     /// Used only for useful-output assessment; does not install a gain plugin.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -81,6 +95,10 @@ pub struct OptimizerConfig {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub upper_band_acoustic_bounds:
         std::collections::HashMap<String, Vec<crate::UpperBandAcousticBound>>,
+    /// Optional explicit frequency support for active correction. The
+    /// observation/evaluation band remains `min_freq..=max_freq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction_band: Option<super::CorrectionBandPolicy>,
     /// Processing mode — selects the filter class used for correction.
     #[serde(default, alias = "mode")]
     pub processing_mode: ProcessingMode,
@@ -98,6 +116,7 @@ pub struct OptimizerConfig {
     pub phase_correction: Option<MixedPhaseSerdeConfig>,
     /// Loss function type. Supported values:
     /// - `"flat"` — minimize deviation from target (default)
+    /// - `"headphone_flat"` — minimize headphone response deviation from target
     /// - `"score"` — maximize Harman/Olive preference score
     /// - `"epa"` — EPA (Evaluation/Potency/Activity) psychoacoustic
     ///   loss combining spectral flatness with sharpness, roughness,
@@ -216,16 +235,20 @@ pub struct OptimizerConfig {
     /// `allow_enforcement_with_experimental_proxy` (the proxy is unvalidated).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_audibility: Option<FilterAudibilityConfig>,
-    /// Cumulative pruning budget over declared conditions (Stage 0
-    /// contract). `None` (default) disables budget tracking. A configured
-    /// budget is validated for shape and reported against; it is not yet
-    /// enforced — budget enforcement arrives with the Stage 1 cumulative
-    /// checks, so setting this today changes no optimizer output.
+    /// Experimental cumulative pruning budget over declared conditions.
+    ///
+    /// With veto enabled, the optional cap bounds drift from frozen F0 and
+    /// unresolved condition declarations retain filters. `None` preserves the
+    /// veto's default one-quantum cap on the flat-background comparison.
+    /// Enforcement still requires the separate experimental-proxy opt-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pruning_budget: Option<PruningBudget>,
     /// Safeguards for high-frequency correction above the conservative range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub high_frequency_correction: Option<HighFrequencyCorrectionConfig>,
+    /// Trailing LS plus HS tilt pair appended after the main filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt_stage: Option<TiltStageConfig>,
     /// Direct/early/late correction-energy report settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub early_late_correction: Option<EarlyLateCorrectionConfig>,
@@ -325,7 +348,11 @@ pub struct OptimizerConfig {
 impl Default for OptimizerConfig {
     fn default() -> Self {
         Self {
+            max_crossover_cancellation_db: default_max_crossover_cancellation_db(),
+            crossover_cancellation_baseline: None,
+            finalization: super::FinalizationConfig::default(),
             upper_band_acoustic_bounds: std::collections::HashMap::new(),
+            correction_band: None,
             permitted_output_gain_db: std::collections::HashMap::new(),
             loss_type: default_loss_type(),
             algorithm: default_algorithm(),
@@ -366,6 +393,7 @@ impl Default for OptimizerConfig {
             filter_audibility: None,
             pruning_budget: None,
             high_frequency_correction: None,
+            tilt_stage: None,
             early_late_correction: None,
             validation_bundle: None,
             tolerance: default_tolerance(),
@@ -397,6 +425,29 @@ impl Default for OptimizerConfig {
 }
 
 impl OptimizerConfig {
+    /// Return the configured active-correction band, or the legacy optimizer
+    /// band when no explicit policy is selected.
+    pub fn active_correction_band(&self) -> [f64; 2] {
+        self.correction_band
+            .map(|policy| {
+                [
+                    policy.min_hz.max(self.min_freq),
+                    policy.max_hz.min(self.max_freq),
+                ]
+            })
+            .unwrap_or([self.min_freq, self.max_freq])
+    }
+
+    /// Clamp the active-correction band to a curve's native support without
+    /// changing the observation band used by reporting and acceptance.
+    pub fn active_correction_band_for_data(&self, data_min_hz: f64, data_max_hz: f64) -> [f64; 2] {
+        let [configured_min, configured_max] = self.active_correction_band();
+        [
+            configured_min.max(data_min_hz),
+            configured_max.min(data_max_hz),
+        ]
+    }
+
     /// Resolve psychoacoustic smoothing settings, falling back to the historical
     /// 1/48 octave below 100 Hz through 1/6 octave above 1 kHz curve.
     pub fn psychoacoustic_smoothing_config(&self) -> PsychoacousticSmoothingConfig {
@@ -505,21 +556,18 @@ impl OptimizerConfig {
         self.apply_high_frequency_correction_defaults(override_existing);
     }
 
-    /// Apply high-frequency guard defaults when correction extends above the
-    /// conservative RoomEQ range. Explicit Q/smoothing overrides are preserved
-    /// unless requested by the policy layer.
+    /// Apply high-frequency smoothing defaults without restricting bass Q.
+    ///
+    /// The optimizer adapter carries the guard's frequency-local Q cap into
+    /// candidate constraints. Lowering the global cap here would also restrict
+    /// bass filters and defeat that local contract. `override_existing` controls
+    /// smoothing defaults, never replaces the separately configured global Q.
     pub fn apply_high_frequency_correction_defaults(&mut self, override_existing: bool) {
         let Some(hf) = self.high_frequency_correction else {
             return;
         };
         if !hf.enabled || self.max_freq <= hf.start_hz {
             return;
-        }
-
-        if (override_existing || (self.max_q - default_max_q()).abs() < 1e-9)
-            && self.max_q > hf.max_q
-        {
-            self.max_q = hf.max_q.max(self.min_q);
         }
 
         if override_existing || self.psychoacoustic_smoothing.is_none() {

@@ -96,6 +96,11 @@ pub(super) fn corrected_realisation_to_gd_input(
         spl,
         phase,
         coherence,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine([
+            raw_curve,
+            initial_curve,
+            final_curve,
+        ]),
     })
 }
 
@@ -251,6 +256,9 @@ pub(super) fn coherence_average_gd_realisations(
             spl,
             phase,
             coherence,
+            resolution: roomeq_engine::gd_opt::ChannelMeasurementInput::combined_resolution(
+                realisations.iter().map(|sweep| &sweep[channel_index]),
+            ),
         });
     }
     Some(averaged)

@@ -1,0 +1,530 @@
+[
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "compute_y_range",
+      "curves": []
+    },
+    "expected": [
+      -20,
+      30
+    ]
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "compute_y_range",
+      "curves": [
+        null,
+        {
+          "spl": []
+        }
+      ]
+    },
+    "expected": [
+      -20,
+      30
+    ]
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "compute_y_range",
+      "curves": [
+        {
+          "freq": [
+            100,
+            200
+          ],
+          "spl": [
+            -2.1,
+            8.2
+          ]
+        }
+      ]
+    },
+    "expected": [
+      -40,
+      10
+    ]
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "compute_y_range",
+      "curves": [
+        {
+          "spl": [
+            -50,
+            -45.1
+          ]
+        }
+      ]
+    },
+    "expected": [
+      -95,
+      -45
+    ]
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "average_spl",
+      "curve": null,
+      "min_hz": 20,
+      "max_hz": 1200
+    },
+    "expected": 0.0
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "average_spl",
+      "curve": {},
+      "min_hz": 20,
+      "max_hz": 1200
+    },
+    "expected": 0.0
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "average_spl",
+      "curve": {
+        "freq": [
+          20,
+          200,
+          2000
+        ],
+        "spl": [
+          60,
+          70,
+          80
+        ]
+      },
+      "min_hz": 20,
+      "max_hz": 1200
+    },
+    "expected": 65.0
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "average_spl",
+      "curve": {
+        "freq": [
+          20,
+          200,
+          2000
+        ],
+        "spl": [
+          60
+        ]
+      },
+      "min_hz": 20,
+      "max_hz": 1200
+    },
+    "expected": 60.0
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "channel_has_eq",
+      "channel": null
+    },
+    "expected": false
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "channel_has_eq",
+      "channel": {}
+    },
+    "expected": false
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "channel_has_eq",
+      "channel": {
+        "eq_response": {
+          "spl": [
+            0
+          ]
+        }
+      }
+    },
+    "expected": true
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "channel_has_eq",
+      "channel": {
+        "plugins": [
+          {
+            "plugin_type": "crossover",
+            "parameters": {
+              "frequency": 100
+            }
+          }
+        ]
+      }
+    },
+    "expected": false
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "channel_has_eq",
+      "channel": {
+        "drivers": [
+          null,
+          {
+            "plugins": [
+              {
+                "plugin_type": "eq",
+                "parameters": {
+                  "filters": [
+                    {}
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected": true
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "clip_curve",
+      "curve": {
+        "freq": [
+          20,
+          50,
+          100,
+          200,
+          1000
+        ],
+        "spl": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "phase": [
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "extra": "preserve"
+      },
+      "driver": null
+    },
+    "expected": {
+      "freq": [
+        20,
+        50,
+        100,
+        200,
+        1000
+      ],
+      "spl": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "phase": [
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "extra": "preserve"
+    }
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "clip_curve",
+      "curve": {
+        "freq": [
+          20,
+          50,
+          100,
+          200,
+          1000
+        ],
+        "spl": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "phase": [
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "extra": "preserve"
+      },
+      "driver": {}
+    },
+    "expected": {
+      "freq": [
+        20,
+        50,
+        100,
+        200,
+        1000
+      ],
+      "spl": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "phase": [
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "extra": "preserve"
+    }
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "clip_curve",
+      "curve": {
+        "freq": [
+          20,
+          50,
+          100,
+          200,
+          1000
+        ],
+        "spl": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "phase": [
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "extra": "preserve"
+      },
+      "driver": {
+        "measured_band_hz": [
+          50,
+          200
+        ]
+      }
+    },
+    "expected": {
+      "freq": [
+        50,
+        100,
+        200
+      ],
+      "spl": [
+        2,
+        3,
+        4
+      ],
+      "phase": [
+        4,
+        3,
+        2
+      ],
+      "extra": "preserve"
+    }
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "clip_curve",
+      "curve": {
+        "freq": [
+          20,
+          50,
+          100,
+          200,
+          1000
+        ],
+        "spl": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "phase": [
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "extra": "preserve"
+      },
+      "driver": {
+        "measured_band_hz": [
+          90,
+          120
+        ]
+      }
+    },
+    "expected": {
+      "freq": [
+        20,
+        50,
+        100,
+        200,
+        1000
+      ],
+      "spl": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "phase": [
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "extra": "preserve"
+    }
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "clip_curve",
+      "curve": {
+        "freq": [
+          20,
+          50,
+          100,
+          200,
+          1000
+        ],
+        "spl": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "phase": [
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "extra": "preserve"
+      },
+      "driver": {
+        "measured_band_hz": [
+          200,
+          50
+        ]
+      }
+    },
+    "expected": {
+      "freq": [
+        20,
+        50,
+        100,
+        200,
+        1000
+      ],
+      "spl": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "phase": [
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "extra": "preserve"
+    }
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "crossover_frequencies",
+      "channel": {}
+    },
+    "expected": []
+  },
+  {
+    "request": {
+      "operation": "report_data",
+      "helper": "crossover_frequencies",
+      "channel": {
+        "plugins": [
+          {
+            "plugin_type": "band_split",
+            "parameters": {
+              "frequency": 100
+            }
+          },
+          {
+            "plugin_type": "crossover",
+            "parameters": {
+              "frequency": 200
+            }
+          }
+        ],
+        "drivers": [
+          {
+            "plugins": [
+              {
+                "plugin_type": "crossover",
+                "parameters": {
+                  "frequency": 100
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expected": [
+      100.0,
+      200.0
+    ]
+  }
+]

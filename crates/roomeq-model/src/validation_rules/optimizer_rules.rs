@@ -32,6 +32,16 @@ pub fn rule_freq_range(ctx: &mut ValidationContext<'_>) {
     }
 }
 
+/// Validate the optional active-correction support without changing the
+/// observation band used by reports and acceptance.
+pub fn rule_correction_band(ctx: &mut ValidationContext<'_>) {
+    if let Some(policy) = ctx.opt.correction_band
+        && let Err(error) = policy.validate_against(ctx.opt.min_freq, ctx.opt.max_freq)
+    {
+        ctx.add_error(format!("optimizer.correction_band: {error}"));
+    }
+}
+
 pub fn rule_q_range(ctx: &mut ValidationContext<'_>) {
     if ctx.opt.min_q > ctx.opt.max_q {
         ctx.add_error(format!(
@@ -208,6 +218,19 @@ pub fn rule_pruning_budget(ctx: &mut ValidationContext<'_>) {
         }
         _ => {}
     }
+    if let Some(evaluation) = &budget.evaluation {
+        match evaluation.condition_ids() {
+            Err(reason) => ctx.add_error(format!("pruning_budget.evaluation: {reason}")),
+            Ok(ids) if !budget.conditions.is_empty() => {
+                let generated: std::collections::BTreeSet<_> = ids.iter().collect();
+                let declared: std::collections::BTreeSet<_> = budget.conditions.iter().collect();
+                if declared.len() != budget.conditions.len() || generated != declared {
+                    ctx.add_error(String::from("pruning_budget.conditions must match every generated evaluation condition exactly once"));
+                }
+            }
+            Ok(_) => {}
+        }
+    }
 }
 
 pub fn rule_high_frequency_correction(ctx: &mut ValidationContext<'_>) {
@@ -234,6 +257,53 @@ pub fn rule_high_frequency_correction(ctx: &mut ValidationContext<'_>) {
             "high_frequency_correction.max_q ({}) must be positive",
             hf.max_q
         ));
+    }
+    if hf.max_q < ctx.opt.min_q {
+        ctx.add_error(format!(
+            "high_frequency_correction.max_q ({}) must be >= optimizer.min_q ({})",
+            hf.max_q, ctx.opt.min_q
+        ));
+    }
+}
+
+pub fn rule_tilt_stage(ctx: &mut ValidationContext<'_>) {
+    let Some(tilt) = ctx.opt.tilt_stage else {
+        return;
+    };
+    if !tilt.enabled {
+        return;
+    }
+    if ctx.opt.peq_model.as_str() != "pk" {
+        ctx.add_error(format!(
+            "tilt_stage requires peq_model 'pk' (got '{}'): the tilt pair is only defined after peak filters",
+            ctx.opt.peq_model
+        ));
+    }
+    let [band_lo, band_hi] = ctx.opt.active_correction_band();
+    for (name, band) in [
+        ("ls_band_hz", tilt.ls_band_hz),
+        ("hs_band_hz", tilt.hs_band_hz),
+    ] {
+        let Some([lo, hi]) = band else {
+            continue;
+        };
+        if !lo.is_finite() || !hi.is_finite() || lo <= 0.0 {
+            ctx.add_error(format!(
+                "tilt_stage.{name} ([{lo}, {hi}]) must be finite with a positive lower edge"
+            ));
+            continue;
+        }
+        if lo >= hi {
+            ctx.add_error(format!(
+                "tilt_stage.{name} ([{lo}, {hi}]) must ascend (lo < hi)"
+            ));
+            continue;
+        }
+        if hi <= band_lo || lo >= band_hi {
+            ctx.add_error(format!(
+                "tilt_stage.{name} ([{lo}, {hi}]) lies fully outside the correction band [{band_lo}, {band_hi}]"
+            ));
+        }
     }
 }
 
@@ -532,7 +602,7 @@ pub fn rule_max_iter(ctx: &mut ValidationContext<'_>) {
 
 pub fn rule_algorithm(ctx: &mut ValidationContext<'_>) {
     let valid_prefixes = ["nlopt:", "mh:", "autoeq:"];
-    let valid_bare = ["cobyla", "de"];
+    let valid_bare = ["cobyla", "de", "cobra"];
     let algo = ctx.opt.algorithm.as_str();
     let is_known = valid_prefixes.iter().any(|p| algo.starts_with(p)) || valid_bare.contains(&algo);
     if !is_known {
@@ -544,7 +614,7 @@ pub fn rule_algorithm(ctx: &mut ValidationContext<'_>) {
 }
 
 pub fn rule_loss_type(ctx: &mut ValidationContext<'_>) {
-    let valid_loss_types = ["flat", "score", "epa"];
+    let valid_loss_types = ["flat", "headphone_flat", "score", "epa"];
     if !valid_loss_types.contains(&ctx.opt.loss_type.as_str()) {
         ctx.add_error(format!(
             "Unknown loss_type '{}', must be one of {:?}",
@@ -565,6 +635,7 @@ pub fn rule_peq_model(ctx: &mut ValidationContext<'_>) {
         "ls-pk",
         "hp-pk-lp",
         "ls-pk-hs",
+        "pk-ls-hs",
         "free-pk-free",
         "free",
     ];
@@ -827,6 +898,7 @@ pub fn run_optimizer_validation_rules(ctx: &mut ValidationContext<'_>) {
     rule_num_filters(ctx);
     rule_finite_numeric_bounds(ctx);
     rule_freq_range(ctx);
+    rule_correction_band(ctx);
     rule_q_range(ctx);
     rule_smooth_n(ctx);
     rule_psychoacoustic_smoothing(ctx);
@@ -835,6 +907,7 @@ pub fn run_optimizer_validation_rules(ctx: &mut ValidationContext<'_>) {
     rule_filter_audibility(ctx);
     rule_pruning_budget(ctx);
     rule_high_frequency_correction(ctx);
+    rule_tilt_stage(ctx);
     rule_early_late_correction(ctx);
     rule_validation_bundle(ctx);
     rule_gain_bounds(ctx);
@@ -879,6 +952,96 @@ mod optimizer_rule_tests {
         let result = run_rule(rule_num_filters, &default_config());
         assert!(result.is_valid);
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn rule_tilt_stage_default_is_silent() {
+        let result = run_rule(rule_tilt_stage, &default_config());
+        assert!(result.is_valid);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn rule_tilt_stage_enabled_with_auto_bands_is_silent() {
+        let mut config = default_config();
+        config.tilt_stage = Some(crate::TiltStageConfig::default());
+        let result = run_rule(rule_tilt_stage, &config);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn rule_tilt_stage_disabled_ignores_bands() {
+        let mut config = default_config();
+        config.tilt_stage = Some(crate::TiltStageConfig {
+            enabled: false,
+            ls_band_hz: Some([500.0, 100.0]),
+            hs_band_hz: Some([f64::NAN, 0.0]),
+        });
+        let result = run_rule(rule_tilt_stage, &config);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn rule_tilt_stage_rejects_non_pk_base() {
+        let mut config = default_config();
+        config.peq_model = "free".to_string();
+        config.tilt_stage = Some(crate::TiltStageConfig::default());
+        let result = run_rule(rule_tilt_stage, &config);
+        assert!(
+            result.errors.iter().any(|e| e.contains("peq_model 'pk'")),
+            "errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn rule_tilt_stage_rejects_malformed_bands() {
+        for band in [
+            [500.0, 100.0],
+            [0.0, 100.0],
+            [-20.0, 100.0],
+            [f64::NAN, 100.0],
+            [100.0, f64::INFINITY],
+        ] {
+            let mut config = default_config();
+            config.tilt_stage = Some(crate::TiltStageConfig {
+                ls_band_hz: Some(band),
+                ..Default::default()
+            });
+            let result = run_rule(rule_tilt_stage, &config);
+            assert!(
+                result.errors.iter().any(|e| e.contains("ls_band_hz")),
+                "band {band:?} should error: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rule_tilt_stage_rejects_bands_outside_correction_band() {
+        // Default correction band is [20, 1600].
+        let mut config = default_config();
+        config.tilt_stage = Some(crate::TiltStageConfig {
+            hs_band_hz: Some([5000.0, 20000.0]),
+            ..Default::default()
+        });
+        let result = run_rule(rule_tilt_stage, &config);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("outside the correction band")),
+            "errors: {:?}",
+            result.errors
+        );
+
+        // Partial overlap is clamped, not rejected.
+        config.tilt_stage = Some(crate::TiltStageConfig {
+            hs_band_hz: Some([1000.0, 5000.0]),
+            ..Default::default()
+        });
+        let result = run_rule(rule_tilt_stage, &config);
+        assert!(result.errors.is_empty());
     }
 
     #[test]
@@ -989,6 +1152,15 @@ mod optimizer_rule_tests {
     fn rule_loss_type_known_is_valid() {
         let result = run_rule(rule_loss_type, &default_config());
         assert!(result.is_valid);
+    }
+
+    #[test]
+    fn rule_loss_type_headphone_flat_is_valid() {
+        let mut config = default_config();
+        config.loss_type = "headphone_flat".to_string();
+        let result = run_rule(rule_loss_type, &config);
+        assert!(result.is_valid);
+        assert!(result.warnings.is_empty());
     }
 
     #[test]
@@ -1330,10 +1502,7 @@ mod optimizer_rule_tests {
         let result = run_rule(rule_filter_audibility, &config);
         assert!(result.errors.is_empty());
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("stays advisory")),
+            result.warnings.iter().any(|w| w.contains("stays advisory")),
             "unacknowledged enforcement must warn it stays advisory, got {:?}",
             result.warnings
         );
@@ -1370,7 +1539,10 @@ mod optimizer_rule_tests {
             });
             let result = run_rule(rule_pruning_budget, &config);
             assert!(
-                result.errors.iter().any(|e| e.contains("max_cumulative_delta")),
+                result
+                    .errors
+                    .iter()
+                    .any(|e| e.contains("max_cumulative_delta")),
                 "cap {cap} should error"
             );
         }
@@ -1386,6 +1558,26 @@ mod optimizer_rule_tests {
         let result = run_rule(rule_pruning_budget, &config);
         assert!(result.errors.is_empty());
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn qa_roomeq_pruning_conditions_validation_rejects_an_omitted_seat() {
+        let mut config = default_config();
+        let evaluation: crate::PruningEvaluation = serde_json::from_value(serde_json::json!({
+            "version": "spectral-v1",
+            "measurement_ids": ["seat-a", "seat-b"],
+            "programmes": [{"id": "music", "frequencies_hz": [20, 20000], "spectrum_db": [0, 0]}],
+            "listening_levels_phon": [75]
+        }))
+        .unwrap();
+        config.pruning_budget = Some(crate::PruningBudget {
+            conditions: vec![String::from("seat-a/music/75phon")],
+            evaluation: Some(evaluation),
+            ..Default::default()
+        });
+        assert!(!run_rule(rule_pruning_budget, &config).errors.is_empty());
+        config.pruning_budget.as_mut().unwrap().conditions.clear();
+        assert!(run_rule(rule_pruning_budget, &config).errors.is_empty());
     }
 
     #[test]

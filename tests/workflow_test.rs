@@ -17,7 +17,8 @@ mod tests {
         autoeq::Curve {
             freq: ndarray::Array1::from_vec(freq),
             spl: ndarray::Array1::from_vec(spl),
-            phase: None,
+            // Synthetic routing fixture with a known common phase.
+            phase: Some(ndarray::Array1::zeros(n)),
             ..Default::default()
         }
     }
@@ -43,7 +44,7 @@ mod tests {
         system_speakers.insert("R".to_string(), "right_meas".to_string());
 
         let config = RoomConfig {
-            version: "1.2.0".to_string(),
+            version: "3.0.0".to_string(),
             system: Some(SystemConfig {
                 model: SystemModel::Stereo,
                 speakers: system_speakers,
@@ -61,7 +62,9 @@ mod tests {
             provenance: Default::default(),
             recording_config: None,
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
+            measured_impulse_responses: Default::default(),
         };
 
         let result = autoeq::roomeq::optimize_room(&config, 48000.0, None, None)
@@ -121,10 +124,6 @@ mod tests {
         let mut sys_spk = HashMap::new();
         sys_spk.insert("L".to_string(), "l".to_string());
         sys_spk.insert("R".to_string(), "r".to_string());
-        sys_spk.insert("LFE".to_string(), "sub".to_string());
-
-        let mut sub_map = HashMap::new();
-        sub_map.insert("sub".to_string(), "L".to_string());
 
         let mut crossovers = HashMap::new();
         crossovers.insert(
@@ -138,14 +137,20 @@ mod tests {
         );
 
         let config = RoomConfig {
-            version: "1.2.0".to_string(),
+            version: "3.0.0".to_string(),
             system: Some(SystemConfig {
                 model: SystemModel::Stereo,
                 speakers: sys_spk,
                 subwoofers: Some(SubwooferSystemConfig {
                     config: SubwooferStrategy::Single,
-                    crossover: Some("sub_xover".to_string().into()),
-                    mapping: sub_map,
+                    crossover: Some(autoeq::roomeq::SubwooferCrossoverRef::PerSub(vec![
+                        "sub_xover".to_string(),
+                    ])),
+                    routing: Default::default(),
+                    outputs: vec![autoeq::roomeq::SubwooferOutput {
+                        id: "Sub1".to_string(),
+                        speaker: "sub".to_string(),
+                    }],
                 }),
                 bass_management: None,
                 supporting_source_outputs: None,
@@ -160,7 +165,9 @@ mod tests {
             provenance: Default::default(),
             recording_config: None,
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
+            measured_impulse_responses: Default::default(),
         };
 
         let result = autoeq::roomeq::optimize_room(&config, 48000.0, None, None)
@@ -169,20 +176,20 @@ mod tests {
         // Verify channels exist
         assert!(result.channels.contains_key("L"));
         assert!(result.channels.contains_key("R"));
-        assert!(result.channels.contains_key("LFE"));
+        assert!(result.channels.contains_key("Sub1"));
 
-        // Check LFE gain (should be around -10dB)
-        let lfe_chain = &result.channels["LFE"];
+        // Check physical sub gain (should be around -10dB)
+        let sub_chain = &result.channels["Sub1"];
         // Gain might be split between alignment gain and crossover gain.
         // We iterate plugins to find gains.
         let mut total_gain = 0.0;
-        for p in &lfe_chain.plugins {
+        for p in &sub_chain.plugins {
             if p.plugin_type == "gain" {
                 total_gain += p.parameters["gain_db"].as_f64().unwrap_or(0.0);
             }
         }
 
-        println!("LFE Total Gain: {}", total_gain);
+        println!("Sub1 Total Gain: {}", total_gain);
         // It might not be exactly -10 because crossover optimization might adjust it further.
         // But alignment step should have put it near -10.
         assert!(total_gain < -8.0, "LFE should be significantly attenuated");
@@ -207,7 +214,7 @@ mod tests {
         );
 
         let config = RoomConfig {
-            version: "1.2.0".to_string(),
+            version: "3.0.0".to_string(),
             system: None, // mirrors app-gpui's to_room_config()
             speakers,
             crossovers: None,
@@ -220,7 +227,9 @@ mod tests {
             provenance: Default::default(),
             recording_config: None,
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
+            measured_impulse_responses: Default::default(),
         };
 
         let result = autoeq::roomeq::optimize_room(&config, 48000.0, None, None)
@@ -327,7 +336,7 @@ mod tests {
         };
 
         let config = RoomConfig {
-            version: "1.2.0".to_string(),
+            version: "3.0.0".to_string(),
             system: None, // GPUI sets this to None
             speakers,
             crossovers: None,
@@ -336,7 +345,9 @@ mod tests {
             provenance: Default::default(),
             recording_config: None,
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
+            measured_impulse_responses: Default::default(),
         };
 
         let result = autoeq::roomeq::optimize_room(&config, 48000.0, None, None)
@@ -381,7 +392,7 @@ mod tests {
         );
 
         let config = RoomConfig {
-            version: "1.2.0".to_string(),
+            version: "3.0.0".to_string(),
             system: None,
             speakers,
             crossovers: None,
@@ -394,7 +405,9 @@ mod tests {
             provenance: Default::default(),
             recording_config: None,
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
+            measured_impulse_responses: Default::default(),
         };
 
         let result = autoeq::roomeq::optimize_room(&config, 48000.0, None, None)

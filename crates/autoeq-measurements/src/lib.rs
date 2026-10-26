@@ -7,13 +7,25 @@ pub mod error {
 }
 
 pub mod cea2034;
+pub mod direct_sound;
+pub mod evidence;
+pub mod matrix;
 pub mod mic_phase_calibration;
 pub mod provenance;
+pub mod provenance_migration_cli;
 pub mod quality;
 pub mod read;
+pub mod timing;
 
 pub use cea2034::*;
+pub use direct_sound::*;
+pub use evidence::*;
+pub use matrix::*;
 pub use mic_phase_calibration::{MicPhaseCalibration, load_mic_phase_calibration};
 pub use provenance::*;
 pub use quality::*;
 pub use read::*;
+pub use timing::*;
+
+#[cfg(test)]
+mod psycho_fast;

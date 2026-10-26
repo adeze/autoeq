@@ -258,7 +258,164 @@ fn cap_measurement_curve(curve: Curve, frequency_samples: usize) -> Curve {
             }
         }
     }
+    // Bass bins above were restored from the unsmoothed source. Retain the
+    // actual half-octave smoothing floor only in the remaining upper band.
+    let upper_widths: Vec<_> = resampled
+        .freq
+        .iter()
+        .copied()
+        .filter(|frequency| *frequency > 500.0)
+        .map(|frequency| {
+            (
+                frequency,
+                1.0 / ROOM_EQ_RESAMPLE_SMOOTHING_BANDS_PER_OCTAVE as f64,
+            )
+        })
+        .collect();
+    let support = resampled.retained_resolution();
+    smoothed.resolution = Some(if upper_widths.is_empty() {
+        support
+    } else {
+        support.with_smoothing(upper_widths).unwrap_or_else(|| {
+            std::sync::Arc::new(autoeq_core::resolution::MeasurementResolution::unsupported())
+        })
+    });
     smoothed
+}
+
+fn cap_source_curve(
+    curve: Curve,
+    frequency_samples: usize,
+    valid_band: Option<[f64; 2]>,
+) -> Result<Curve> {
+    cap_source_curve_bands(
+        curve,
+        frequency_samples,
+        &valid_band.into_iter().collect::<Vec<_>>(),
+    )
+}
+
+/// Condition a source curve on declared usable segments, preserving internal
+/// coverage gaps.
+///
+/// Each segment is selected and dense-grid conditioned independently, so
+/// resampling, smoothing, and extrema selection never cross invalid support.
+/// Gap bins are retained from the globally conditioned curve as display
+/// samples only; the engine drops them before optimization and scoring.
+/// An empty band list conditions the whole grid (legacy behavior).
+fn cap_source_curve_bands(
+    curve: Curve,
+    frequency_samples: usize,
+    bands: &[[f64; 2]],
+) -> Result<Curve> {
+    if bands.is_empty() {
+        return Ok(cap_measurement_curve(curve, frequency_samples));
+    }
+    // Condition usable evidence independently. Smoothing, extrema selection,
+    // and minimum-phase reconstruction must not see excluded samples.
+    let mut usable_segments = Vec::with_capacity(bands.len());
+    for band in bands {
+        let selected = curve.select_frequency_band(*band)?;
+        usable_segments.push(cap_measurement_curve(selected, frequency_samples));
+    }
+    if usable_segments.len() == 1 {
+        let [low, high] = bands[0];
+        return merge_conditioned_segments(curve, frequency_samples, usable_segments, |f| {
+            *f < low || *f > high
+        });
+    }
+    let is_gap = |f: &f64| !bands.iter().any(|[low, high]| *f >= *low && *f <= *high);
+    merge_conditioned_segments(curve, frequency_samples, usable_segments, is_gap)
+}
+
+/// Merge independently conditioned segments with retained gap display samples.
+fn merge_conditioned_segments(
+    curve: Curve,
+    frequency_samples: usize,
+    usable_segments: Vec<Curve>,
+    is_gap: impl Fn(&f64) -> bool,
+) -> Result<Curve> {
+    let full = cap_measurement_curve(curve, frequency_samples);
+    // (segment index or gap, sample index): gap samples come from the
+    // globally conditioned curve, segment samples from their independently
+    // conditioned segment.
+    let mut indices: Vec<(Option<usize>, usize)> = full
+        .freq
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| is_gap(f).then_some((None, i)))
+        .collect();
+    for (segment, usable) in usable_segments.iter().enumerate() {
+        indices.extend((0..usable.freq.len()).map(|i| (Some(segment), i)));
+    }
+    let frequency = |(segment, i): &(Option<usize>, usize)| match segment {
+        Some(segment) => usable_segments[*segment].freq[*i],
+        None => full.freq[*i],
+    };
+    indices.sort_by(|a, b| frequency(a).total_cmp(&frequency(b)));
+    let at = |(segment, i): &(Option<usize>, usize), values: &[&Array1<f64>]| match segment {
+        Some(segment) => values[*segment + 1][*i],
+        None => values[0][*i],
+    };
+    let merge = |outer: &Array1<f64>, inners: &[&Array1<f64>]| {
+        let values: Vec<&Array1<f64>> = std::iter::once(outer)
+            .chain(inners.iter().copied())
+            .collect();
+        Array1::from_iter(indices.iter().map(|key| at(key, &values)))
+    };
+    let merge_optional = |outer: Option<&Array1<f64>>,
+                          inners: Vec<Option<&Array1<f64>>>|
+     -> Result<Option<Array1<f64>>> {
+        match (outer, inners.iter().all(|inner| inner.is_none())) {
+            (Some(outer), false) => {
+                let inners: Option<Vec<&Array1<f64>>> = inners.into_iter().collect();
+                match inners {
+                    Some(inners) => Ok(Some(merge(outer, &inners))),
+                    None => Err(anyhow!(
+                        "measurement conditioning changed optional sample metadata availability"
+                    )),
+                }
+            }
+            (None, true) => Ok(None),
+            _ => Err(anyhow!(
+                "measurement conditioning changed optional sample metadata availability"
+            )),
+        }
+    };
+    let inners: Vec<&Curve> = usable_segments.iter().collect();
+    let spl: Vec<&Array1<f64>> = inners.iter().map(|curve| &curve.spl).collect();
+    let result = Curve {
+        freq: merge(
+            &full.freq,
+            &inners.iter().map(|curve| &curve.freq).collect::<Vec<_>>(),
+        ),
+        spl: merge(&full.spl, &spl),
+        phase: merge_optional(
+            full.phase.as_ref(),
+            inners.iter().map(|curve| curve.phase.as_ref()).collect(),
+        )?,
+        coherence: merge_optional(
+            full.coherence.as_ref(),
+            inners
+                .iter()
+                .map(|curve| curve.coherence.as_ref())
+                .collect(),
+        )?,
+        noise_floor_db: merge_optional(
+            full.noise_floor_db.as_ref(),
+            inners
+                .iter()
+                .map(|curve| curve.noise_floor_db.as_ref())
+                .collect(),
+        )?,
+        // No global phase decomposition is valid for this piecewise view.
+        min_phase: None,
+        excess_phase: None,
+        excess_delay_ms: None,
+        resolution: Some(full.retained_resolution()),
+    };
+    result.validate("band-isolated conditioned measurement")?;
+    Ok(result)
 }
 
 /// Load one CSV measurement curve with a workflow-level diagnostic.
@@ -304,14 +461,15 @@ pub fn load_source_individual_with_frequency_samples(
     source: &MeasurementSource,
     frequency_samples: usize,
 ) -> Result<Vec<Curve>> {
+    let band = require_contiguous_source_support(source)?;
     autoeq_measurements::read::load_source_individual(source)
-        .map(|curves| {
+        .map_err(|error| anyhow!(error.to_string()))
+        .and_then(|curves| {
             curves
                 .into_iter()
-                .map(|curve| cap_measurement_curve(curve, frequency_samples))
+                .map(|curve| cap_source_curve(curve, frequency_samples, band))
                 .collect()
         })
-        .map_err(|error| anyhow!(error.to_string()))
         .context("failed to load individual measurement source")
 }
 
@@ -327,18 +485,90 @@ pub fn load_source_with_individual_with_frequency_samples(
     source: &MeasurementSource,
     frequency_samples: usize,
 ) -> Result<(Curve, Vec<Curve>)> {
-    autoeq_measurements::load_source_with_individual(source)
-        .map(|(representative, curves)| {
-            (
-                cap_measurement_curve(representative, frequency_samples),
-                curves
-                    .into_iter()
-                    .map(|curve| cap_measurement_curve(curve, frequency_samples))
-                    .collect(),
-            )
-        })
+    load_source_with_conditioning(source, frequency_samples)
+        .map(|loaded| (loaded.representative, loaded.individual))
+}
+
+pub(crate) struct ConditionedSource {
+    pub representative: Curve,
+    pub individual: Vec<Curve>,
+    pub conditioning: Vec<autoeq_measurements::LedgerEntry>,
+    pub native_identities: Vec<String>,
+}
+
+pub(crate) fn load_source_with_conditioning(
+    source: &MeasurementSource,
+    frequency_samples: usize,
+) -> Result<ConditionedSource> {
+    // The channel path is support-aware: each declared segment is
+    // conditioned independently and internal gaps are retained as display
+    // samples. Curve-only single-curve loaders keep refusing disjoint
+    // support (see `require_contiguous_source_support`).
+    let bands: Vec<[f64; 2]> = source
+        .provenance()
+        .declared_support_bands()
+        .map_err(|error| anyhow!(error))?
+        .unwrap_or_default();
+    let loaded = autoeq_measurements::read::load_source_detailed(source, None)
         .map_err(|error| anyhow!(error.to_string()))
-        .context("failed to load measurement source with individual curves")
+        .context("failed to load measurement source with conditioning")?;
+    let mut conditioning = loaded.conditioning;
+    let mut condition = |curve: Curve, source_index: Option<usize>| -> Result<Curve> {
+        let input_hash = curve
+            .content_hash()
+            .map_err(|error| anyhow!(error.to_string()))?;
+        let input_bins = curve.freq.len();
+        let result = cap_source_curve_bands(curve, frequency_samples, &bands)?;
+        let output_hash = result
+            .content_hash()
+            .map_err(|error| anyhow!(error.to_string()))?;
+        if input_hash != output_hash {
+            // Legacy receipts stay byte-identical: the multi-band field is
+            // recorded only when disjoint support was actually conditioned.
+            let mut parameters = serde_json::json!({
+                "source_index": source_index,
+                "role": if source_index.is_some() { "individual" } else { "representative" },
+                "frequency_samples": frequency_samples,
+                "declared_valid_band_hz": bands.first(),
+                "implementation": "cap_source_curve/v1",
+                "input_bins": input_bins,
+                "output_bins": result.freq.len(),
+                "acquisition_validated": false
+            });
+            if bands.len() > 1 {
+                parameters["declared_valid_bands_hz"] = serde_json::json!(bands);
+            }
+            conditioning.push(autoeq_measurements::LedgerEntry {
+                operation: "roomeq_dense_grid_conditioning".into(),
+                version: 1,
+                parameters: serde_json::from_value(parameters)?,
+                input_hashes: vec![input_hash],
+                output_hash,
+                lossy: true,
+                executed_at: None,
+                tool: Some(autoeq_measurements::ToolIdentity {
+                    application: Some("roomeq-workflow".into()),
+                    version: Some(env!("CARGO_PKG_VERSION").into()),
+                    ..Default::default()
+                }),
+                determinism: Some(autoeq_measurements::Determinism::PlatformSensitive),
+            });
+        }
+        Ok(result)
+    };
+    let representative = condition(loaded.spatial_rms, None)?;
+    let individual = loaded
+        .individual
+        .into_iter()
+        .enumerate()
+        .map(|(index, curve)| condition(curve, Some(index)))
+        .collect::<Result<_>>()?;
+    Ok(ConditionedSource {
+        representative,
+        individual,
+        conditioning,
+        native_identities: loaded.native_identities,
+    })
 }
 
 /// Load and combine a RoomEQ measurement source.
@@ -351,16 +581,214 @@ pub fn load_source_with_frequency_samples(
     source: &MeasurementSource,
     frequency_samples: usize,
 ) -> Result<Curve> {
+    let band = require_contiguous_source_support(source)?;
     autoeq_measurements::read::load_source(source)
-        .map(|curve| cap_measurement_curve(curve, frequency_samples))
         .map_err(|error| anyhow!(error.to_string()))
+        .and_then(|curve| cap_source_curve(curve, frequency_samples, band))
         .context("failed to load measurement source")
+}
+
+fn require_contiguous_source_support(source: &MeasurementSource) -> Result<Option<[f64; 2]>> {
+    match source
+        .provenance()
+        .declared_support_bands()
+        .map_err(|error| anyhow!(error))?
+    {
+        None => Ok(None),
+        Some(bands) if bands.len() == 1 => Ok(Some(bands[0])),
+        Some(_) => Err(anyhow!(
+            "disjoint measurement support requires a support-aware correction path; curve-only loading cannot preserve the internal gap"
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use roomeq_model::MeasurementSingle;
+
+    #[test]
+    fn conditioning_resolution_records_upper_smoothing_without_erasing_bass_support() {
+        let grid =
+            Array1::from_iter((0..=960).map(|index| 20.0 * 2.0_f64.powf(index as f64 / 96.0)));
+        let original = Curve {
+            spl: Array1::zeros(grid.len()),
+            freq: grid,
+            ..Default::default()
+        };
+        let conditioned = cap_measurement_curve(original.clone(), 128);
+        let resolution = conditioned.retained_resolution();
+        assert_eq!(
+            resolution.width_octaves(80.0),
+            original.retained_resolution().width_octaves(80.0)
+        );
+        assert_eq!(resolution.width_octaves(1000.0), Some(0.5));
+        assert!(resolution.max_peak_q(80.0, 48000.0, 0.0).unwrap() > 6.0);
+    }
+
+    #[test]
+    fn curve_only_workflow_load_refuses_disjoint_support() {
+        let source = MeasurementSource::Single(MeasurementSingle {
+            measurement: MeasurementRef::Inline(autoeq_core::InlineMeasurement {
+                frequencies: vec![100.0, 200.0, 300.0, 400.0, 500.0, 600.0],
+                magnitude_db: vec![80.0; 6],
+                phase_deg: None,
+                name: None,
+                wav_path: None,
+                csv_path: None,
+            }),
+            speaker_name: None,
+            provenance: autoeq_core::MeasurementProvenance {
+                valid_bands_hz: vec![[100.0, 200.0], [500.0, 600.0]],
+                ..Default::default()
+            },
+        });
+        assert!(autoeq_measurements::read::load_source_individual_with_support(&source).is_ok());
+        // Single-curve and averaging loaders cannot carry the internal gap:
+        // a bare Curve has no validity mask, so they keep refusing.
+        for result in [
+            load_source_with_frequency_samples(&source, 64).map(|_| ()),
+            load_source_individual_with_frequency_samples(&source, 64).map(|_| ()),
+        ] {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("support-aware correction path")
+            );
+        }
+        // The support-aware conditioning path accepts: each segment is
+        // conditioned independently and gap bins are retained as display
+        // samples only.
+        let (representative, individual) =
+            load_source_with_individual_with_frequency_samples(&source, 64).unwrap();
+        assert!(!individual.is_empty());
+        let gap_bins: Vec<_> = representative
+            .freq
+            .iter()
+            .copied()
+            .filter(|f| *f > 200.0 && *f < 500.0)
+            .collect();
+        assert_eq!(gap_bins, vec![300.0, 400.0]);
+        for curve in std::iter::once(&representative).chain(individual.iter()) {
+            assert!(curve.freq.iter().any(|f| *f == 100.0));
+            assert!(curve.freq.iter().any(|f| *f == 600.0));
+        }
+    }
+
+    #[test]
+    fn roadmap_dense_loading_does_not_smooth_unusable_samples_into_valid_band() {
+        let mut loaded = Vec::new();
+        for outside in [40.0, 120.0] {
+            let frequencies: Vec<_> = (1..=1000).map(|i| i as f64 * 10.0).collect();
+            let magnitude_db = frequencies
+                .iter()
+                .map(|f| {
+                    if (1000.0..=2000.0).contains(f) {
+                        80.0
+                    } else {
+                        outside
+                    }
+                })
+                .collect();
+            let source = MeasurementSource::Single(MeasurementSingle {
+                measurement: MeasurementRef::Inline(autoeq_core::InlineMeasurement {
+                    frequencies,
+                    magnitude_db,
+                    phase_deg: None,
+                    name: None,
+                    wav_path: None,
+                    csv_path: None,
+                }),
+                speaker_name: None,
+                provenance: autoeq_core::MeasurementProvenance {
+                    valid_band_hz: Some([1000.0, 2000.0]),
+                    ..Default::default()
+                },
+            });
+            let curve = load_source_with_frequency_samples(&source, 64).unwrap();
+            let individuals = load_source_individual_with_frequency_samples(&source, 64).unwrap();
+            let (representative, combined_individuals) =
+                load_source_with_individual_with_frequency_samples(&source, 64).unwrap();
+            assert_eq!(individuals.len(), 1);
+            assert_eq!(combined_individuals.len(), 1);
+            for other in [&individuals[0], &representative, &combined_individuals[0]] {
+                assert_eq!(other.freq, curve.freq);
+                assert_eq!(other.spl, curve.spl);
+                assert_eq!(other.phase, curve.phase);
+            }
+            assert!(curve.freq[0] < 1000.0 && *curve.freq.last().unwrap() > 2000.0);
+            let usable = curve.select_frequency_band([1000.0, 2000.0]).unwrap();
+            loaded.push(usable);
+        }
+        assert_eq!(loaded[0].freq, loaded[1].freq);
+        let worst_difference = loaded[0]
+            .spl
+            .iter()
+            .zip(loaded[1].spl.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            worst_difference < 1e-9,
+            "unusable data contaminated dense loading by {worst_difference} dB"
+        );
+    }
+
+    #[test]
+    fn roadmap_dense_loading_preserves_metadata_and_isolates_phase() {
+        let mut results = Vec::new();
+        for outside in [40.0, 120.0] {
+            let freq = Array1::from_iter((1..=1000).map(|i| i as f64 * 10.0));
+            let curve = Curve {
+                spl: freq.mapv(|f| {
+                    if (1000.0..=2000.0).contains(&f) {
+                        80.0
+                    } else {
+                        outside
+                    }
+                }),
+                phase: Some(freq.mapv(|f| -f * 0.36)),
+                coherence: Some(freq.mapv(|f| 0.5 + f / 20000.0)),
+                noise_floor_db: Some(freq.mapv(|f| -80.0 + f / 1000.0)),
+                freq,
+                ..Default::default()
+            };
+            let expected =
+                cap_measurement_curve(curve.select_frequency_band([1000.0, 2000.0]).unwrap(), 64);
+            let merged = cap_source_curve(curve, 64, Some([1000.0, 2000.0])).unwrap();
+            merged.validate("test merged metadata").unwrap();
+            assert!(merged.min_phase.is_none());
+            assert!(merged.excess_phase.is_none());
+            assert!(merged.excess_delay_ms.is_none());
+            let usable = merged.select_frequency_band([1000.0, 2000.0]).unwrap();
+            assert_eq!(usable.freq, expected.freq);
+            assert_eq!(usable.spl, expected.spl);
+            assert_eq!(usable.phase, expected.phase);
+            assert_eq!(usable.coherence, expected.coherence);
+            assert_eq!(usable.noise_floor_db, expected.noise_floor_db);
+            results.push(usable);
+        }
+        assert_eq!(results[0].phase, results[1].phase);
+        assert_eq!(results[0].coherence, results[1].coherence);
+        assert_eq!(results[0].noise_floor_db, results[1].noise_floor_db);
+    }
+
+    #[test]
+    fn roadmap_dense_loading_requires_usable_samples_and_preserves_legacy_path() {
+        let curve = Curve {
+            freq: Array1::from_vec(vec![100.0, 1000.0, 2000.0]),
+            spl: Array1::from_vec(vec![70.0, 80.0, 75.0]),
+            ..Default::default()
+        };
+        for band in [[3000.0, 4000.0], [900.0, 1100.0]] {
+            assert!(cap_source_curve(curve.clone(), 2, Some(band)).is_err());
+        }
+        let expected = cap_measurement_curve(curve.clone(), 2);
+        let actual = cap_source_curve(curve, 2, None).unwrap();
+        assert_eq!(actual.freq, expected.freq);
+        assert_eq!(actual.spl, expected.spl);
+        assert_eq!(actual.phase, expected.phase);
+    }
 
     fn write_measurement(directory: &Path) -> std::path::PathBuf {
         let path = directory.join("measurement.csv");
@@ -434,6 +862,7 @@ mod tests {
         let source = MeasurementSource::Single(MeasurementSingle {
             measurement,
             speaker_name: Some("left".to_string()),
+            provenance: Default::default(),
         });
         let combined = load_source(&source).unwrap();
 

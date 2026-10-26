@@ -270,6 +270,9 @@ pub fn multi_seat_correction_report_with_frequency_samples(
         });
     }
 
+    // Canonical order: the speaker map iterates in per-process random
+    // order, so sort for deterministic reports, role groups, and weights.
+    channels.sort_by(|left, right| left.channel.cmp(&right.channel));
     let applied = channels.iter().any(|channel| channel.status == "applied");
     if !enabled {
         advisories.push("all_channel_multiseat_disabled".to_string());
@@ -479,8 +482,11 @@ mod multi_seat_branch_tests {
                 ]),
                 subwoofers: Some(SubwooferSystemConfig {
                     config: Default::default(),
-                    crossover: Some("sub".to_string().into()),
-                    mapping: HashMap::new(),
+                    crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec![
+                        "sub".to_string(),
+                    ])),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                 }),
                 bass_management: Some(BassManagementConfig::default()),
                 supporting_source_outputs: None,
@@ -499,7 +505,9 @@ mod multi_seat_branch_tests {
             optimizer: OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -509,6 +517,7 @@ mod multi_seat_branch_tests {
         let mut final_curve = initial.clone();
         final_curve.spl += final_delta_db;
         ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: name.to_string(),
             pre_score: 0.0,
             post_score: 0.0,
@@ -517,6 +526,8 @@ mod multi_seat_branch_tests {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         }
     }
 

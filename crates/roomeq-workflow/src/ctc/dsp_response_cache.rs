@@ -73,6 +73,24 @@ pub fn apply_channel_dsp_chain_to_curve_with_sidecar_dir(
     RealizedDsp::new(chain, sample_rate, &mut cache)?.apply_to_curve(curve)
 }
 
+/// Apply a channel DSP chain with caller-owned immutable convolution evidence.
+///
+/// This path delegates directly to the canonical DSP evaluator and performs
+/// no sidecar lookup. The provider must resolve each exact serialized
+/// `ir_file` identity at the requested playback sample rate.
+///
+/// # Errors
+/// Returns an error when the curve, chain, sample rate, or required IR evidence
+/// is invalid or unavailable.
+pub fn apply_channel_dsp_chain_to_curve_with_provider<P: ConvolutionIrProvider>(
+    chain: &ChannelDspChain,
+    curve: &Curve,
+    sample_rate: f64,
+    provider: &mut P,
+) -> Result<Curve> {
+    RealizedDsp::new(chain, sample_rate, provider)?.apply_to_curve(curve)
+}
+
 /// Apply a serialized channel chain while resolving not-yet-exported
 /// convolution sidecars from their in-memory FIR taps.
 ///
@@ -121,10 +139,7 @@ pub fn channel_electrical_response_with_embedded_irs(
         cache.convolution_ir.insert(resolved, taps.clone());
     }
     let mut realized = RealizedDsp::new(chain, sample_rate, &mut cache)?;
-    frequencies
-        .iter()
-        .map(|frequency| realized.response_at(*frequency))
-        .collect()
+    realized.response_grid(frequencies)
 }
 
 pub(super) struct DspResponseCache {

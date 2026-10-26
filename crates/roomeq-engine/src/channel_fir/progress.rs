@@ -19,8 +19,8 @@ impl FirProgress {
     pub fn callback(&self) -> Option<OptimProgressCallback> {
         self.0.as_ref().map(|callback| {
             let callback = callback.clone();
-            Box::new(move |iteration, loss, preference| {
-                callback.lock().unwrap()(iteration, loss, preference)
+            Box::new(move |iteration, loss, preference, response| {
+                callback.lock().unwrap()(iteration, loss, preference, response)
             }) as OptimProgressCallback
         })
     }
@@ -28,7 +28,7 @@ impl FirProgress {
     pub fn check(&self, iteration: usize, loss: f64) -> Result<()> {
         if let Some(mut callback) = self.callback()
             && matches!(
-                callback(iteration, loss, None),
+                callback(iteration, loss, None, None),
                 autoeq_optim::de::CallbackAction::Stop
             )
         {
@@ -49,8 +49,15 @@ impl FirProgress {
     where
         F: Fn(&[f64]) -> f64 + Sync,
     {
-        let native = autoeq_optim::optim::registry::resolve(&config.algorithm)
-            .is_some_and(|backend| matches!(backend.name(), "autoeq:de" | "autoeq:cmaes"));
+        let native_boundary =
+            autoeq_optim::optim::registry::resolve(&config.algorithm).and_then(|backend| {
+                match backend.name() {
+                    "autoeq:de" | "autoeq:cmaes" => Some("native_generation_boundaries"),
+                    "autoeq:cobra" => Some("native_infill_boundaries"),
+                    _ => None,
+                }
+            });
+        let native = native_boundary.is_some();
         let mut result = if native {
             optimize_bounded_scalar_with_callback(
                 bounds,
@@ -75,11 +82,10 @@ impl FirProgress {
         self.check(0, result.fun)
             .map_err(|error| error.to_string())?;
         if self.0.is_some() {
-            result.message.push_str(if native {
-                "; callback_cancellation=native_generation_boundaries"
-            } else {
-                "; callback_cancellation=stage_boundaries_only"
-            });
+            result.message.push_str(&format!(
+                "; callback_cancellation={}",
+                native_boundary.unwrap_or("stage_boundaries_only")
+            ));
         }
         Ok(result)
     }
@@ -94,10 +100,11 @@ mod tests {
         for (algorithm, capability) in [
             ("autoeq:de", "native_generation_boundaries"),
             ("autoeq:cmaes", "native_generation_boundaries"),
+            ("cobra", "native_infill_boundaries"),
             ("autoeq:cobyla", "stage_boundaries_only"),
             ("autoeq:isres", "stage_boundaries_only"),
         ] {
-            let progress = FirProgress::new(Some(Box::new(|_, _, _| {
+            let progress = FirProgress::new(Some(Box::new(|_, _, _, _| {
                 autoeq_optim::de::CallbackAction::Continue
             })));
             let result = progress
@@ -127,7 +134,7 @@ mod tests {
         for algorithm in ["autoeq:cobyla", "autoeq:isres"] {
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed = calls.clone();
-            let progress = FirProgress::new(Some(Box::new(move |iteration, loss, _| {
+            let progress = FirProgress::new(Some(Box::new(move |iteration, loss, _, _| {
                 assert_eq!(iteration, 0);
                 assert!(loss.is_finite());
                 observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

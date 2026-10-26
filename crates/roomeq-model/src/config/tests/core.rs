@@ -1,12 +1,12 @@
 #[test]
 fn room_config_version_policy_accepts_supported_generations_and_rejects_unknown_versions() {
-    for version in ["1.0.0", "1.2.7", "2.0.0", "2.1.0", "2.2.0", "2.2.7"] {
+    for version in ["3.0.0", "3.0.7"] {
         assert!(
             validate_config_version(version).is_ok(),
             "known compatible version {version} should be accepted"
         );
     }
-    for version in ["", "2", "2.1", "0.9.0", "1.3.0", "2.3.0", "3.0.0"] {
+    for version in ["", "2", "2.1", "0.9.0", "1.3.0", "2.2.0", "3.1.0"] {
         assert!(
             validate_config_version(version).is_err(),
             "unknown version {version:?} should be rejected"
@@ -20,6 +20,222 @@ fn room_config_default_uses_current_config_version() {
 }
 
 #[test]
+fn room_dimensions_have_one_serialized_source_and_resolve_both_modes() {
+    let mut config: RoomConfig = serde_json::from_value(serde_json::json!({
+        "speakers": {},
+        "recording_config": {"room_dimensions": {"length": 5.0, "width": 4.0, "height": 2.5}},
+        "optimizer": {"schroeder_split": {"enabled": true}, "decomposed_correction": {}}
+    }))
+    .unwrap();
+    config.resolve_room_dimensions();
+    for dimensions in [
+        config
+            .optimizer
+            .schroeder_split
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .as_ref()
+            .unwrap(),
+        config
+            .optimizer
+            .decomposed_correction
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .as_ref()
+            .unwrap(),
+    ] {
+        assert_eq!(
+            (dimensions.length, dimensions.width, dimensions.height),
+            (5.0, 4.0, 2.5)
+        );
+        assert!(dimensions.schroeder_frequency().is_finite());
+    }
+    let encoded = serde_json::to_value(&config).unwrap();
+    assert_eq!(
+        encoded["recording_config"]["room_dimensions"]["length"],
+        5.0
+    );
+    for mode in ["schroeder_split", "decomposed_correction"] {
+        assert!(encoded["optimizer"][mode].get("room_dimensions").is_none());
+    }
+    let schema = serde_json::to_value(schemars::schema_for!(RoomConfig)).unwrap();
+    for name in ["SchroederSplitConfig", "DecomposedCorrectionSerdeConfig"] {
+        assert!(
+            schema["$defs"][name]["properties"]
+                .get("room_dimensions")
+                .is_none()
+        );
+    }
+    // Reloading restores canonical state, never an optimizer-local declaration.
+    let mut reloaded: RoomConfig = serde_json::from_value(encoded).unwrap();
+    reloaded.resolve_room_dimensions();
+    assert_eq!(
+        reloaded
+            .optimizer
+            .schroeder_split
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .as_ref()
+            .unwrap()
+            .width,
+        4.0
+    );
+    config
+        .recording_config
+        .as_mut()
+        .unwrap()
+        .room_dimensions
+        .as_mut()
+        .unwrap()
+        .length = 8.0;
+    config.resolve_room_dimensions();
+    assert_eq!(
+        config
+            .optimizer
+            .decomposed_correction
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .as_ref()
+            .unwrap()
+            .length,
+        8.0
+    );
+    config.recording_config = None;
+    config.resolve_room_dimensions();
+    assert!(
+        config
+            .optimizer
+            .schroeder_split
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .is_none()
+    );
+    assert!(
+        config
+            .optimizer
+            .decomposed_correction
+            .as_ref()
+            .unwrap()
+            .room_dimensions
+            .is_none()
+    );
+}
+
+#[test]
+fn optimizer_local_room_dimensions_are_rejected_with_migration_guidance() {
+    for mode in ["schroeder_split", "decomposed_correction"] {
+        let error = serde_json::from_value::<RoomConfig>(serde_json::json!({
+            "speakers": {},
+            "optimizer": {mode: {"room_dimensions": {"length": 5, "width": 4, "height": 3}}}
+        }))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("recording_config.room_dimensions")
+        );
+    }
+}
+
+#[test]
+fn recording_room_dimensions_require_positive_finite_volume() {
+    for length in [
+        0.0,
+        -1.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+    ] {
+        let mut config = reporting_base_config();
+        config.recording_config = Some(RecordingConfiguration {
+            room_dimensions: Some(crate::RoomDimensions {
+                length,
+                width: length,
+                height: 2.5,
+            }),
+            ..Default::default()
+        });
+        assert!(
+            config
+                .validate_structure()
+                .unwrap_err()
+                .contains("recording_config.room_dimensions")
+        );
+    }
+}
+
+fn reporting_base_config() -> RoomConfig {
+    // Smallest structurally valid base: one measured speaker, no system.
+    let mut config = RoomConfig::default();
+    config.speakers.insert(
+        "L".to_string(),
+        SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
+            measurement: MeasurementRef::Path("left.csv".into()),
+            speaker_name: None,
+            provenance: Default::default(),
+        })),
+    );
+    config
+}
+
+#[test]
+fn structural_validation_accepts_absent_or_positive_t60_tolerance() {
+    // No declared tolerance: the viewer flatness cell stays pending.
+    let config = reporting_base_config();
+    assert_eq!(config.report_t60_tolerance_s(), None);
+    assert!(config.validate_structure().is_ok());
+
+    let mut declared = reporting_base_config();
+    declared.reporting = Some(ReportingConfig {
+        t60_flatness_tolerance_s: Some(0.05),
+    });
+    assert_eq!(declared.report_t60_tolerance_s(), Some(0.05));
+    assert!(declared.validate_structure().is_ok());
+}
+
+#[test]
+fn structural_validation_rejects_nonpositive_t60_tolerance() {
+    for tolerance in [0.0, -0.05, f64::NAN, f64::INFINITY] {
+        let mut config = reporting_base_config();
+        config.reporting = Some(ReportingConfig {
+            t60_flatness_tolerance_s: Some(tolerance),
+        });
+        assert!(
+            config.validate_structure().is_err(),
+            "tolerance {tolerance} must fail structural validation"
+        );
+    }
+}
+
+#[test]
+fn legacy_described_room_configs_match_the_generated_schema() {
+    let schema = schemars::schema_for!(RoomConfig);
+    assert_eq!(
+        schema.get("properties").unwrap()["description"],
+        serde_json::json!({ "type": "string" })
+    );
+    for fixture in [
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/roomeq/test_config_scenario_a_full.json"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/roomeq/test_config_scenario_b_full.json"
+        )),
+    ] {
+        let config: RoomConfig = serde_json::from_str(fixture).unwrap();
+        assert_eq!(config.version, "3.0.0");
+    }
+}
+
+#[test]
 fn structural_validation_report_cannot_claim_production_readiness() {
     let mut config = RoomConfig::default();
     config.speakers.insert(
@@ -27,6 +243,7 @@ fn structural_validation_report_cannot_claim_production_readiness() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path("left.csv".into()),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
 
@@ -47,6 +264,7 @@ fn structural_validation_rejects_missing_system_speaker_reference() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path("left.csv".into()),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
     config.system = Some(SystemConfig {
@@ -76,6 +294,7 @@ fn structural_validation_rejects_unsupported_crossover_type() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path("left.csv".into()),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
     config.crossovers = Some(HashMap::from([(
@@ -109,12 +328,11 @@ fn structural_validation_rejects_invalid_gain_envelopes() {
         SpeakerConfig::Single(MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path("left.csv".into()),
             speaker_name: None,
+            provenance: Default::default(),
         })),
     );
-    config.optimizer.max_boost_envelope =
-        Some(vec![(20.0, 6.0), (200.0, 3.0), (200.0, 2.0)]);
-    config.optimizer.min_cut_envelope =
-        Some(vec![(20.0, -6.0), (200.0, f64::NEG_INFINITY)]);
+    config.optimizer.max_boost_envelope = Some(vec![(20.0, 6.0), (200.0, 3.0), (200.0, 2.0)]);
+    config.optimizer.min_cut_envelope = Some(vec![(20.0, -6.0), (200.0, f64::NEG_INFINITY)]);
 
     let report = config.validation_report();
     let errors = &report.stage(ValidationStage::Structural).errors;
@@ -407,14 +625,19 @@ fn music_policy_fills_perceptual_defaults() {
 }
 
 #[test]
-fn high_frequency_guard_caps_default_q_but_preserves_explicit_q() {
+fn roadmap_correction_high_frequency_guard_preserves_global_q() {
     let mut default_q = OptimizerConfig {
         max_freq: 8_000.0,
         high_frequency_correction: Some(HighFrequencyCorrectionConfig::default()),
         ..Default::default()
     };
+    let original_max_q = default_q.max_q;
     default_q.apply_high_frequency_correction_defaults(false);
-    assert_eq!(default_q.max_q, default_high_freq_guard_max_q());
+    assert_eq!(default_q.max_q, original_max_q);
+    assert_eq!(
+        default_q.high_frequency_correction.unwrap().max_q,
+        default_high_freq_guard_max_q()
+    );
     assert_eq!(
         default_q.psychoacoustic_smoothing.unwrap().high_freq_n,
         default_high_freq_smoothing_n()
@@ -430,7 +653,10 @@ fn high_frequency_guard_caps_default_q_but_preserves_explicit_q() {
     assert_eq!(explicit_q.max_q, 4.5);
 
     explicit_q.apply_high_frequency_correction_defaults(true);
-    assert_eq!(explicit_q.max_q, default_high_freq_guard_max_q());
+    assert_eq!(explicit_q.max_q, 4.5);
+    explicit_q.max_q = 0.5;
+    explicit_q.apply_high_frequency_correction_defaults(true);
+    assert_eq!(explicit_q.max_q, 0.5);
 }
 
 #[test]
@@ -610,9 +836,9 @@ fn per_driver_placement_validates_version_mode_and_independent_routing() {
         "{:?}",
         config.validate_structure()
     );
-    config.version = "2.1.0".into();
-    assert!(config.validate_structure().unwrap_err().contains("2.2"));
     config.version = "2.2.0".into();
+    assert!(config.validate_structure().unwrap_err().contains("3.0"));
+    config.version = "3.0.0".into();
     config.optimizer.processing_mode = crate::ProcessingMode::LowLatency;
     assert!(
         config
@@ -622,5 +848,13 @@ fn per_driver_placement_validates_version_mode_and_independent_routing() {
     );
     config.optimizer.processing_mode = crate::ProcessingMode::PhaseLinear;
     config.system.as_mut().unwrap().bass_management = Some(crate::BassManagementConfig::default());
-    assert!(config.validate_structure().unwrap_err().contains("routing"));
+    assert!(config.validate_structure().is_ok());
+    let mut shared: crate::RoomConfig = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../data_tests/roomeq/measured/2.2_sigberg2/recordings.json"
+    )))
+    .unwrap();
+    shared.version = "3.0.0".into();
+    shared.optimizer = config.optimizer;
+    assert!(shared.validate_structure().is_ok());
 }

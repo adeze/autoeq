@@ -159,6 +159,7 @@ pub fn joint_bass_management_report_from_parts(
         0.0
     };
     home_cinema::BassManagementOptimizationReport {
+        crossover_cancellation: None,
         applied: true,
         phase_required: true,
         phase_available: true,
@@ -197,6 +198,7 @@ pub fn joint_bass_management_report_from_parts(
         group_results: groups.to_vec(),
         source_results: sources.to_vec(),
         sub_output_results: outputs.to_vec(),
+        stereo_routing: None,
         advisories: vec!["joint_route_solution".to_string()],
     }
 }
@@ -274,6 +276,8 @@ mod tests {
     fn representative_bass_route_signature_ignores_non_finite_frequencies() {
         let graph = BassManagementRoutingGraph {
             physical_sub_output: "LFE".to_string(),
+            physical_sub_outputs: Vec::new(),
+            stereo_routing: None,
             input_channels: vec!["L".to_string()],
             output_channels: vec!["LFE".to_string()],
             routes: vec![
@@ -282,6 +286,7 @@ mod tests {
             ],
             matrix: None,
             input_trim_db: Default::default(),
+            post_dsp_main_alignment_band_hz: None,
             advisories: vec![],
         };
 

@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+- Separate logical programme sources from physical subwoofer outputs throughout
+  bass routing and replay. Add correlated-peak-safe `0.5L + 0.5R` mono feeds,
+  explicit stereo 2.2 routing matrices, per-output response reconstruction and
+  headroom accounting, and logical-source ownership of pre-chain processing.
+
 - Share one crossover-safety-restoration predicate between route acceptance and source-report evidence.
+
+## 0.5.83
+
+- Initialize the new measured-IR STI report field as absent for synthesized channel responses and require the updated RoomEQ model contract.
 
 ## 0.5.71
 

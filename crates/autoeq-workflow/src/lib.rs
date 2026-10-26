@@ -29,12 +29,19 @@ pub mod error {
 pub mod read {
     pub use autoeq_measurements::read::*;
 }
+/// Measurement records and rig identities used by product-oriented workflows.
+pub mod measurements {
+    pub use autoeq_measurements::{MeasurementOrigin, MeasurementRecord, MeasurementRigIdentity};
+}
 pub use autoeq_measurements::read::Cea2034Data;
 pub mod loss {
     pub use autoeq_optim::loss::*;
 }
 pub mod optim {
     pub use autoeq_optim::optim::*;
+}
+pub mod constraints {
+    pub use autoeq_optim::constraints::*;
 }
 pub mod cli {
     pub use autoeq_optim::cli::*;

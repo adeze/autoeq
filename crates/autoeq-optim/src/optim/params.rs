@@ -10,6 +10,36 @@ use crate::optim::SmoothnessPenaltyConfig;
 
 pub use autoeq_core::PeqModel;
 
+/// Optional explicit hinge bands for the `PkLsHs` trailing tilt pair.
+/// Each `None` band falls back to its geometric half of the correction band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TiltBandsHz {
+    /// LS hinge band `[lo, hi]` in Hz (`None` = lower half).
+    pub ls: Option<[f64; 2]>,
+    /// HS hinge band `[lo, hi]` in Hz (`None` = upper half).
+    pub hs: Option<[f64; 2]>,
+}
+
+/// Optional frequency-dependent Q policy used by RoomEQ.
+///
+/// The optimizer still receives rectangular parameter bounds, therefore a
+/// filter whose allowed frequency interval can reach a guarded band gets the
+/// guarded (lower) Q ceiling.  This is intentionally conservative: it makes
+/// the emitted candidate safe for the whole interval rather than allowing a
+/// high-Q solution to move into a position-dependent upper-band feature.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrequencyQPolicy {
+    /// Schroeder/transition frequency.  Intervals entirely below it use
+    /// `low_max_q`; intervals crossing it use the upper-band ceiling.
+    pub schroeder_hz: Option<f64>,
+    /// Maximum Q for intervals entirely below the transition.
+    pub low_max_q: Option<f64>,
+    /// Upper-band guard start in Hz.
+    pub high_start_hz: Option<f64>,
+    /// Maximum Q for any interval that can reach the upper-band guard.
+    pub high_max_q: Option<f64>,
+}
+
 /// Optimization-relevant parameters extracted from either `cli::Args`
 /// (for the autoeq binary) or `roomeq::OptimizerConfig` (for room EQ).
 ///
@@ -22,6 +52,10 @@ pub struct OptimParams {
     pub num_filters: usize,
     pub peq_model: PeqModel,
     pub sample_rate: f64,
+    /// Explicit hinge bands (Hz) for the `PkLsHs` trailing tilt pair.
+    /// `None` (or a `None` band) splits the correction band geometrically:
+    /// LS hinges on the lower half, HS on the upper half.
+    pub tilt_bands_hz: Option<TiltBandsHz>,
 
     // -- Bounds --
     pub min_freq: f64,
@@ -39,6 +73,9 @@ pub struct OptimParams {
     pub spacing_weight: f64,
     pub smoothness_penalty: Option<SmoothnessPenaltyConfig>,
     pub audibility_deadband: Option<crate::roomeq::AudibilityDeadbandConfig>,
+    /// Optional frequency-dependent Q ceilings. `None` preserves the CLI
+    /// optimizer's legacy global bounds.
+    pub frequency_q_policy: Option<FrequencyQPolicy>,
 
     // -- Algorithm --
     pub algo: String,
@@ -63,6 +100,7 @@ pub struct OptimParams {
     // -- Execution --
     pub no_parallel: bool,
     pub parallel_threads: usize,
+    /// Stochastic seed; `None` selects [`crate::DEFAULT_SEED`].
     pub seed: Option<u64>,
 
     /// Suppress non-essential logging (replaces `args.qa.is_some()`).
@@ -75,6 +113,7 @@ impl From<&Args> for OptimParams {
             num_filters: args.num_filters,
             peq_model: args.effective_peq_model(),
             sample_rate: args.sample_rate,
+            tilt_bands_hz: None,
             min_freq: args.min_freq,
             max_freq: args.max_freq,
             min_q: args.min_q,
@@ -97,6 +136,7 @@ impl From<&Args> for OptimParams {
                 None
             },
             audibility_deadband: None,
+            frequency_q_policy: None,
             algo: args.algo.clone(),
             population: args.population,
             maxeval: args.maxeval,

@@ -161,12 +161,14 @@ mod tests {
             spl: curve.spl.to_vec(),
             phase: curve.phase.as_ref().map(|p| p.to_vec()),
             norm_range: None,
+            ..Default::default()
         }
     }
 
     fn make_channel(name: &str) -> (ChannelOptimizationResult, ChannelDspChain) {
         let curve = small_curve();
         let ch = ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: name.to_string(),
             pre_score: 0.0,
             post_score: 0.0,
@@ -175,8 +177,11 @@ mod tests {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         };
         let chain = ChannelDspChain {
+            physical_correction_target: None,
             channel: name.to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -188,6 +193,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         (ch, chain)
     }

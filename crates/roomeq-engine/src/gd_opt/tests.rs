@@ -129,6 +129,7 @@ fn test_coherence_weighting() {
         spl,
         phase,
         coherence,
+        resolution: None,
     };
 
     let channels = vec![ch0, ch1];
@@ -168,6 +169,7 @@ fn test_sum_gd_last_band_bin_uses_in_band_backward_difference() {
         spl: Array1::zeros(4),
         phase: Array1::from_vec(vec![0.0, -0.1, -0.2, -10.0]),
         coherence: Array1::from_elem(4, 0.95),
+        resolution: None,
     };
     let channels = vec![channel];
     let band_indices = vec![0, 1, 2];
@@ -194,6 +196,7 @@ fn compute_sum_gd_is_stable_at_destructive_interference() {
         spl: Array1::zeros(3),
         phase: Array1::from_vec(vec![0.0, 0.0, 0.0]),
         coherence: Array1::from_elem(3, 0.95),
+        resolution: None,
     };
     // ch2 phases chosen so that at 100 Hz sum arg ≈ -π/2, at 100.1 Hz sum arg ≈ π/2
     let ch2 = ChannelMeasurementInput {
@@ -205,6 +208,7 @@ fn compute_sum_gd_is_stable_at_destructive_interference() {
             0.0,
         ]),
         coherence: Array1::from_elem(3, 0.95),
+        resolution: None,
     };
 
     let config = GdOptConfig {
@@ -239,12 +243,14 @@ fn exact_cancellation_bins_are_excluded_from_group_delay_statistics() {
         spl: Array1::zeros(3),
         phase: Array1::zeros(3),
         coherence: Array1::from_elem(3, 1.0),
+        resolution: None,
     };
     let second = ChannelMeasurementInput {
         freq,
         spl: Array1::zeros(3),
         phase: Array1::from_elem(3, std::f64::consts::PI),
         coherence: Array1::from_elem(3, 1.0),
+        resolution: None,
     };
     let config = GdOptConfig {
         ap_per_channel: 0,

@@ -2,37 +2,117 @@ use super::registry;
 
 #[cfg(test)]
 mod outcome_evidence_tests {
-    use super::super::{OptimizerConfidence, OptimizerRunEvidence, OptimizerTermination};
+    use super::super::run_control::{EvaluationStage, OptimizerRunControl};
+    use super::super::{
+        OptimizerBackendCompletion, OptimizerConfidence, OptimizerRunEvidence, OptimizerTermination,
+    };
+    use std::num::NonZeroUsize;
 
     #[test]
-    fn stopped_candidate_is_diagnostic_not_deployable_best_effort() {
-        for accepted in [false, true] {
-            let value = ("optimization stopped by callback (nfev=3)".to_string(), 0.25);
-            let evidence = OptimizerRunEvidence::from_backend_result(
-                "autoeq:de", if accepted { Ok(value) } else { Err(value) },
-                &[0.5], &[0.0], &[1.0], 40, Some(42),
-            );
-            assert_eq!(evidence.termination, OptimizerTermination::UserStopped);
-            assert!(!evidence.converged);
-            assert!(!evidence.best_effort);
-            assert_eq!(evidence.confidence, OptimizerConfidence::Unusable);
-            assert_eq!(evidence.objective, Some(0.25));
-            assert_eq!(evidence.evaluation_count, Some(3));
-        }
+    fn legacy_stopped_status_is_not_proof_of_user_cancellation() {
+        let evidence = OptimizerRunEvidence::from_backend_result(
+            "autoeq:de",
+            Ok(("optimization stopped by callback (nfev=3)".into(), 0.25)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            40,
+            Some(42),
+        );
+        assert_eq!(evidence.termination, OptimizerTermination::NonConverged);
+        assert!(!evidence.converged);
+        assert!(evidence.best_effort);
+        assert_eq!(evidence.confidence, OptimizerConfidence::Low);
+        assert_eq!(evidence.objective, Some(0.25));
+        assert_eq!(evidence.evaluation_count, Some(3));
+        assert_eq!(evidence.status, "optimization stopped by callback (nfev=3)");
     }
 
     #[test]
     fn native_budget_status_is_not_convergence_without_extra_qualifier() {
-        for status in ["AutoEQ COBYLA: MaxevalReached", "maximum evaluations reached",
-            "maximum iterations reached", "evaluation budget exhausted"] {
+        for status in [
+            "AutoEQ COBYLA: MaxevalReached",
+            "maximum evaluations reached",
+            "maximum iterations reached",
+            "evaluation budget exhausted",
+        ] {
             let evidence = OptimizerRunEvidence::from_backend_result(
-                "autoeq:cobyla", Ok((status.into(), 0.25)), &[0.5], &[0.0], &[1.0], 40, Some(42),
+                "autoeq:cobyla",
+                Ok((status.into(), 0.25)),
+                &[0.5],
+                &[0.0],
+                &[1.0],
+                40,
+                Some(42),
             );
-            assert_eq!(evidence.termination, OptimizerTermination::EvaluationLimit, "{status}");
+            assert_eq!(
+                evidence.termination,
+                OptimizerTermination::EvaluationLimit,
+                "{status}"
+            );
             assert!(!evidence.converged, "{status}");
-            assert!(evidence.best_effort, "finite bounded candidate should remain usable: {status}");
+            assert!(
+                evidence.best_effort,
+                "finite bounded candidate should remain usable: {status}"
+            );
             assert_eq!(evidence.confidence, OptimizerConfidence::Low);
         }
+    }
+
+    #[test]
+    fn roundoff_limited_status_is_best_effort_not_an_evaluation_limit() {
+        let mut evidence = OptimizerRunEvidence::from_backend_result(
+            "autoeq:cobyla",
+            Ok((
+                "AutoEQ COBYLA: RoundoffLimited (not converged)".into(),
+                0.25,
+            )),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            40,
+            None,
+        );
+        evidence.apply_backend_completion(OptimizerBackendCompletion::NonConverged);
+
+        assert_eq!(evidence.termination, OptimizerTermination::NonConverged);
+        assert!(!evidence.converged);
+        assert!(evidence.best_effort);
+        assert_eq!(evidence.confidence, OptimizerConfidence::Low);
+        assert_eq!(evidence.objective, Some(0.25));
+    }
+
+    #[test]
+    fn typed_backend_completion_marks_solver_stop_and_preserves_budget_stop() {
+        let mut ftol = OptimizerRunEvidence::from_backend_result(
+            "autoeq:cobyla",
+            Ok(("AutoEQ COBYLA: FtolReached".into(), 0.25)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            40,
+            None,
+        );
+        assert_eq!(ftol.termination, OptimizerTermination::NonConverged);
+        ftol.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        assert_eq!(ftol.termination, OptimizerTermination::Converged);
+        assert!(ftol.converged);
+        assert!(!ftol.best_effort);
+
+        let mut budget = OptimizerRunEvidence::from_backend_result(
+            "autoeq:cobyla",
+            Ok(("AutoEQ COBYLA: MaxevalReached".into(), 0.25)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            40,
+            None,
+        );
+        budget.apply_backend_completion(OptimizerBackendCompletion::EvaluationLimit);
+        budget.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        assert_eq!(budget.termination, OptimizerTermination::EvaluationLimit);
+        assert!(!budget.converged);
+        assert!(budget.best_effort);
     }
 
     #[test]
@@ -95,8 +175,8 @@ mod outcome_evidence_tests {
     }
 
     #[test]
-    fn clean_success_is_high_confidence_and_records_empty_restart_history() {
-        let evidence = OptimizerRunEvidence::from_backend_result(
+    fn typed_convergence_is_high_confidence_and_records_empty_restart_history() {
+        let mut evidence = OptimizerRunEvidence::from_backend_result(
             "autoeq:de",
             Ok(("relative tolerance reached".to_string(), 0.5)),
             &[0.5],
@@ -105,12 +185,147 @@ mod outcome_evidence_tests {
             200,
             Some(3),
         );
+        assert_eq!(evidence.termination, OptimizerTermination::NonConverged);
+        evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
 
         assert!(evidence.converged);
         assert!(!evidence.best_effort);
         assert_eq!(evidence.termination, OptimizerTermination::Converged);
         assert_eq!(evidence.confidence, OptimizerConfidence::High);
         assert!(evidence.restart_history.is_empty());
+    }
+
+    #[test]
+    fn fixed_generation_success_without_typed_completion_is_best_effort() {
+        let evidence = OptimizerRunEvidence::from_backend_result(
+            "mh:firefly",
+            Ok(("Metaheuristics(Firefly)".into(), 0.5)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            128,
+            Some(7),
+        );
+        assert_eq!(evidence.termination, OptimizerTermination::NonConverged);
+        assert!(!evidence.converged);
+        assert!(evidence.best_effort);
+        assert_eq!(evidence.status, "Metaheuristics(Firefly)");
+    }
+
+    #[test]
+    fn run_control_maps_budget_user_cancel_and_deadline_without_losing_finite_result() {
+        let make_evidence = || {
+            OptimizerRunEvidence::from_backend_result(
+                "autoeq:de",
+                Ok(("legacy callback status".into(), 0.5)),
+                &[0.5],
+                &[0.0],
+                &[1.0],
+                1,
+                Some(11),
+            )
+        };
+
+        let budget = OptimizerRunControl::new(NonZeroUsize::new(1).unwrap());
+        drop(budget.begin_evaluation(EvaluationStage::Search, 1).unwrap());
+        let mut budget_evidence = make_evidence();
+        budget_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        budget_evidence.apply_run_control(&budget.snapshot());
+        budget_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        assert_eq!(
+            budget_evidence.termination,
+            OptimizerTermination::EvaluationLimit
+        );
+        assert_eq!(budget_evidence.objective, Some(0.5));
+        assert!(budget_evidence.best_effort);
+
+        let user_stop = OptimizerRunControl::new(NonZeroUsize::new(4).unwrap());
+        user_stop.request_cancel();
+        let mut user_evidence = make_evidence();
+        user_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        user_evidence.apply_run_control(&user_stop.snapshot());
+        user_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        assert_eq!(user_evidence.termination, OptimizerTermination::UserStopped);
+        assert_eq!(user_evidence.objective, Some(0.5));
+        assert!(!user_evidence.best_effort);
+        assert!(user_evidence.has_valid_candidate());
+
+        let deadline = OptimizerRunControl::new(NonZeroUsize::new(4).unwrap());
+        deadline.request_deadline();
+        let mut timed_evidence = make_evidence();
+        timed_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        timed_evidence.apply_run_control(&deadline.snapshot());
+        timed_evidence.apply_backend_completion(OptimizerBackendCompletion::Converged);
+        assert_eq!(timed_evidence.termination, OptimizerTermination::TimedOut);
+        assert_eq!(timed_evidence.objective, Some(0.5));
+        assert!(timed_evidence.best_effort);
+        assert!(timed_evidence.has_valid_candidate());
+    }
+
+    #[test]
+    fn refusal_without_callback_stop_reports_budget_limit() {
+        let control = OptimizerRunControl::new(NonZeroUsize::new(4).unwrap());
+        let mut snapshot = control.snapshot();
+        snapshot.evaluations_refused = 1;
+        let mut evidence = OptimizerRunEvidence::from_backend_result(
+            "nsga-ii",
+            Ok(("ordinary backend status".into(), 0.25)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            4,
+            Some(9),
+        );
+        evidence.apply_run_control(&snapshot);
+        assert_eq!(evidence.termination, OptimizerTermination::EvaluationLimit);
+        assert!(evidence.best_effort);
+    }
+
+    #[test]
+    fn backend_failure_and_invalid_result_outweigh_stop_requests() {
+        let control = OptimizerRunControl::new(NonZeroUsize::new(1).unwrap());
+        drop(
+            control
+                .begin_evaluation(EvaluationStage::Search, 1)
+                .unwrap(),
+        );
+        let _ = control
+            .begin_evaluation(EvaluationStage::Search, 1)
+            .is_none();
+        control.request_cancel();
+        control.request_deadline();
+        let snapshot = control.snapshot();
+
+        let mut failed = OptimizerRunEvidence::from_backend_result(
+            "autoeq:de",
+            Err((
+                "solver failed independently of the stop request".into(),
+                f64::INFINITY,
+            )),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            1,
+            Some(1),
+        );
+        failed.apply_run_control(&snapshot);
+        assert_eq!(failed.termination, OptimizerTermination::BackendFailure);
+        assert_eq!(
+            failed.status,
+            "solver failed independently of the stop request"
+        );
+
+        let mut invalid = OptimizerRunEvidence::from_backend_result(
+            "autoeq:de",
+            Ok(("solver returned a candidate".into(), f64::NAN)),
+            &[0.5],
+            &[0.0],
+            &[1.0],
+            1,
+            Some(1),
+        );
+        invalid.apply_run_control(&snapshot);
+        assert_eq!(invalid.termination, OptimizerTermination::InvalidResult);
     }
 }
 
@@ -275,11 +490,12 @@ mod backend_tests {
     };
     use super::super::setup::{
         ProgressCallbackConfig, initial_guess, perform_optimization,
-        perform_optimization_with_callback, perform_optimization_with_progress, setup_bounds,
-        setup_objective_data,
+        perform_optimization_with_callback, perform_optimization_with_progress,
+        q_max_for_frequency_range, setup_bounds, setup_objective_data,
     };
     use super::super::types::MultiObjectiveData;
     use crate::Curve;
+    use crate::FrequencyQPolicy;
     use crate::cli::Args;
     use clap::Parser;
 
@@ -294,6 +510,60 @@ mod backend_tests {
         args.min_db = -12.0;
         args.max_db = 12.0;
         args
+    }
+
+    #[test]
+    fn frequency_q_policy_keeps_modal_freedom_but_caps_guarded_ranges() {
+        let mut params = OptimParams::from(&small_args());
+        params.num_filters = 3;
+        params.min_freq = 20.0;
+        params.max_freq = 20_000.0;
+        params.min_q = 0.5;
+        params.max_q = 12.0;
+        params.frequency_q_policy = Some(FrequencyQPolicy {
+            schroeder_hz: Some(500.0),
+            low_max_q: Some(12.0),
+            high_start_hz: Some(1_600.0),
+            high_max_q: Some(0.8),
+        });
+
+        assert_eq!(q_max_for_frequency_range(&params, 80.0, 300.0), 12.0);
+        let crossing = q_max_for_frequency_range(&params, 300.0, 800.0);
+        assert!(crossing > 0.8 && crossing < 12.0);
+        assert_eq!(q_max_for_frequency_range(&params, 2_000.0, 8_000.0), 0.8);
+
+        let (_, upper) = setup_bounds(&params);
+        for filter in 0..params.num_filters {
+            let offset = filter * 3;
+            let f_high = 10.0_f64.powf(upper[offset]);
+            if f_high >= 1_600.0 {
+                assert!(upper[offset + 1] <= 0.8);
+            }
+        }
+    }
+
+    #[test]
+    fn frequency_q_policy_is_continuous_at_schroeder_boundary() {
+        let mut params = OptimParams::from(&small_args());
+        params.min_freq = 20.0;
+        params.max_freq = 20_000.0;
+        params.min_q = 0.5;
+        params.max_q = 12.0;
+        params.frequency_q_policy = Some(FrequencyQPolicy {
+            schroeder_hz: Some(500.0),
+            low_max_q: Some(12.0),
+            high_start_hz: Some(1_600.0),
+            high_max_q: Some(0.8),
+        });
+        let below = q_max_for_frequency_range(&params, 499.0, 499.0);
+        let above = q_max_for_frequency_range(&params, 501.0, 501.0);
+        assert_eq!(below, 12.0);
+        assert!(above < below);
+        assert!(above > 0.8);
+        assert!(
+            (below - above) < 1.0,
+            "Schroeder boundary Q jump is too large"
+        );
     }
 
     fn scalar_objective() -> (ObjectiveData, OptimParams, Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -331,6 +601,188 @@ mod backend_tests {
         let (lower, upper) = setup_bounds(&params);
         let x = initial_guess(&params, &lower, &upper);
         (obj, params, lower, upper, x)
+    }
+
+    #[test]
+    fn cobra_dispatch_is_seeded_bounded_and_counted() {
+        use super::super::optimize::optimize_filters_with_run_control_detailed;
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let run_once = || {
+            let (objective, mut params, lower, upper, mut x) = scalar_objective();
+            params.algo = "autoeq:cobra".into();
+            params.maxeval = 20;
+            params.seed = Some(42);
+            let control = OptimizerRunControl::new(NonZeroUsize::new(20).unwrap());
+            let result = optimize_filters_with_run_control_detailed(
+                &mut x, &lower, &upper, objective, &params, &control,
+            );
+            let (_, loss) = result
+                .result
+                .as_ref()
+                .expect("finite feasible COBRA winner");
+            assert!(loss.is_finite());
+            assert!(
+                x.iter()
+                    .zip(&lower)
+                    .zip(&upper)
+                    .all(|((&v, &lo), &hi)| v >= lo && v <= hi)
+            );
+            assert_eq!(result.snapshot.evaluations_started, 20);
+            assert_eq!(result.snapshot.evaluations_completed, 20);
+            assert_eq!(result.snapshot.evaluations_in_flight, 0);
+            assert_eq!(result.snapshot.evaluations_refused, 0);
+            assert!(!result.evidence.converged);
+            (x, loss.to_bits())
+        };
+        assert_eq!(run_once(), run_once());
+    }
+
+    #[test]
+    fn cobra_callback_stop_returns_after_first_infill_without_polish() {
+        use super::super::cobra::AutoeqCobraBackend;
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.maxeval = 100;
+        params.seed = Some(42);
+        let initial = (3 * x.len() + 1).min(params.maxeval);
+        let (status, loss) = AutoeqCobraBackend::new("autoeq:cobra")
+            .optimize(
+                &mut x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+                Some(Box::new(|iteration, loss, epa, _response| {
+                    assert_eq!(iteration, 1);
+                    assert!(loss.is_finite());
+                    assert!(epa.is_none());
+                    crate::de::CallbackAction::Stop
+                })),
+            )
+            .expect("callback stop retains a feasible candidate");
+        assert!(status.contains("stopped by callback"), "{status}");
+        assert!(
+            status.contains(&format!("nfev={}", initial + 1)),
+            "{status}"
+        );
+        assert!(loss.is_finite());
+    }
+
+    #[test]
+    fn detailed_controlled_dispatch_identifies_budget_refusal_before_backend_start() {
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:de".to_string();
+        params.population = 6;
+        params.maxeval = 1;
+        let control = OptimizerRunControl::new(NonZeroUsize::new(1).unwrap());
+
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+
+        let OptimizerDispatchOutcome::NotStartedBudgetRefusal(refusal) = run.dispatch else {
+            panic!("expected typed preflight refusal, got {:?}", run.dispatch);
+        };
+        assert_eq!(refusal.requested_evaluations, 1);
+        assert!(refusal.required_evaluations > refusal.requested_evaluations);
+        assert_eq!(run.snapshot.evaluations_started, 0);
+        assert_eq!(run.evidence.evaluation_count, Some(0));
+        assert_eq!(
+            run.evidence.termination,
+            OptimizerTermination::EvaluationLimit
+        );
+        assert!(run.result.is_err());
+    }
+
+    #[test]
+    fn detailed_controlled_dispatch_distinguishes_unresolved_backend() {
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "not-a-registered-backend".to_string();
+        let control = OptimizerRunControl::new(NonZeroUsize::new(100).unwrap());
+
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+
+        assert_eq!(
+            run.dispatch,
+            OptimizerDispatchOutcome::NotStartedDispatchFailure
+        );
+        assert_eq!(run.snapshot.evaluations_started, 0);
+        assert_eq!(
+            run.evidence.termination,
+            OptimizerTermination::BackendFailure
+        );
+        assert!(run.result.is_err());
+    }
+
+    #[test]
+    fn controlled_cobyla_dispatch_propagates_tolerance_completion() {
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:cobyla".into();
+        params.maxeval = 10_000;
+        let control = OptimizerRunControl::new(NonZeroUsize::new(params.maxeval).unwrap());
+
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+
+        assert_eq!(run.dispatch, OptimizerDispatchOutcome::BackendInvoked);
+        assert!(run.result.is_ok(), "COBYLA result: {:?}", run.result);
+        assert_eq!(run.evidence.termination, OptimizerTermination::Converged);
+        assert!(run.evidence.converged);
+        assert!(run.evidence.status.contains("FtolReached"));
+        assert!(run.evidence.evaluation_count.unwrap() < params.maxeval);
+    }
+
+    #[test]
+    fn controlled_cobyla_budget_stop_remains_nonconverged() {
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:cobyla".into();
+        params.maxeval = 2;
+        let control = OptimizerRunControl::new(NonZeroUsize::new(params.maxeval).unwrap());
+
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+
+        assert_eq!(run.dispatch, OptimizerDispatchOutcome::BackendInvoked);
+        assert_eq!(
+            run.evidence.termination,
+            OptimizerTermination::EvaluationLimit
+        );
+        assert!(!run.evidence.converged);
+        assert_eq!(run.evidence.evaluation_count, Some(params.maxeval));
+        assert!(run.snapshot.budget_exhausted);
     }
 
     fn multi_objective() -> (ObjectiveData, OptimParams, Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -388,6 +840,352 @@ mod backend_tests {
                 status
             );
         }
+    }
+
+    #[test]
+    fn registered_rga_reports_actual_search_limit_without_claiming_convergence() {
+        use super::super::backend::BackendSearchStopCause;
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "mh:rga".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let root_control = OptimizerRunControl::new(NonZeroUsize::new(120).unwrap());
+        // Controlled dispatch uses the stage cap as the backend search cap.
+        // Final selected-candidate validation is accounted separately.
+        let control = root_control.with_stage_budget(NonZeroUsize::new(120).unwrap());
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+        assert_eq!(run.dispatch, OptimizerDispatchOutcome::BackendInvoked);
+        assert!(
+            run.result.is_ok(),
+            "RGA must return a finalized candidate: {:?}",
+            run.result
+        );
+        assert_eq!(
+            run.evidence.termination,
+            OptimizerTermination::EvaluationLimit
+        );
+        assert_eq!(
+            run.evidence.backend_stop_cause,
+            Some(BackendSearchStopCause::ObjectiveBudgetLimit),
+        );
+        assert!(!run.evidence.converged);
+        assert!(run.evidence.backend_evaluation_count.unwrap() >= params.population);
+        assert!(run.evidence.generation_count.unwrap() > 0);
+        assert!(run.evidence.task_callback_count.unwrap() < run.evidence.generation_limit.unwrap());
+        assert_eq!(run.evidence.backend_evaluation_count, Some(120));
+        assert!(run.evidence.backend_denied_evaluation_count.is_some());
+        let stage = run.stage_snapshot.expect("RGA stage search counts");
+        assert!(stage.evaluations_started <= 120);
+        assert!(stage.evaluations_started >= run.evidence.backend_evaluation_count.unwrap());
+        assert!(root_control.snapshot().evaluations_started <= 120);
+        assert_eq!(
+            run.evidence.task_callback_count,
+            run.evidence
+                .generation_count
+                .map(|generations| generations + 1),
+        );
+        assert!(
+            run.evidence.population_fitness_mean.is_some()
+                == run.evidence.population_fitness_stddev.is_some()
+        );
+        assert!(
+            run.evidence
+                .population_fitness_stddev
+                .is_none_or(f64::is_finite)
+        );
+    }
+
+    #[test]
+    fn registered_rga_stage_budget_refusal_keeps_run_control_priority() {
+        use super::super::optimize::{
+            OptimizerDispatchOutcome, OptimizerTermination,
+            optimize_filters_with_run_control_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "mh:rga".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let root_control = OptimizerRunControl::new(NonZeroUsize::new(120).unwrap());
+        let control = root_control.with_stage_budget(NonZeroUsize::new(60).unwrap());
+        let run = optimize_filters_with_run_control_detailed(
+            &mut x, &lower, &upper, objective, &params, &control,
+        );
+        assert_eq!(run.dispatch, OptimizerDispatchOutcome::BackendInvoked);
+        assert_eq!(
+            run.evidence.termination,
+            OptimizerTermination::EvaluationLimit
+        );
+        assert!(!run.evidence.converged);
+        assert!(
+            run.stage_snapshot
+                .expect("RGA stage budget")
+                .evaluations_started
+                <= 60
+        );
+        assert!(root_control.snapshot().evaluations_started <= 120);
+    }
+
+    #[test]
+    fn parallel_mh_objective_reservations_never_score_denied_attempts() {
+        use super::super::mh::{CallbackState, MHObjective};
+        use metaheuristics_nature::ObjFunc;
+        use std::sync::{Arc, Mutex};
+
+        let (data, _, lower, upper, x) = scalar_objective();
+        let state = Arc::new(Mutex::new(CallbackState {
+            best_fitness: f64::INFINITY,
+            best_params: Vec::new(),
+            eval_count: 0,
+            denied_evaluations: 0,
+            last_report_eval: 0,
+            iterations: 0,
+            generations: 0,
+            population_mean: None,
+            population_stddev: None,
+            callback_stopped: false,
+        }));
+        let objective = MHObjective {
+            data,
+            bounds: lower
+                .into_iter()
+                .zip(upper)
+                .map(|(lo, hi)| [lo, hi])
+                .collect(),
+            callback_state: Some(Arc::clone(&state)),
+            max_evaluations: 10,
+        };
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let objective = objective.clone();
+                    let x = x.clone();
+                    scope.spawn(move || (0..32).map(|_| objective.fitness(&x)).collect::<Vec<_>>())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("MH worker"))
+                .collect::<Vec<_>>()
+        });
+        let state = state.lock().expect("MH objective state");
+        assert_eq!(state.eval_count, 10);
+        assert_eq!(state.denied_evaluations, 246);
+        assert_eq!(results.iter().filter(|loss| loss.is_finite()).count(), 10);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|loss| **loss == f64::INFINITY)
+                .count(),
+            246
+        );
+        assert!(state.best_fitness.is_finite());
+        assert_eq!(state.best_params.len(), x.len());
+    }
+
+    #[test]
+    fn registered_rga_completion_evidence_preserves_legacy_candidate() {
+        use super::super::optimize::{
+            optimize_filters_with_de_completion, optimize_filters_with_typed_completion_evidence,
+        };
+
+        let (objective, mut params, lower, upper, x) = scalar_objective();
+        params.algo = "mh:rga".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let mut legacy_x = x.clone();
+        let mut evidence_x = x;
+        let (legacy_result, legacy_de) = optimize_filters_with_de_completion(
+            &mut legacy_x,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+        );
+        let (evidence_result, evidence_de, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut evidence_x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+            );
+
+        assert_eq!(evidence_result, legacy_result);
+        assert_eq!(evidence_x, legacy_x);
+        assert!(legacy_de.is_none());
+        assert!(evidence_de.is_none());
+        assert!(completion.is_none());
+        let search = search.expect("registered RGA search evidence");
+        assert_eq!(search.evaluations, params.maxeval);
+        // The backend can stop at the exact cap without attempting a denied call.
+        assert_eq!(
+            search.stop_cause,
+            super::super::backend::BackendSearchStopCause::ObjectiveBudgetLimit
+        );
+    }
+
+    #[test]
+    fn registered_cmaes_completion_evidence_preserves_legacy_candidate() {
+        use super::super::optimize::{
+            optimize_filters_with_de_completion, optimize_filters_with_typed_completion_evidence,
+        };
+
+        let (objective, mut params, lower, upper, x) = scalar_objective();
+        params.algo = "autoeq:cmaes".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let mut legacy_x = x.clone();
+        let mut evidence_x = x;
+        let (legacy_result, legacy_de) = optimize_filters_with_de_completion(
+            &mut legacy_x,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+        );
+        let (evidence_result, evidence_de, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut evidence_x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+            );
+
+        assert_eq!(evidence_result, legacy_result);
+        assert_eq!(evidence_x, legacy_x);
+        assert!(legacy_de.is_none());
+        assert!(evidence_de.is_none());
+        assert!(search.is_none());
+        // Ten generations cannot stagnate: the budget stop keeps the legacy
+        // classification with no typed completion.
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn registered_isres_completion_evidence_preserves_legacy_candidate() {
+        use super::super::optimize::{
+            optimize_filters_with_de_completion, optimize_filters_with_typed_completion_evidence,
+        };
+
+        let (objective, mut params, lower, upper, x) = scalar_objective();
+        params.algo = "autoeq:isres".into();
+        params.maxeval = 60;
+        params.seed = Some(7);
+        let mut legacy_x = x.clone();
+        let mut evidence_x = x;
+        let (legacy_result, legacy_de) = optimize_filters_with_de_completion(
+            &mut legacy_x,
+            &lower,
+            &upper,
+            objective.clone(),
+            &params,
+        );
+        let (evidence_result, evidence_de, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut evidence_x,
+                &lower,
+                &upper,
+                objective,
+                &params,
+            );
+
+        assert_eq!(evidence_result, legacy_result);
+        assert_eq!(evidence_x, legacy_x);
+        assert!(legacy_de.is_none());
+        assert!(evidence_de.is_none());
+        assert!(search.is_none());
+        // A single generation cannot stagnate: the budget stop keeps the
+        // legacy classification with no typed completion.
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn registered_cmaes_stagnation_carries_convergence_through_dispatch() {
+        use super::super::optimize::OptimizerBackendCompletion;
+        use super::super::optimize::optimize_filters_with_typed_completion_evidence;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:cmaes".into();
+        params.population = 6;
+        params.maxeval = 6000;
+        params.seed = Some(7);
+        let (result, de_completion, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut x, &lower, &upper, objective, &params,
+            );
+
+        assert!(result.is_ok(), "CMA-ES should run: {result:?}");
+        assert!(de_completion.is_none());
+        assert!(search.is_none());
+        assert_eq!(completion, Some(OptimizerBackendCompletion::Converged));
+    }
+
+    #[test]
+    fn registered_isres_stagnation_carries_convergence_through_dispatch() {
+        use super::super::optimize::OptimizerBackendCompletion;
+        use super::super::optimize::optimize_filters_with_typed_completion_evidence;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:isres".into();
+        params.population = 6;
+        params.maxeval = 30000;
+        params.seed = Some(7);
+        let (result, de_completion, search, completion) =
+            optimize_filters_with_typed_completion_evidence(
+                &mut x, &lower, &upper, objective, &params,
+            );
+
+        assert!(result.is_ok(), "ISRES should run: {result:?}");
+        assert!(de_completion.is_none());
+        assert!(search.is_none());
+        assert_eq!(completion, Some(OptimizerBackendCompletion::Converged));
+    }
+
+    #[test]
+    fn registered_rga_callback_stop_preserves_run_control_priority() {
+        use super::super::backend::BackendSearchStopCause;
+        use super::super::optimize::{
+            OptimizerTermination, optimize_filters_with_run_control_and_algo_override_detailed,
+        };
+        use super::super::run_control::OptimizerRunControl;
+        use crate::de::CallbackAction;
+        use std::num::NonZeroUsize;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "mh:rga".into();
+        params.maxeval = 500;
+        params.seed = Some(7);
+        let control = OptimizerRunControl::new(NonZeroUsize::new(500).unwrap());
+        let run = optimize_filters_with_run_control_and_algo_override_detailed(
+            &mut x,
+            &lower,
+            &upper,
+            objective,
+            &params,
+            None,
+            Some(Box::new(|_, _, _, _| CallbackAction::Stop)),
+            &control,
+        );
+        assert_eq!(
+            run.evidence.backend_stop_cause,
+            Some(BackendSearchStopCause::ProgressCallbackStop),
+        );
+        assert_eq!(run.evidence.termination, OptimizerTermination::UserStopped);
+        assert!(!run.evidence.converged);
+        assert!(run.evidence.backend_evaluation_count.unwrap() >= 100);
     }
 
     #[test]
@@ -677,6 +1475,76 @@ mod backend_tests {
     }
 
     #[test]
+    fn de_progress_callback_preserves_native_completion_and_candidate() {
+        use super::super::optimize::{
+            optimize_filters_detailed, optimize_filters_with_callback_detailed,
+        };
+
+        let (objective, mut params, lower, upper, initial) = scalar_objective();
+        params.algo = "autoeq:de".into();
+        // Force the native population-spread criterion to be reached promptly,
+        // independent of this fixture's acoustic optimum.
+        params.atolerance = 1_000_000.0;
+        params.maxeval = 200;
+        let mut plain_x = initial.clone();
+        let plain =
+            optimize_filters_detailed(&mut plain_x, &lower, &upper, objective.clone(), &params);
+        let mut callback_x = initial;
+        let progress = optimize_filters_with_callback_detailed(
+            &mut callback_x,
+            &lower,
+            &upper,
+            objective,
+            &params,
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Continue),
+        );
+        assert!(plain.converged, "{plain:?}");
+        assert!(progress.converged, "{progress:?}");
+        assert_eq!(plain_x, callback_x);
+        assert_eq!(plain.objective, progress.objective);
+        assert_eq!(plain.evaluation_count, progress.evaluation_count);
+        assert_eq!(
+            plain.backend_evaluation_count,
+            progress.backend_evaluation_count
+        );
+        assert!(
+            progress
+                .backend_evaluation_count
+                .is_some_and(|count| count > 0)
+        );
+        assert_eq!(plain.generation_count, progress.generation_count);
+        assert!(progress.generation_count.is_some());
+        assert!(progress.generation_limit.is_some());
+    }
+
+    #[test]
+    fn de_progress_stop_cannot_be_reported_as_convergence() {
+        use super::super::optimize::OptimizerTermination;
+        use super::super::optimize::optimize_filters_with_callback_detailed;
+
+        let (objective, mut params, lower, upper, mut x) = scalar_objective();
+        params.algo = "autoeq:de".into();
+        params.atolerance = 1_000_000.0;
+        params.maxeval = 200;
+        let progress = optimize_filters_with_callback_detailed(
+            &mut x,
+            &lower,
+            &upper,
+            objective,
+            &params,
+            Box::new(|_, _, _, _| crate::de::CallbackAction::Stop),
+        );
+        assert_eq!(progress.termination, OptimizerTermination::UserStopped);
+        assert!(!progress.converged);
+        assert!(progress.evaluation_count.is_some_and(|count| count > 0));
+        assert!(
+            progress
+                .backend_evaluation_count
+                .is_some_and(|count| count > 0)
+        );
+    }
+
+    #[test]
     fn perform_optimization_with_progress_runs() {
         let (obj, _params, _lower, _upper, _x) = scalar_objective();
         let mut args = small_args();
@@ -764,4 +1632,37 @@ mod backend_tests {
         let wrapped_val = super::super::compute_fitness_penalties(&x, None, &mut obj);
         assert_eq!(ref_val, wrapped_val);
     }
+}
+
+#[test]
+fn portable_bound_coordinates_reach_the_owning_initial_guess() {
+    use super::setup::{initial_guess, setup_bounds};
+    use crate::{OptimParams, cli::Args};
+    use clap::Parser;
+
+    let args = Args::parse_from([
+        "autoeq",
+        "--peq-model",
+        "pk",
+        "-n",
+        "1",
+        "--min-freq",
+        "80",
+        "--max-freq",
+        "44100",
+    ]);
+    let params = OptimParams::from(&args);
+    let (lower, upper) = setup_bounds(&params);
+    // Independent 140-digit references for non-40 Hz frequency bounds.
+    assert_eq!(lower[0].to_bits(), 4_611_249_574_528_916_351);
+    assert_eq!(upper[0].to_bits(), 4_616_915_191_402_606_031);
+    let guess = initial_guess(&params, &lower, &upper);
+    assert_eq!(guess.len(), 3);
+    assert!(guess.iter().all(|value| value.is_finite()));
+    assert!(
+        guess
+            .iter()
+            .zip(lower.iter().zip(&upper))
+            .all(|(&value, (&lo, &hi))| value >= lo && value <= hi)
+    );
 }

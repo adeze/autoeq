@@ -7,7 +7,7 @@ pub use roomeq_model::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::metrics::weighted_percentile;
+use super::metrics::{rms, same_frequency_grid, weighted_percentile};
 
 /// Evaluate a single pre/post/target triplet against a fixture policy.
 ///
@@ -134,8 +134,16 @@ pub fn evaluate_correction_acceptance(
             CorrectionDecision::IdentityFallback
         },
         accepted: violations.is_empty(),
+        outcome: if violations.is_empty() {
+            roomeq_model::RoomEqOutcome::Accepted
+        } else {
+            roomeq_model::RoomEqOutcome::Unchanged
+        },
         metrics,
         violations,
+        realized_processing: None,
+        processing_fallback: None,
+        observations: Vec::new(),
         reverted_stages: Vec::new(),
         acoustic_quality: None,
         realization_quality: None,
@@ -367,20 +375,7 @@ fn check_seat_grid(
     seat_index: usize,
     label: &str,
 ) -> Result<(), String> {
-    if pre.freq.len() < 2
-        || pre.freq.len() != post.freq.len()
-        || pre.freq.len() != target.freq.len()
-        || pre
-            .freq
-            .iter()
-            .zip(&post.freq)
-            .any(|(a, b)| (a - b).abs() > 1e-9)
-        || pre
-            .freq
-            .iter()
-            .zip(&target.freq)
-            .any(|(a, b)| (a - b).abs() > 1e-9)
-    {
+    if !same_frequency_grid(pre, post) || !same_frequency_grid(pre, target) {
         return Err(format!(
             "{label} seat {seat_index} requires explicitly aligned frequency grids"
         ));
@@ -401,6 +396,121 @@ const RESIDUAL_REGRESSION_RELATIVE: f64 = 0.05;
 // Keep the configured boost/headroom policy strict beyond this implementation
 // margin while avoiding safety reverts for sub-decibel realization overlap.
 const BOOST_HEADROOM_TOLERANCE_DB: f64 = 0.5;
+
+/// Agreement between the boost limit and the two boost quantities.
+///
+/// Realized acoustic boost has the same ceiling in every processing mode.
+/// Electrical gain remains an independent drive check; bounded electrical
+/// gain cannot waive an acoustic excess near a baseline null.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BoostLimitAgreement {
+    /// Both quantities are within the ceiling.
+    WithinLimit,
+    /// The electrical bound exceeds the ceiling: a real gain violation.
+    ElectricalViolation {
+        acoustic_db: f64,
+        electrical_db: f64,
+        ceiling_db: f64,
+    },
+    /// Acoustic boost exceeds the ceiling despite bounded electrical gain.
+    AcousticViolation {
+        acoustic_db: f64,
+        electrical_db: f64,
+        ceiling_db: f64,
+    },
+    /// The acoustic ratio exceeds the ceiling with no electrical bound to
+    /// clear it (curve-only or unevaluable graph): fail-closed violation.
+    UnevaluableViolation { acoustic_db: f64, ceiling_db: f64 },
+}
+
+/// Apply the boost backstop assessment to a report.
+///
+/// Shared by the safety-gate enforcement and the final replay
+/// re-enforcement so both boundaries apply identical semantics.
+/// Returns a failure message when either quantity exceeds the ceiling.
+pub fn apply_boost_limit_agreement(
+    report: &mut CorrectionAcceptanceReport,
+    acoustic_boost_db: f64,
+    electrical_boost_db: Option<f64>,
+    policy: &RuntimeAcceptancePolicy,
+) -> Option<String> {
+    match assess_boost_limit_agreement(
+        acoustic_boost_db,
+        electrical_boost_db,
+        policy.max_boost_db + BOOST_HEADROOM_TOLERANCE_DB,
+    ) {
+        BoostLimitAgreement::WithinLimit => None,
+        BoostLimitAgreement::ElectricalViolation {
+            electrical_db,
+            ceiling_db,
+            ..
+        } => {
+            report
+                .violations
+                .push("max_boost_limit_exceeded".to_string());
+            Some(format!(
+                "electrical filter boost {electrical_db:.3} dB exceeds {ceiling_db:.3} dB backstop"
+            ))
+        }
+        BoostLimitAgreement::UnevaluableViolation {
+            acoustic_db,
+            ceiling_db,
+        } => {
+            report
+                .violations
+                .push("max_boost_limit_exceeded".to_string());
+            Some(format!(
+                "acoustic boost {acoustic_db:.3} dB exceeds {ceiling_db:.3} dB backstop with unevaluable electrical gain"
+            ))
+        }
+        BoostLimitAgreement::AcousticViolation {
+            acoustic_db,
+            electrical_db,
+            ceiling_db,
+        } => {
+            report
+                .violations
+                .push("max_boost_limit_exceeded".to_string());
+            Some(format!(
+                "acoustic boost {acoustic_db:.3} dB exceeds {ceiling_db:.3} dB backstop by {:.3} dB; electrical boost {electrical_db:.3} dB",
+                acoustic_db - ceiling_db
+            ))
+        }
+    }
+}
+
+/// Assess the boost backstop against electrical and acoustic evidence.
+///
+/// Pure function shared by the safety-gate enforcement and the final
+/// replay re-enforcement so both boundaries apply identical semantics.
+/// `ceiling_db` already includes the implementation tolerance.
+pub fn assess_boost_limit_agreement(
+    acoustic_boost_db: f64,
+    electrical_boost_db: Option<f64>,
+    ceiling_db: f64,
+) -> BoostLimitAgreement {
+    match electrical_boost_db {
+        Some(electrical_db) if electrical_db > ceiling_db => {
+            BoostLimitAgreement::ElectricalViolation {
+                acoustic_db: acoustic_boost_db,
+                electrical_db,
+                ceiling_db,
+            }
+        }
+        Some(electrical_db) if acoustic_boost_db > ceiling_db => {
+            BoostLimitAgreement::AcousticViolation {
+                acoustic_db: acoustic_boost_db,
+                electrical_db,
+                ceiling_db,
+            }
+        }
+        None if acoustic_boost_db > ceiling_db => BoostLimitAgreement::UnevaluableViolation {
+            acoustic_db: acoustic_boost_db,
+            ceiling_db,
+        },
+        _ => BoostLimitAgreement::WithinLimit,
+    }
+}
 
 /// Apply the production acceptance policy to evidence derived from the final
 /// canonical DSP graph. This is deliberately separate from the curve-only
@@ -457,7 +567,19 @@ pub fn enforce_runtime_acceptance_evidence(
     if worst_position_improvement < -policy.max_worst_position_regression_db {
         violations.push("worst_position_regressed".to_string());
     }
-    if acoustic_quality.max_boost_db > policy.max_boost_db + BOOST_HEADROOM_TOLERANCE_DB {
+    // The same ceiling applies to the realized acoustic ratio and the
+    // electrical filter-gain bound. Improved interference near a baseline
+    // null does not exempt an acoustic excess from this safety veto.
+    // The applier pushes its own violation string; mirror it here since
+    // this function's violation list is extended below.
+    if apply_boost_limit_agreement(
+        report,
+        acoustic_quality.max_boost_db,
+        acoustic_quality.max_electrical_boost_db,
+        &policy,
+    )
+    .is_some()
+    {
         violations.push("max_boost_limit_exceeded".to_string());
     }
     if acoustic_quality
@@ -474,12 +596,23 @@ pub fn enforce_runtime_acceptance_evidence(
     {
         violations.push("latency_limit_exceeded".to_string());
     }
-    match acoustic_quality.temporal.pre_ringing_energy_db {
-        Some(value) if value > policy.max_pre_ringing_energy_db => {
+    match acoustic_quality.temporal.pre_ringing_audible_db {
+        Some(value) if value > policy.max_pre_ringing_audible_db => {
             violations.push("pre_ringing_limit_exceeded".to_string());
         }
         None => violations.push("pre_ringing_evidence_missing".to_string()),
         _ => {}
+    }
+    if matches!(
+        policy.output_class,
+        RuntimeOutputClass::Fir | RuntimeOutputClass::Hybrid
+    ) {
+        if !acoustic_quality.temporal.temporal_evidence_available {
+            violations.push("temporal_evidence_missing".to_string());
+        }
+        if !acoustic_quality.temporal.phase_evidence_available {
+            violations.push("phase_evidence_missing".to_string());
+        }
     }
     if acoustic_quality
         .induced_group_delay_rms_ms
@@ -507,12 +640,15 @@ pub fn enforce_runtime_acceptance_evidence(
     report.violations.extend(violations);
     report.violations.sort();
     report.violations.dedup();
+    report.observations.sort();
+    report.observations.dedup();
     if runtime_violated {
         report.accepted = false;
         if report.decision == CorrectionDecision::Accepted {
             report.decision = CorrectionDecision::IdentityFallback;
         }
     }
+    report.refresh_outcome();
     Ok(())
 }
 
@@ -520,19 +656,7 @@ fn validate_shared_grid(pre: &Curve, post: &Curve, target: &Curve) -> Result<(),
     for (name, curve) in [("pre", pre), ("post", post), ("target", target)] {
         curve.validate(name).map_err(|error| error.to_string())?;
     }
-    if pre.freq.len() != post.freq.len()
-        || pre.freq.len() != target.freq.len()
-        || pre
-            .freq
-            .iter()
-            .zip(&post.freq)
-            .any(|(a, b)| (a - b).abs() > 1e-9)
-        || pre
-            .freq
-            .iter()
-            .zip(&target.freq)
-            .any(|(a, b)| (a - b).abs() > 1e-9)
-    {
+    if !same_frequency_grid(pre, post) || !same_frequency_grid(pre, target) {
         return Err(
             "correction acceptance requires explicitly aligned frequency grids".to_string(),
         );
@@ -540,12 +664,176 @@ fn validate_shared_grid(pre: &Curve, post: &Curve, target: &Curve) -> Result<(),
     Ok(())
 }
 
-fn rms(values: &[f64]) -> f64 {
-    (values.iter().map(|value| value * value).sum::<f64>() / values.len().max(1) as f64).sqrt()
-}
-
 fn runtime_epsilon(pre_rms: f64) -> f64 {
     (pre_rms.abs() * 1e-4).max(1e-6)
+}
+
+fn finite_gate_extreme(mut values: impl Iterator<Item = f64>, maximum: bool) -> Option<f64> {
+    let initial = if maximum {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+    values
+        .try_fold(initial, |extreme, value| {
+            value.is_finite().then(|| {
+                if maximum {
+                    extreme.max(value)
+                } else {
+                    extreme.min(value)
+                }
+            })
+        })
+        .filter(|value| value.is_finite())
+}
+
+/// Describe recorded runtime failures with their actual numeric boundaries.
+///
+/// This does not reassess or change acceptance. Missing or nonnumeric evidence
+/// retains an absent observed value and margin; it never becomes a zero margin.
+/// Positive signed margins exceed the boundary. Residual limits retain their
+/// existing prerequisite that the residual distribution also regressed.
+pub fn runtime_acceptance_failure_checks(
+    report: &CorrectionAcceptanceReport,
+) -> Vec<roomeq_model::StageCheck> {
+    let quality = report.acoustic_quality.as_ref();
+    let policy = report.runtime_policy.as_ref();
+    let partitions = || {
+        quality
+            .into_iter()
+            .flat_map(|quality| std::iter::once(&quality.training).chain(quality.held_out.as_ref()))
+    };
+    report
+        .violations
+        .iter()
+        .map(|violation| {
+            let (observed, limit, minimum, unit) = match violation.as_str() {
+                "target_weighted_rms_regressed" => (
+                    Some(
+                        quality.map_or(report.metrics.post_target_weighted_rms_db, |quality| {
+                            quality.training.post_weighted_rms_median_db
+                        }),
+                    ),
+                    Some({
+                        let pre = quality
+                            .map_or(report.metrics.pre_target_weighted_rms_db, |quality| {
+                                quality.training.pre_weighted_rms_median_db
+                            });
+                        pre + runtime_epsilon(pre)
+                    }),
+                    false,
+                    "dB",
+                ),
+                "worst_position_regressed" => (
+                    finite_gate_extreme(
+                        partitions()
+                            .map(|part| part.worst_position_improvement_db)
+                            .chain(
+                                quality
+                                    .into_iter()
+                                    .flat_map(|quality| quality.final_seats.iter())
+                                    .map(|seat| seat.improvement_lower_bound_db),
+                            ),
+                        false,
+                    ),
+                    policy.map(|policy| -policy.max_worst_position_regression_db),
+                    true,
+                    "dB",
+                ),
+                "post_p95_residual_limit_exceeded" => (
+                    finite_gate_extreme(
+                        partitions().map(|part| part.post_p95_abs_residual_db),
+                        true,
+                    ),
+                    policy.map(|policy| policy.max_post_p95_abs_residual_db),
+                    false,
+                    "dB",
+                ),
+                "post_worst_residual_limit_exceeded" => (
+                    finite_gate_extreme(
+                        partitions().map(|part| part.post_worst_abs_residual_db),
+                        true,
+                    ),
+                    policy.map(|policy| policy.max_post_worst_abs_residual_db),
+                    false,
+                    "dB",
+                ),
+                "max_boost_limit_exceeded" => (
+                    quality.and_then(|quality| {
+                        finite_gate_extreme(
+                            std::iter::once(quality.max_boost_db)
+                                .chain(quality.max_electrical_boost_db),
+                            true,
+                        )
+                    }),
+                    policy.map(|policy| policy.max_boost_db + BOOST_HEADROOM_TOLERANCE_DB),
+                    false,
+                    "dB",
+                ),
+                "headroom_limit_exceeded" => (
+                    quality.and_then(|quality| quality.temporal.available_headroom_db),
+                    policy.map(|policy| {
+                        policy.min_available_headroom_db - BOOST_HEADROOM_TOLERANCE_DB
+                    }),
+                    true,
+                    "dB",
+                ),
+                "latency_limit_exceeded" => (
+                    quality.and_then(|quality| quality.temporal.latency_ms),
+                    policy.map(|policy| policy.max_latency_ms),
+                    false,
+                    "ms",
+                ),
+                "pre_ringing_limit_exceeded" | "pre_ringing_evidence_missing" => (
+                    quality.and_then(|quality| quality.temporal.pre_ringing_audible_db),
+                    policy.map(|policy| policy.max_pre_ringing_audible_db),
+                    false,
+                    "dB",
+                ),
+                "induced_group_delay_limit_exceeded" => (
+                    quality.and_then(|quality| quality.induced_group_delay_rms_ms),
+                    policy.map(|policy| policy.max_induced_group_delay_rms_ms),
+                    false,
+                    "ms",
+                ),
+                "realization_error_limit_exceeded" => (
+                    report
+                        .realization_quality
+                        .as_ref()
+                        .and_then(|quality| quality.max_abs_error_db),
+                    policy.map(|policy| policy.max_realization_error_db),
+                    false,
+                    "dB",
+                ),
+                _ => (None, None, false, "not_numeric"),
+            };
+            let observed = observed.filter(|value| value.is_finite());
+            let limit = limit.filter(|value| value.is_finite());
+            let margin = observed.zip(limit).map(|(observed, limit)| {
+                if minimum {
+                    limit - observed
+                } else {
+                    observed - limit
+                }
+            });
+            roomeq_model::StageCheck {
+                id: violation.clone(),
+                kind: roomeq_model::StageCheckKind::Safety,
+                passed: false,
+                observed,
+                limit,
+                diagnostic: Some(serde_json::json!({
+                    "scope": "recorded runtime acceptance failure; current report evidence",
+                    "comparison": if minimum { "at_least" } else { "at_most" },
+                    "unit": unit,
+                    "signed_violation_margin": margin.filter(|value| value.is_finite()),
+                    "numeric_evidence_available": observed.is_some() && limit.is_some(),
+                    "residual_distribution_regression_required": matches!(violation.as_str(),
+                        "post_p95_residual_limit_exceeded" | "post_worst_residual_limit_exceeded"),
+                }).to_string()),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -873,6 +1161,8 @@ mod tests {
 
     fn runtime_scorecard() -> super::super::AcousticQualityScorecard {
         let partition = super::super::QualityPartitionMetrics {
+            configured_baseline: None,
+            frozen_grid_residual: Vec::new(),
             curve_count: 2,
             pre_weighted_rms_median_db: 4.0,
             post_weighted_rms_median_db: 2.0,
@@ -897,17 +1187,150 @@ mod tests {
             held_out: None,
             correction_rms_db: 2.0,
             max_boost_db: 4.0,
+            max_electrical_boost_db: Some(3.5),
             max_cut_db: -6.0,
             induced_group_delay_rms_ms: Some(1.0),
             temporal: super::super::TemporalQualityEvidence {
-                pre_ringing_energy_db: Some(-40.0),
+                pre_ringing_audible_db: Some(-40.0),
                 latency_ms: Some(5.0),
                 available_headroom_db: Some(-4.0),
+                phase_evidence_available: true,
+                temporal_evidence_available: true,
+                coherent_timing: super::super::CoherentTimingEvidence::Unassessed,
+                alignment_delay_ms: None,
+                total_latency_ms: None,
             },
+            correction_band_hz: None,
             evaluated_band_hz: [20.0, 20_000.0],
-            measurement_overlap_hz: [20.0, 20_000.0],
+            measurement_overlap_hz: Some([20.0, 20_000.0]),
             finite: true,
         }
+    }
+
+    #[test]
+    fn runtime_failure_checks_preserve_small_margins_and_missing_evidence() {
+        for class in [
+            RuntimeOutputClass::LowLatencyIir,
+            RuntimeOutputClass::Fir,
+            RuntimeOutputClass::Hybrid,
+        ] {
+            let pre = curve(&[4.0, -4.0, 3.0, -3.0]);
+            let mut report = evaluate_correction_acceptance(
+                &pre,
+                &pre,
+                &curve(&[0.0; 4]),
+                None,
+                CorrectionAcceptancePolicy::RuntimeSafety,
+            )
+            .unwrap();
+            let mut policy = RuntimeAcceptancePolicy::for_output_class(class);
+            policy.max_boost_db = 12.0;
+            policy.max_worst_position_regression_db = 0.25;
+            let mut scorecard = runtime_scorecard();
+            scorecard.training.worst_position_improvement_db = -0.266;
+            scorecard.max_boost_db = 13.2;
+            scorecard.max_electrical_boost_db = Some(0.0);
+            scorecard.temporal.pre_ringing_audible_db = None;
+            enforce_runtime_acceptance_evidence(
+                &mut report,
+                scorecard,
+                RealizationQualityEvidence {
+                    evaluated_channels: 2,
+                    max_abs_error_db: Some(0.0),
+                    failed_channels: Vec::new(),
+                },
+                policy,
+            )
+            .unwrap();
+            let before = serde_json::to_value(&report).unwrap();
+            let checks = runtime_acceptance_failure_checks(&report);
+            assert_eq!(serde_json::to_value(&report).unwrap(), before);
+            let margin = |id: &str| {
+                let check = checks.iter().find(|check| check.id == id).unwrap();
+                assert!(!check.passed);
+                let details: serde_json::Value =
+                    serde_json::from_str(check.diagnostic.as_ref().unwrap()).unwrap();
+                (check.observed, check.limit, details)
+            };
+            let (observed, limit, details) = margin("worst_position_regressed");
+            assert_eq!(observed, Some(-0.266));
+            assert_eq!(limit, Some(-0.25));
+            assert!((details["signed_violation_margin"].as_f64().unwrap() - 0.016).abs() < 1e-12);
+            let (_, limit, details) = margin("max_boost_limit_exceeded");
+            assert_eq!(limit, Some(12.5));
+            assert!((details["signed_violation_margin"].as_f64().unwrap() - 0.7).abs() < 1e-12);
+            let (observed, limit, details) = margin("pre_ringing_evidence_missing");
+            assert_eq!(observed, None);
+            assert!(limit.is_some());
+            assert!(details["signed_violation_margin"].is_null());
+            assert_eq!(details["numeric_evidence_available"], false);
+        }
+    }
+
+    #[test]
+    fn runtime_failure_checks_do_not_invent_a_residual_limit_failure() {
+        let pre = curve(&[4.0, -4.0, 3.0, -3.0]);
+        let mut report = evaluate_correction_acceptance(
+            &pre,
+            &pre,
+            &curve(&[0.0; 4]),
+            None,
+            CorrectionAcceptancePolicy::RuntimeSafety,
+        )
+        .unwrap();
+        let mut scorecard = runtime_scorecard();
+        scorecard.training.pre_p95_abs_residual_db = 30.0;
+        scorecard.training.post_p95_abs_residual_db = 29.0;
+        scorecard.training.post_worst_abs_residual_db = 40.0;
+        enforce_runtime_acceptance_evidence(
+            &mut report,
+            scorecard,
+            RealizationQualityEvidence {
+                evaluated_channels: 2,
+                max_abs_error_db: Some(0.0),
+                failed_channels: Vec::new(),
+            },
+            RuntimeAcceptancePolicy::for_output_class(RuntimeOutputClass::LowLatencyIir),
+        )
+        .unwrap();
+        assert!(
+            runtime_acceptance_failure_checks(&report)
+                .iter()
+                .all(|check| {
+                    !matches!(
+                        check.id.as_str(),
+                        "post_p95_residual_limit_exceeded" | "post_worst_residual_limit_exceeded"
+                    )
+                })
+        );
+        report.violations.push("unknown_evidence_gap".into());
+        let checks = runtime_acceptance_failure_checks(&report);
+        let gap = checks
+            .iter()
+            .find(|check| check.id == "unknown_evidence_gap")
+            .unwrap();
+        assert_eq!(gap.observed, None);
+        assert_eq!(gap.limit, None);
+        report.violations.push("worst_position_regressed".into());
+        report
+            .acoustic_quality
+            .as_mut()
+            .unwrap()
+            .training
+            .worst_position_improvement_db = f64::NAN;
+        report.acoustic_quality.as_mut().unwrap().held_out = Some(runtime_scorecard().training);
+        let checks = runtime_acceptance_failure_checks(&report);
+        let nonfinite = checks
+            .iter()
+            .find(|check| check.id == "worst_position_regressed")
+            .unwrap();
+        assert_eq!(
+            nonfinite.observed, None,
+            "finite seats cannot mask missing numeric evidence"
+        );
+        let details: serde_json::Value =
+            serde_json::from_str(nonfinite.diagnostic.as_ref().unwrap()).unwrap();
+        assert!(details["signed_violation_margin"].is_null());
     }
 
     #[test]
@@ -1042,11 +1465,20 @@ mod tests {
         scorecard.training.post_worst_abs_residual_db = 30.0;
         scorecard.training.worst_position_improvement_db = -2.0;
         scorecard.max_boost_db = 20.0;
+        // The gain backstop checks the electrical bound: an acoustic-only
+        // excess is an explained observation, so drive the violation arm
+        // with a hot electrical bound.
+        scorecard.max_electrical_boost_db = Some(20.0);
         scorecard.induced_group_delay_rms_ms = Some(50.0);
         scorecard.temporal = super::super::TemporalQualityEvidence {
-            pre_ringing_energy_db: Some(-5.0),
+            pre_ringing_audible_db: Some(-5.0),
             latency_ms: Some(500.0),
             available_headroom_db: Some(-20.0),
+            phase_evidence_available: true,
+            temporal_evidence_available: true,
+            coherent_timing: super::super::CoherentTimingEvidence::Unassessed,
+            alignment_delay_ms: None,
+            total_latency_ms: None,
         };
         let realization = RealizationQualityEvidence {
             evaluated_channels: 1,
@@ -1084,6 +1516,140 @@ mod tests {
     }
 
     #[test]
+    fn boost_backstop_checks_acoustic_and_electrical_gain() {
+        // Electrical excess violates even when the acoustic ratio is small.
+        assert!(matches!(
+            super::assess_boost_limit_agreement(4.0, Some(20.0), 12.5),
+            super::BoostLimitAgreement::ElectricalViolation { .. }
+        ));
+        // Bounded electrical gain cannot waive realized acoustic excess.
+        assert!(matches!(
+            super::assess_boost_limit_agreement(23.85, Some(10.51), 12.5),
+            super::BoostLimitAgreement::AcousticViolation { .. }
+        ));
+        // Unevaluable electrical gain fails closed.
+        assert!(matches!(
+            super::assess_boost_limit_agreement(23.85, None, 12.5),
+            super::BoostLimitAgreement::UnevaluableViolation { .. }
+        ));
+        // Both within the ceiling passes quietly.
+        assert_eq!(
+            super::assess_boost_limit_agreement(4.0, Some(3.5), 12.5),
+            super::BoostLimitAgreement::WithinLimit
+        );
+    }
+
+    #[test]
+    fn acoustic_backstop_is_identical_for_all_output_classes() {
+        for class in [
+            RuntimeOutputClass::LowLatencyIir,
+            RuntimeOutputClass::Fir,
+            RuntimeOutputClass::Hybrid,
+        ] {
+            let policy = RuntimeAcceptancePolicy::for_output_class(class);
+            for electrical in [None, Some(0.0), Some(10.51)] {
+                let target = curve(&[0.0; 4]);
+                let mut report = evaluate_correction_acceptance(
+                    &target,
+                    &target,
+                    &target,
+                    None,
+                    CorrectionAcceptancePolicy::RuntimeSafety,
+                )
+                .unwrap();
+                let failure =
+                    super::apply_boost_limit_agreement(&mut report, 23.96, electrical, &policy);
+                assert!(
+                    failure.is_some(),
+                    "class={class:?}, electrical={electrical:?}"
+                );
+                assert!(
+                    report
+                        .violations
+                        .iter()
+                        .any(|v| v == "max_boost_limit_exceeded")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn acoustic_excess_is_rejected_despite_bounded_electrical_gain() {
+        let target = curve(&[0.0; 4]);
+        let pre = curve(&[4.0, -4.0, 3.0, -3.0]);
+        let post = curve(&[1.0, -1.0, 0.5, -0.5]);
+        let mut report = evaluate_correction_acceptance(
+            &pre,
+            &post,
+            &target,
+            None,
+            CorrectionAcceptancePolicy::RuntimeSafety,
+        )
+        .unwrap();
+        let mut scorecard = runtime_scorecard();
+        scorecard.max_boost_db = 23.85;
+        scorecard.max_electrical_boost_db = Some(10.51);
+        enforce_runtime_acceptance_evidence(
+            &mut report,
+            scorecard,
+            RealizationQualityEvidence {
+                evaluated_channels: 2,
+                max_abs_error_db: Some(0.01),
+                failed_channels: Vec::new(),
+            },
+            RuntimeAcceptancePolicy::for_output_class(RuntimeOutputClass::LowLatencyIir),
+        )
+        .unwrap();
+        assert!(!report.accepted);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|violation| violation == "max_boost_limit_exceeded"),
+            "acoustic-only excess must violate: {:?}",
+            report.violations
+        );
+    }
+
+    #[test]
+    fn unevaluable_electrical_gain_fails_closed_on_acoustic_excess() {
+        let target = curve(&[0.0; 4]);
+        let pre = curve(&[4.0, -4.0, 3.0, -3.0]);
+        let post = curve(&[1.0, -1.0, 0.5, -0.5]);
+        let mut report = evaluate_correction_acceptance(
+            &pre,
+            &post,
+            &target,
+            None,
+            CorrectionAcceptancePolicy::RuntimeSafety,
+        )
+        .unwrap();
+        let mut scorecard = runtime_scorecard();
+        scorecard.max_boost_db = 23.85;
+        scorecard.max_electrical_boost_db = None;
+        enforce_runtime_acceptance_evidence(
+            &mut report,
+            scorecard,
+            RealizationQualityEvidence {
+                evaluated_channels: 2,
+                max_abs_error_db: Some(0.01),
+                failed_channels: Vec::new(),
+            },
+            RuntimeAcceptancePolicy::for_output_class(RuntimeOutputClass::LowLatencyIir),
+        )
+        .unwrap();
+        assert!(!report.accepted);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|violation| violation == "max_boost_limit_exceeded"),
+            "unevaluable gain must fail closed: {:?}",
+            report.violations
+        );
+    }
+
+    #[test]
     fn runtime_policy_rejects_missing_pre_ringing_evidence() {
         let mut report = evaluate_correction_acceptance(
             &curve(&[0.0; 4]),
@@ -1094,7 +1660,7 @@ mod tests {
         )
         .unwrap();
         let mut scorecard = runtime_scorecard();
-        scorecard.temporal.pre_ringing_energy_db = None;
+        scorecard.temporal.pre_ringing_audible_db = None;
         enforce_runtime_acceptance_evidence(
             &mut report,
             scorecard,

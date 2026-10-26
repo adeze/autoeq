@@ -159,8 +159,10 @@ mod tests {
             crossovers: None,
             provenance: Default::default(),
             recording_config: None,
+            reporting: None,
             cea2034_cache: None,
             ctc: None,
+            measured_impulse_responses: Default::default(),
         }
     }
 
@@ -303,10 +305,18 @@ mod tests {
             validation_bundle: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: config.report_t60_tolerance_s(),
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         };
 
         process_supporting_source_channels_with_frequency_samples(
@@ -370,10 +380,18 @@ mod tests {
             validation_bundle: None,
             supporting_source: None,
             correction_acceptance: None,
+            audibility_veto: None,
+            veto_adjudication: None,
             optimizer_evidence: None,
             stage_outcomes: Vec::new(),
             qa_seed_distribution: None,
             effective_config: None,
+            t60_flatness_tolerance_s: config.report_t60_tolerance_s(),
+            operation_gates: None,
+
+            provisional_decisions: Vec::new(),
+            epa_provenance: None,
+            playback_summary: None,
         };
 
         process_supporting_source_channels_with_frequency_samples(

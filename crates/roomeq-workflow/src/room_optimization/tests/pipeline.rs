@@ -31,7 +31,9 @@ fn room_config_with_optimizer(
         optimizer,
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }
@@ -66,7 +68,7 @@ fn prepare_room_optimization_with_system_and_bass_management_succeeds() {
     );
     let system = SystemConfig {
         model: SystemModel::HomeCinema,
-        speakers: HashMap::from([("Left".to_string(), "left".to_string())]),
+        speakers: HashMap::from([("L".to_string(), "left".to_string())]),
         subwoofers: None,
         bass_management: Some(BassManagementConfig {
             enabled: true,
@@ -207,12 +209,17 @@ fn stereo_2_1_config() -> RoomConfig {
             speakers: HashMap::from([
                 ("L".to_string(), "left".to_string()),
                 ("R".to_string(), "right".to_string()),
-                ("Sub".to_string(), "sub".to_string()),
             ]),
             subwoofers: Some(SubwooferSystemConfig {
                 config: SubwooferStrategy::Single,
-                crossover: Some("xo".to_string().into()),
-                mapping: [("sub".to_string(), "L".to_string())].into(),
+                crossover: Some(roomeq_model::SubwooferCrossoverRef::PerSub(vec![
+                    "xo".to_string(),
+                ])),
+                routing: Default::default(),
+                outputs: vec![roomeq_model::SubwooferOutput {
+                    id: "sub".to_string(),
+                    speaker: "sub".to_string(),
+                }],
             }),
             bass_management: None,
             ..Default::default()
@@ -223,7 +230,9 @@ fn stereo_2_1_config() -> RoomConfig {
         optimizer: tiny_optimizer(),
         provenance: Default::default(),
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
     }
 }
@@ -304,8 +313,8 @@ fn assemble_workflow_result_empty_channels_succeeds() {
     let system = SystemConfig {
         model: SystemModel::Stereo,
         speakers: HashMap::from([
-            ("Left".to_string(), "left".to_string()),
-            ("Right".to_string(), "right".to_string()),
+            ("L".to_string(), "left".to_string()),
+            ("R".to_string(), "right".to_string()),
         ]),
         subwoofers: None,
         bass_management: None,
@@ -314,6 +323,7 @@ fn assemble_workflow_result_empty_channels_succeeds() {
     let config = room_config_with_optimizer(speakers, Some(system), tiny_optimizer());
     let sys = config.system.as_ref().unwrap();
     let result = RoomOptimizationResult {
+        finalized_decisions: None,
         channels: HashMap::new(),
         channel_results: HashMap::new(),
         deployed_source_curves: HashMap::new(),
@@ -351,6 +361,7 @@ fn assemble_generic_result_non_empty_success() {
     channel_chains.insert(
         "left".to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: "left".to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -362,12 +373,21 @@ fn assemble_generic_result_non_empty_success() {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let mut channel_results = HashMap::new();
     channel_results.insert(
         "left".to_string(),
         ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: "left".to_string(),
             pre_score: 0.5,
             post_score: 0.9,
@@ -376,6 +396,8 @@ fn assemble_generic_result_non_empty_success() {
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         },
     );
     let mut curves = HashMap::new();
@@ -384,6 +406,7 @@ fn assemble_generic_result_non_empty_success() {
     channel_means.insert("left".to_string(), 80.0);
 
     let generic = GenericChannelCollection {
+        provisional_decisions: Vec::new(),
         channel_chains,
         channel_results,
         pre_scores: vec![0.5],

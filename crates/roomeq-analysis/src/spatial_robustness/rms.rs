@@ -49,6 +49,7 @@ pub fn try_rms_average_weighted(
         freq: curves[0].freq.clone(),
         spl: avg_spl,
         phase: None,
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(curves),
         ..Default::default()
     })
 }

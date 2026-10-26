@@ -1,0 +1,13 @@
+{
+  "version": "3.0.0",
+  "speakers": {
+    "L": {
+      "path": "L.csv",
+      "name": "L"
+    },
+    "R": {
+      "path": "R.csv",
+      "name": "R"
+    }
+  }
+}

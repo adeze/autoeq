@@ -19,13 +19,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
+pub mod acceptance_views;
 mod channel;
 mod collect;
-mod delay;
 mod conformance;
+mod delay;
 mod export_format;
 mod extract;
 mod hash;
+pub mod identity;
 mod misc;
 mod package;
 mod pipewire;
@@ -36,17 +38,31 @@ mod tests;
 mod types;
 mod write;
 
-pub use export_format::*;
-pub use package::*;
 pub use delay::CamillaDspDelayRealization;
+pub use export_format::*;
+pub use identity::{
+    BoundConvolution, DspIdentity, ExportReadiness, canonical_dsp_identity, export_readiness,
+    package_fingerprint,
+};
+pub use package::*;
 
 /// Backend-specific added latency and validity, derived from the same stage
 /// plan used to render the artifact. Canonical acoustic timing is not mutated.
-pub fn camilladsp_delay_realization(graph: &DspGraph, sample_rate: f64) -> anyhow::Result<CamillaDspDelayRealization> {
+pub fn camilladsp_delay_realization(
+    graph: &DspGraph,
+    sample_rate: f64,
+) -> anyhow::Result<CamillaDspDelayRealization> {
     graph.validate().map_err(anyhow::Error::msg)?;
     ensure_external_export_supported(graph, ExportFormat::CamillaDsp)?;
     validate_camilladsp_input(graph, Some(sample_rate))?;
-    Ok(delay::report(graph, sample_rate))
+    if let Some(routing) =
+        camilladsp_routing_graph(graph).filter(|routing| !routing.routes.is_empty())
+    {
+        let resolved = camilladsp_physical_routing(graph, &routing)?;
+        Ok(delay::report_routed(&resolved, sample_rate))
+    } else {
+        Ok(delay::report(graph, sample_rate))
+    }
 }
 
 use channel::channel_short_name;
@@ -55,6 +71,7 @@ use channel::sorted_channels;
 use collect::collect_all_plugins;
 use conformance::ExportArtifactManifest;
 use conformance::ExportNodeKind;
+use conformance::camilladsp_physical_routing;
 use conformance::normalize_export_identifier;
 use conformance::validate_camilladsp_input;
 use conformance::{routed_channel_names, validate_pipewire_input, validate_serial_external_input};
@@ -108,6 +125,23 @@ pub fn build_export_package(
     occupied_names: &BTreeSet<String>,
     reusable_names: &HashMap<String, String>,
 ) -> anyhow::Result<ExportPackage> {
+    package::validate_source_ledger(graph)?;
+    if let Some(evidence) = graph
+        .correction_decisions
+        .as_ref()
+        .and_then(|ledger| ledger.acceptance_evidence.as_ref())
+    {
+        anyhow::ensure!(
+            sample_rate.is_finite()
+                && sample_rate > 0.0
+                && evidence
+                    .payload
+                    .get("sample_rate_hz")
+                    .and_then(serde_json::Value::as_f64)
+                    == Some(sample_rate),
+            "export sample rate differs from acceptance diagnostics; regenerate the workflow at the requested rate"
+        );
+    }
     package::validate_final_convolution_identity(graph, resources)?;
     graph.validate().map_err(anyhow::Error::msg)?;
     let mut members = Vec::new();
@@ -123,6 +157,13 @@ pub fn build_export_package(
         )?);
         if let Some((_, bytes)) = archive {
             members.push(ExportPackageMember::new("room_eq_convolution.zip", bytes)?);
+        }
+        if let Some(views) = acceptance_views::acceptance_views_member(graph, &members[0])? {
+            anyhow::ensure!(
+                !occupied_names.contains(&views.relative_path.to_string_lossy().to_string()),
+                "acceptance view sidecar destination is already occupied"
+            );
+            members.push(views);
         }
         return ExportPackage::new(members);
     }
@@ -144,6 +185,16 @@ pub fn build_export_package(
         main_file_name,
         content.into_bytes(),
     )?);
+    if let Some(views) = acceptance_views::acceptance_views_member(
+        &export_graph,
+        members.last().expect("main artifact"),
+    )? {
+        anyhow::ensure!(
+            !occupied_names.contains(&views.relative_path.to_string_lossy().to_string()),
+            "acceptance view sidecar destination is already occupied"
+        );
+        members.push(views);
+    }
     ExportPackage::new(members)
 }
 
@@ -154,7 +205,9 @@ fn export_format_preserves_convolution_paths(format: ExportFormat) -> bool {
     )
 }
 
-/// Export a single serial channel as a REW Generic EQ filter-settings file.
+/// Render single-channel REW Generic EQ reference text for manual entry.
+///
+/// REW saves and reloads filters as `.req` files; it cannot reload this text.
 fn export_rew(output: &DspGraph) -> anyhow::Result<String> {
     validate_serial_external_input(output, ExportFormat::Rew)?;
     let channels = sorted_channels(output);
@@ -293,13 +346,27 @@ fn export_camilladsp(output: &DspGraph, sample_rate: f64) -> anyhow::Result<Stri
     let mut channel_filter_names = Vec::with_capacity(channels.len());
     let delay_report = delay::report(output, sample_rate);
     let padding = delay_report.serial_padding_samples;
-    writeln!(out, "# roomeq_delay_realization: {}", serde_json::to_string(&delay_report)?)?;
+    writeln!(
+        out,
+        "# roomeq_delay_realization: {}",
+        serde_json::to_string(&delay_report)?
+    )?;
     writeln!(out, "# roomeq_common_delay_padding_samples: {padding}")?;
-    writeln!(out, "# roomeq_delay_usable_band_hz: 0..{}", delay_report.usable_band_upper_hz)?;
+    writeln!(
+        out,
+        "# roomeq_delay_usable_band_hz: 0..{}",
+        delay_report.usable_band_upper_hz
+    )?;
     for (ch_name, chain) in &channels {
         let prefix = normalize_export_identifier(ch_name);
-        let filter_names =
-            delay::write_stage(&mut out, &mut manifest, &prefix, &chain.plugins, sample_rate, padding)?;
+        let filter_names = delay::write_stage(
+            &mut out,
+            &mut manifest,
+            &prefix,
+            &chain.plugins,
+            sample_rate,
+            padding,
+        )?;
         channel_filter_names.push(filter_names);
     }
     writeln!(out)?;
@@ -331,6 +398,8 @@ fn export_camilladsp_routed(
     graph: &BassManagementRoutingGraph,
     sample_rate: f64,
 ) -> anyhow::Result<String> {
+    let resolved = camilladsp_physical_routing(output, graph)?;
+    let graph = &resolved.graph;
     let mut out = String::new();
     let mut manifest = ExportArtifactManifest::new(ExportFormat::CamillaDsp);
     writeln!(out, "# CamillaDSP configuration")?;
@@ -339,13 +408,25 @@ fn export_camilladsp_routed(
     writeln!(out)?;
 
     let (input_channels, output_channels) = routed_channel_names(output, graph);
-    let delay_report = delay::report(output, sample_rate);
+    let delay_report = delay::report_routed(&resolved, sample_rate);
     let pre_padding = delay_report.pre_route_padding_samples;
     let post_padding = delay_report.post_route_padding_samples;
     let route_padding = delay_report.route_padding_samples;
-    writeln!(out, "# roomeq_delay_realization: {}", serde_json::to_string(&delay_report)?)?;
-    writeln!(out, "# roomeq_common_delay_padding_samples: {}", pre_padding + route_padding + post_padding)?;
-    writeln!(out, "# roomeq_delay_usable_band_hz: 0..{}", delay_report.usable_band_upper_hz)?;
+    writeln!(
+        out,
+        "# roomeq_delay_realization: {}",
+        serde_json::to_string(&delay_report)?
+    )?;
+    writeln!(
+        out,
+        "# roomeq_common_delay_padding_samples: {}",
+        pre_padding + route_padding + post_padding
+    )?;
+    writeln!(
+        out,
+        "# roomeq_delay_usable_band_hz: 0..{}",
+        delay_report.usable_band_upper_hz
+    )?;
 
     writeln!(out, "devices:")?;
     writeln!(out, "  samplerate: {}", sample_rate as u32)?;
@@ -362,17 +443,13 @@ fn export_camilladsp_routed(
 
     writeln!(out, "filters:")?;
     let mut pre_route_filter_names = Vec::with_capacity(input_channels.len());
-    for channel_name in &input_channels {
-        let chain = output.channels.get(channel_name).ok_or_else(|| {
-            anyhow::anyhow!("missing DSP chain for CamillaDSP input channel '{channel_name}'")
-        })?;
+    for (channel_name, port) in input_channels.iter().zip(&resolved.physical.inputs) {
         let prefix = format!("pre_{}", normalize_export_identifier(channel_name));
-        let plugins = plugins_for_stage(chain, "pre_route");
         pre_route_filter_names.push(delay::write_stage(
             &mut out,
             &mut manifest,
             &prefix,
-            &plugins,
+            &port.plugins,
             sample_rate,
             pre_padding,
         )?);
@@ -413,17 +490,13 @@ fn export_camilladsp_routed(
     }
 
     let mut post_route_filter_names = Vec::with_capacity(output_channels.len());
-    for channel_name in &output_channels {
-        let chain = output.channels.get(channel_name).ok_or_else(|| {
-            anyhow::anyhow!("missing DSP chain for CamillaDSP output channel '{channel_name}'")
-        })?;
+    for (channel_name, plugins) in output_channels.iter().zip(&resolved.post_plugins) {
         let prefix = format!("post_{}", normalize_export_identifier(channel_name));
-        let plugins = plugins_for_stage(chain, "post_route");
         post_route_filter_names.push(delay::write_stage(
             &mut out,
             &mut manifest,
             &prefix,
-            &plugins,
+            plugins,
             sample_rate,
             post_padding,
         )?);
@@ -533,16 +606,35 @@ fn camilladsp_routing_graph(output: &DspGraph) -> Option<BassManagementRoutingGr
                     |route| &route.destination,
                 );
                 Some(BassManagementRoutingGraph {
-                    physical_sub_output: metadata
-                        .get("physical_sub_output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    physical_sub_outputs: serde_json::from_value(
+                        metadata
+                            .get("physical_sub_outputs")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!([])),
+                    )
+                    .unwrap_or_default(),
+                    physical_sub_output: serde_json::from_value::<Vec<String>>(
+                        metadata
+                            .get("physical_sub_outputs")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!([])),
+                    )
+                    .ok()
+                    .and_then(|outputs| outputs.into_iter().next())
+                    .unwrap_or_default(),
                     input_channels,
                     output_channels,
                     routes,
                     matrix,
                     input_trim_db: Default::default(),
+                    post_dsp_main_alignment_band_hz: None,
+                    stereo_routing: serde_json::from_value(
+                        metadata
+                            .get("stereo_routing")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                    .ok(),
                     advisories: serde_json::from_value(
                         metadata
                             .get("advisories")

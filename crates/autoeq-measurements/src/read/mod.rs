@@ -22,12 +22,14 @@ mod normalize;
 mod plot;
 mod read_api;
 mod read_csv;
+mod rew_header;
 mod smooth;
 mod source;
 mod speaker_suggestions;
 
 // Re-export commonly used functions
 pub use clamp::clamp_positive_only;
+pub use directory::cache_root;
 pub use directory::data_dir_for;
 pub use directory::data_dir_for_cache_root;
 pub use directory::headphone_cache_dir;
@@ -43,6 +45,9 @@ pub use read_csv::load_driver_measurement;
 pub use read_csv::load_frequency_response;
 pub use read_csv::read_curve_from_csv;
 pub use read_csv::read_record_from_csv;
+pub use rew_header::RewHeaderFacts;
+pub use rew_header::parse_rew_header;
+pub use rew_header::read_rew_header_facts;
 pub use smooth::PsychoacousticSmoothingConfig;
 pub use smooth::smooth_gaussian;
 pub use smooth::smooth_one_over_n_octave;

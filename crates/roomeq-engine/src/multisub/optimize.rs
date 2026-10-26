@@ -1,5 +1,5 @@
-use super::allpass::allpass_frequency_bounds;
 use super::allpass::compute_combined_with_allpass_complex;
+use super::allpass::{allpass_frequency_bounds, allpass_q_bounds};
 use super::multisub_allpass_converged;
 use super::multisub_allpass_loss;
 use super::types::{MultiSubAllPassResult, MultiSubCombinedResponse, MultiSubOptimizationResult};
@@ -22,8 +22,10 @@ fn curve_from_complex_sum(
     freq: Array1<f64>,
     combined: Array1<Complex64>,
     preserve_phase: bool,
+    measurements: &[Curve],
 ) -> Curve {
     Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine(measurements),
         freq,
         spl: combined.mapv(|z| 20.0 * z.norm().max(1e-12).log10()),
         phase: preserve_phase.then(|| combined.mapv(|z| z.arg().to_degrees())),
@@ -36,6 +38,7 @@ fn optimize_multisub_gains_only(
     config: &OptimizerConfig,
     sample_rate: f64,
 ) -> Result<DriverOptimizationResult, Box<dyn Error>> {
+    let [min_freq, max_freq] = config.active_correction_band();
     let n_drivers = drivers_data.drivers.len();
     let delays = vec![0.0; n_drivers];
     let initial = vec![0.0_f64.clamp(config.min_db, config.max_db); n_drivers];
@@ -44,14 +47,12 @@ fn optimize_multisub_gains_only(
         &initial,
         &delays,
         sample_rate,
-        config.min_freq,
-        config.max_freq,
+        min_freq,
+        max_freq,
     );
     let bounds = vec![(config.min_db, config.max_db); n_drivers];
     let data = drivers_data.clone();
     let delays_for_loss = delays.clone();
-    let min_freq = config.min_freq;
-    let max_freq = config.max_freq;
     let report = optimize_bounded_scalar(
         &bounds,
         &initial,
@@ -82,6 +83,11 @@ fn optimize_multisub_gains_only(
     } else {
         (initial, pre_objective)
     };
+    // Acceptance-side budget record: the emitted gains must honor the
+    // search budgets even when the backend winner is kept verbatim.
+    let (lower, upper): (Vec<f64>, Vec<f64>) = bounds.iter().copied().unzip();
+    autoeq_optim::optim::verify_joint_budgets("multisub-gains", &gains, &lower, &upper)
+        .map_err(|reason| format!("gain-only multi-sub candidate refused at emission: {reason}"))?;
     Ok(DriverOptimizationResult {
         gains,
         delays,
@@ -110,6 +116,7 @@ pub fn optimize_multisub_detailed(
     config: &OptimizerConfig,
     sample_rate: f64,
 ) -> Result<MultiSubOptimizationResult, Box<dyn Error>> {
+    let [min_freq, max_freq] = config.active_correction_band();
     let mut driver_measurements = Vec::new();
     let mut missing_phase_count = 0;
 
@@ -143,8 +150,8 @@ pub fn optimize_multisub_detailed(
     let result = if missing_phase_count == 0 {
         autoeq_optim::optimize_multisub(
             drivers_data.clone(),
-            config.min_freq,
-            config.max_freq,
+            min_freq,
+            max_freq,
             sample_rate,
             &config.algorithm,
             config.max_iter,
@@ -171,10 +178,15 @@ pub fn optimize_multisub_detailed(
             drivers_data.freq_grid.clone(),
             combined_response.clone(),
             true,
+            measurements,
         )
     });
-    let spatial_magnitude =
-        curve_from_complex_sum(drivers_data.freq_grid.clone(), combined_response, false);
+    let spatial_magnitude = curve_from_complex_sum(
+        drivers_data.freq_grid.clone(),
+        combined_response,
+        false,
+        measurements,
+    );
 
     Ok(MultiSubOptimizationResult {
         base: result,
@@ -216,6 +228,7 @@ pub fn optimize_multisub_with_allpass(
     config: &OptimizerConfig,
     sample_rate: f64,
 ) -> Result<MultiSubAllPassResult, Box<dyn Error>> {
+    let [min_freq, max_freq] = config.active_correction_band();
     let mut driver_measurements = Vec::new();
     let mut missing_phase_count = 0;
 
@@ -241,7 +254,21 @@ pub fn optimize_multisub_with_allpass(
     let drivers_data = ordered_drivers_data(driver_measurements);
     let n_drivers = drivers_data.drivers.len();
 
-    if missing_phase_count > 0 {
+    let allpass_bounds = if missing_phase_count == 0 {
+        let frequency = allpass_frequency_bounds(config)?;
+        allpass_q_bounds(measurements, config, sample_rate, frequency).map(|q| (frequency, q))
+    } else {
+        None
+    };
+    if allpass_bounds.is_none() {
+        let advisory = if missing_phase_count > 0 {
+            "missing_phase_gain_only"
+        } else {
+            warn!(
+                "Multi-sub all-pass resolution or configured Q bounds are unsupported; retaining gain-only controls"
+            );
+            "measurement_resolution_gain_only"
+        };
         let base = optimize_multisub_gains_only(&drivers_data, config, sample_rate)?;
         let combined = autoeq_optim::loss::compute_drivers_combined_response_complex(
             &drivers_data,
@@ -250,8 +277,12 @@ pub fn optimize_multisub_with_allpass(
             Some(&base.delays),
             sample_rate,
         );
-        let spatial_magnitude =
-            curve_from_complex_sum(drivers_data.freq_grid.clone(), combined, false);
+        let spatial_magnitude = curve_from_complex_sum(
+            drivers_data.freq_grid.clone(),
+            combined,
+            false,
+            measurements,
+        );
         return Ok(MultiSubAllPassResult {
             base,
             allpass_filters: Vec::new(),
@@ -261,14 +292,15 @@ pub fn optimize_multisub_with_allpass(
                 primary_seat_complex: None,
             },
             phase_controls_enabled: false,
-            advisories: vec!["missing_phase_gain_only".to_string()],
+            advisories: vec![advisory.to_string()],
         });
     }
 
     // Parameter vector: [gains(N), delays(N), ap_freq(N), ap_q(N)]
     let n_params = n_drivers * 4;
 
-    let (allpass_min_freq, allpass_max_freq) = allpass_frequency_bounds(config)?;
+    let ((allpass_min_freq, allpass_max_freq), (allpass_min_q, allpass_max_q)) =
+        allpass_bounds.ok_or("missing supported all-pass bounds")?;
 
     // Bounds
     let mut lower_bounds = Vec::with_capacity(n_params);
@@ -289,10 +321,10 @@ pub fn optimize_multisub_with_allpass(
         lower_bounds.push(allpass_min_freq);
         upper_bounds.push(allpass_max_freq); // sub range
     }
-    // All-pass Q: [0.3, 5.0]
+    // Intersect the legacy Q range with configured rails and retained support.
     for _ in 0..n_drivers {
-        lower_bounds.push(0.3);
-        upper_bounds.push(5.0);
+        lower_bounds.push(allpass_min_q);
+        upper_bounds.push(allpass_max_q);
     }
 
     // Initial guess: zeros for gains, zeros for delays, 60 Hz + Q=1 for allpass
@@ -300,7 +332,7 @@ pub fn optimize_multisub_with_allpass(
     for i in 0..n_drivers {
         x[i] = 0.0_f64.clamp(config.min_db, config.max_db);
         x[2 * n_drivers + i] = 60.0_f64.clamp(allpass_min_freq, allpass_max_freq); // initial AP frequency
-        x[3 * n_drivers + i] = 1.0; // initial AP Q
+        x[3 * n_drivers + i] = 1.0_f64.clamp(allpass_min_q, allpass_max_q);
     }
 
     // Fix the reference sub's level and delay; shared EQ/level matching owns
@@ -309,20 +341,15 @@ pub fn optimize_multisub_with_allpass(
     upper_bounds[0] = x[0];
     lower_bounds[n_drivers] = 0.0;
     upper_bounds[n_drivers] = 0.0;
+    info!(
+        "Multi-sub all-pass numerical Q support: [{allpass_min_q:.4}, {allpass_max_q:.4}] over {allpass_min_freq:.1}-{allpass_max_freq:.1} Hz"
+    );
     let initial_x = x.clone();
     // Pre-objective
-    let pre_obj = multisub_allpass_loss(
-        &drivers_data,
-        &x,
-        sample_rate,
-        config.min_freq,
-        config.max_freq,
-    );
+    let pre_obj = multisub_allpass_loss(&drivers_data, &x, sample_rate, min_freq, max_freq);
 
     // Use DE optimizer (global search needed for all-pass parameters)
     let drivers_data_clone = drivers_data.clone();
-    let min_freq = config.min_freq;
-    let max_freq = config.max_freq;
 
     let objective_fn = move |params: &[f64]| -> f64 {
         multisub_allpass_loss(&drivers_data_clone, params, sample_rate, min_freq, max_freq)
@@ -358,6 +385,10 @@ pub fn optimize_multisub_with_allpass(
         x = initial_x;
         post_obj = pre_obj;
     }
+    // Acceptance-side budget record: gains, delays, and all-pass parameters
+    // must honor the search budgets on the emitted vector.
+    autoeq_optim::optim::verify_joint_budgets("multisub-allpass", &x, &lower_bounds, &upper_bounds)
+        .map_err(|reason| format!("all-pass multi-sub candidate refused at emission: {reason}"))?;
     let converged = multisub_allpass_converged(opt_result.success);
 
     info!(
@@ -401,9 +432,14 @@ pub fn optimize_multisub_with_allpass(
         drivers_data.freq_grid.clone(),
         combined_complex.clone(),
         true,
+        measurements,
     );
-    let spatial_magnitude =
-        curve_from_complex_sum(drivers_data.freq_grid.clone(), combined_complex, false);
+    let spatial_magnitude = curve_from_complex_sum(
+        drivers_data.freq_grid.clone(),
+        combined_complex,
+        false,
+        measurements,
+    );
 
     Ok(MultiSubAllPassResult {
         base: DriverOptimizationResult {
@@ -615,6 +651,37 @@ mod tests {
         assert!(res.combined_response.spatial_magnitude.phase.is_none());
         assert!(res.combined_response.primary_seat_complex.is_some());
         assert!(res.advisories.is_empty());
+    }
+
+    #[test]
+    fn allpass_emission_honors_original_resolution_and_configured_q_rails() {
+        let sources = vec![flat_sub_curve(Some(Array1::zeros(16))); 2];
+        let mut config = tiny_optimizer_config();
+        config.min_q = 0.4;
+        config.max_q = 0.8;
+        let result = optimize_multisub_with_allpass(&sources, &config, 48_000.0).unwrap();
+        assert!(result.phase_controls_enabled);
+        let support = autoeq_core::resolution::MeasurementResolution::combine(&sources).unwrap();
+        for &(frequency, q) in &result.allpass_filters {
+            assert!((0.4..=0.8).contains(&q));
+            let local_cap = support
+                .max_peak_q(frequency, 48_000.0, 1.0 / config.smooth_n.max(1) as f64)
+                .unwrap();
+            assert!(q <= local_cap + 1e-12);
+        }
+    }
+
+    #[test]
+    fn allpass_without_supported_q_retains_gain_only_controls() {
+        let sources = vec![flat_sub_curve(Some(Array1::zeros(16))); 2];
+        let mut config = tiny_optimizer_config();
+        config.min_q = 4.0;
+        config.max_q = 5.0;
+        let result = optimize_multisub_with_allpass(&sources, &config, 48_000.0).unwrap();
+        assert!(!result.phase_controls_enabled);
+        assert!(result.allpass_filters.is_empty());
+        assert!(result.base.delays.iter().all(|delay| *delay == 0.0));
+        assert_eq!(result.advisories, vec!["measurement_resolution_gain_only"]);
     }
 
     #[test]

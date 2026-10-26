@@ -28,10 +28,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+mod finalization;
 mod gd;
+mod hybrid_parts;
+pub(crate) mod input_snapshot;
+mod parallel_timing;
 mod per_driver_fir;
 mod phase;
 mod reports;
+mod routed_pruning;
 mod temporal_fir;
 
 mod misc;
@@ -39,12 +44,106 @@ mod process;
 mod room_optimization_callback_observer;
 mod room_optimization_progress;
 mod room_optimization_result;
+pub(crate) use room_optimization_result::{
+    evaluate_preserved_target_passband, remove_routing_transfer,
+};
 pub mod seat_replay;
 #[cfg(test)]
 mod tests;
 mod types;
-#[cfg(test)]
 mod validation_scorecard;
+
+#[cfg(test)]
+pub(crate) fn rebuild_routed_pruning_test_candidate(
+    result: &mut RoomOptimizationResult,
+    config: &RoomConfig,
+    held_out: &HashMap<String, Vec<Curve>>,
+    sample_rate: f64,
+    directory: &Path,
+) -> Result<()> {
+    let baseline = result.clone();
+    let captures = seat_replay::capture_training(config)?;
+    finalization::rebuild(result, config, held_out, sample_rate, directory)?;
+    match seat_replay::validate_candidate_final_seats(
+        result,
+        &baseline,
+        &captures,
+        held_out,
+        config,
+        sample_rate,
+        directory,
+    ) {
+        Err(error @ AutoeqError::OptimizationFailed { .. }) => {
+            // Native correction refusal still permits the production fallback
+            // policy to publish an explicitly unaccepted structural baseline.
+            let store = autoeq_artifacts::MemoryArtifactStore::new();
+            finalization::publish_baseline(
+                result,
+                &captures,
+                held_out,
+                config,
+                sample_rate,
+                directory,
+                &store,
+                &error.to_string(),
+                Vec::new(),
+            )
+        }
+        verdict => verdict,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn run_full_strength_output_attenuation_trial_for_test(
+    result: &RoomOptimizationResult,
+    config: &RoomConfig,
+    sample_rate: f64,
+    directory: &Path,
+) -> Result<(
+    RoomOptimizationResult,
+    std::collections::BTreeMap<String, f64>,
+)> {
+    finalization::run_full_strength_output_attenuation_trial_for_test(
+        result,
+        config,
+        sample_rate,
+        directory,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn publish_structural_baseline_for_test(
+    result: &mut RoomOptimizationResult,
+    config: &RoomConfig,
+    sample_rate: f64,
+    directory: &Path,
+) -> Result<()> {
+    let captures = seat_replay::capture_training(config)?;
+    let store = autoeq_artifacts::MemoryArtifactStore::new();
+    finalization::publish_baseline(
+        result,
+        &captures,
+        &HashMap::new(),
+        config,
+        sample_rate,
+        directory,
+        &store,
+        "test_structural_baseline",
+        Vec::new(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn apply_routed_pruning_for_test(
+    result: &mut RoomOptimizationResult,
+    captures: &[seat_replay::Capture],
+    held_out: &HashMap<String, Vec<Curve>>,
+    config: &RoomConfig,
+    sample_rate: f64,
+    directory: &Path,
+) {
+    routed_pruning::apply(result, captures, held_out, config, sample_rate, directory);
+}
 
 pub use room_optimization_progress::*;
 pub use room_optimization_result::*;
@@ -136,31 +235,368 @@ pub(super) fn optimize_room_pipeline_impl_with_frequency_samples(
     context: &crate::WorkflowContext<'_>,
     observer: Option<Box<dyn PipelineObserver>>,
     frequency_samples: usize,
+    finalization_diagnostic: Option<(
+        crate::pipeline::FinalizationDiagnosticTrial,
+        &dyn crate::pipeline::FinalizationDiagnosticSink,
+    )>,
+) -> Result<RoomOptimizationResult> {
+    optimize_room_pipeline_impl_with_optional_recovery(
+        request,
+        context,
+        observer,
+        frequency_samples,
+        None,
+        finalization_diagnostic,
+    )
+}
+
+pub(super) fn optimize_room_pipeline_impl_with_recovery(
+    request: roomeq_engine::EngineRequest<'_>,
+    context: &crate::WorkflowContext<'_>,
+    observer: Option<Box<dyn PipelineObserver>>,
+    frequency_samples: usize,
+    recovery: &crate::room_recovery::RoomRecoverySession,
+    finalization_diagnostic: Option<(
+        crate::pipeline::FinalizationDiagnosticTrial,
+        &dyn crate::pipeline::FinalizationDiagnosticSink,
+    )>,
+) -> Result<RoomOptimizationResult> {
+    optimize_room_pipeline_impl_with_optional_recovery(
+        request,
+        context,
+        observer,
+        frequency_samples,
+        Some(recovery),
+        finalization_diagnostic,
+    )
+}
+
+fn optimize_room_pipeline_impl_with_optional_recovery(
+    request: roomeq_engine::EngineRequest<'_>,
+    context: &crate::WorkflowContext<'_>,
+    observer: Option<Box<dyn PipelineObserver>>,
+    frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
+    finalization_diagnostic: Option<(
+        crate::pipeline::FinalizationDiagnosticTrial,
+        &dyn crate::pipeline::FinalizationDiagnosticSink,
+    )>,
 ) -> Result<RoomOptimizationResult> {
     temporal_fir::validate_evidence(request.config, request.sample_rate)?;
-    let seat_captures = seat_replay::capture_training(request.config)?;
-    let mut result = optimize_room_impl_with_frequency_samples(
+    let (identity_config, identity_receipt) =
+        input_snapshot::normalize_seat_identity(request.config);
+    let snapshot = input_snapshot::freeze(&identity_config)?;
+    let request = roomeq_engine::EngineRequest {
+        config: &snapshot,
+        ..request
+    };
+    let (seat_captures, input_receipt) =
+        seat_replay::capture_with_receipt(request.config, context.validation_measurements)?;
+    let replay = FrozenCandidateReplay {
+        search_config: request.config,
+        captures: &seat_captures,
+        identity_receipt: &identity_receipt,
+        input_receipt: &input_receipt,
+    };
+    let observers = hybrid_parts::Observers::new(observer);
+    let mut result = optimize_room_candidate(
+        request,
+        context,
+        observers.observer(),
+        frequency_samples,
+        recovery,
+        finalization_diagnostic,
+        replay,
+    )?;
+    if request.config.optimizer.processing_mode == ProcessingMode::Hybrid
+        && recovery.is_none()
+        && finalization_diagnostic.is_none()
+    {
+        let comparison_complete = hybrid_parts::select(&mut result, |mode| {
+            let mut search_config = request.config.clone();
+            search_config.optimizer.processing_mode = mode.clone();
+            search_config.optimizer.mixed_config = None;
+            let part_dir = context
+                .output_dir
+                .unwrap_or_else(|| Path::new("."))
+                .join("hybrid-parts")
+                .join(match mode {
+                    ProcessingMode::LowLatency => "iir",
+                    _ => "fir",
+                });
+            if observers.stopped() {
+                return Err(AutoeqError::OptimizationFailed {
+                    message: "hybrid part comparison stopped".into(),
+                });
+            }
+            info!(
+                "Hybrid comparison: evaluating standalone {:?} under requested Hybrid safety budgets",
+                mode
+            );
+            context.artifact_store.create_dir_all(&part_dir)?;
+            let part_context = crate::WorkflowContext {
+                output_dir: Some(&part_dir),
+                artifact_store: context.artifact_store,
+                validation_measurements: context.validation_measurements,
+            };
+            if observers.stopped() {
+                return Err(AutoeqError::OptimizationFailed {
+                    message: "hybrid part comparison stopped".into(),
+                });
+            }
+            let mut candidate = optimize_room_candidate(
+                request,
+                &part_context,
+                observers.observer(),
+                frequency_samples,
+                None,
+                None,
+                FrozenCandidateReplay {
+                    search_config: &search_config,
+                    ..replay
+                },
+            )?;
+            hybrid_parts::relocate_resources(
+                &mut candidate,
+                Path::new("hybrid-parts")
+                    .join(match mode {
+                        ProcessingMode::LowLatency => "iir",
+                        _ => "fir",
+                    })
+                    .as_path(),
+                context.output_dir.unwrap_or_else(|| Path::new(".")),
+                context.artifact_store,
+                request.sample_rate,
+            )?;
+            Ok(candidate)
+        });
+        let processing = crate::final_ledger::processing_snapshot(&result)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+        if !comparison_complete {
+            let checks = result
+                .metadata
+                .stage_outcomes
+                .last()
+                .map(|stage| stage.checks.clone())
+                .unwrap_or_default();
+            finalization::publish_baseline(
+                &mut result,
+                replay.captures,
+                context.validation_measurements,
+                request.config,
+                request.sample_rate,
+                context.output_dir.unwrap_or_else(|| Path::new(".")),
+                context.artifact_store,
+                "hybrid_best_part_comparison_unavailable",
+                checks,
+            )?;
+        }
+        // Selection adds diagnostics even when the processing stays unchanged.
+        // Bind them for API callers as well as later native export consumers.
+        crate::final_ledger::finalize_result_ledger(&mut result, &processing, request.sample_rate)
+            .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    }
+    temporal_fir::verify_final(&result, request.config)?;
+    // Publish only after provenance and final decisions describe the delivered
+    // graph. Bundle publication also binds its known report reference.
+    generate_validation_bundle_report(
+        &mut result,
         request.config,
+        context.output_dir,
+        context.artifact_store,
+        request.sample_rate,
+    )?;
+    Ok(result)
+}
+
+/// Borrow one input snapshot across candidate search and final replay.
+#[derive(Clone, Copy)]
+struct FrozenCandidateReplay<'a> {
+    search_config: &'a RoomConfig,
+    captures: &'a [seat_replay::Capture],
+    identity_receipt: &'a StageOutcome,
+    input_receipt: &'a StageOutcome,
+}
+
+// Candidate evaluation deliberately does not publish a validation bundle.
+// Every candidate retains the causal-delay, pruning, drive and ledger boundaries;
+// the pipeline publishes only the selected, fully evaluated graph.
+fn optimize_room_candidate(
+    request: roomeq_engine::EngineRequest<'_>,
+    context: &crate::WorkflowContext<'_>,
+    observer: Option<Box<dyn PipelineObserver>>,
+    frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
+    finalization_diagnostic: Option<(
+        crate::pipeline::FinalizationDiagnosticTrial,
+        &dyn crate::pipeline::FinalizationDiagnosticSink,
+    )>,
+    replay: FrozenCandidateReplay<'_>,
+) -> Result<RoomOptimizationResult> {
+    let routed_pruning_requested =
+        routed_pruning::requested(request.config, !context.validation_measurements.is_empty());
+    let mut local_config = replay.search_config.clone();
+    if routed_pruning_requested {
+        // Routed nominations cannot authorize removal before the complete graph
+        // exists. The final pass uses the original requested enforcement policy.
+        if let Some(veto) = &mut local_config.optimizer.filter_audibility {
+            veto.report_only = true;
+        }
+    }
+    let mut result = optimize_room_impl_with_recovery_and_frequency_samples(
+        &local_config,
         request.sample_rate,
         context.output_dir,
         request.probe_arrival_overrides,
         observer,
         context.artifact_store,
-        frequency_samples,
+        RoomOptimizationRecovery {
+            frequency_samples,
+            recovery,
+        },
     )?;
-    temporal_fir::verify_final(&result, request.config)?;
-    seat_replay::validate_final_seats(
+    // F4 graph boundary: compile relative advances to causal delays before
+    // downstream replay, selection, and save. Amendment 4 enforces the
+    // ordering structurally: the boundary always stamps the ledger (even a
+    // zero-offset no-op), replay divergence fails closed here because the
+    // pre-compile splice verdict would no longer cover the shipped graph,
+    // and the final ledger refuses any negative delay that a later stage
+    // might reintroduce. Compilation preserves inter-branch timing on
+    // replayed stages, so replay evaluates the same acoustics the host
+    // will realize everywhere the transfer condition holds.
+    {
+        let routes = result
+            .metadata
+            .bass_management
+            .as_mut()
+            .and_then(|bass| bass.routing_graph.as_mut())
+            .map(|graph| &mut graph.routes);
+        let compilation =
+            crate::delay_compile::compile_graph_delays_causal(&mut result.channels, routes);
+        if compilation.common_latency_ms > 0.0 {
+            info!(
+                "  Delay compilation: {} branches shifted by {:.3} ms common latency",
+                compilation.branches, compilation.common_latency_ms
+            );
+        }
+        if compilation.replay_diverged {
+            return Err(AutoeqError::OptimizationFailed {
+                message: format!(
+                    "delay compilation diverged from pre-compile replay ({}); \
+                     splice verdict does not cover the shipped graph",
+                    compilation.advisories.join("; "),
+                ),
+            });
+        }
+        // Serialize the common offset the host must realize: every branch
+        // total rose by this amount, preserving inter-branch timing. The
+        // stamp is unconditional so the ledger distinguishes "compiled
+        // clean" from "compile never ran". The native-result audit
+        // independently verifies that the final graph carries no negative
+        // delays.
+        let mut compile_check = StageCheck::pass(
+            "delay_compile:common_latency_ms",
+            StageCheckKind::Structural,
+        );
+        compile_check.observed = Some(compilation.common_latency_ms);
+        compile_check.diagnostic = Some(format!(
+            "{} branches share {:.6} ms common latency after causal compilation",
+            compilation.branches, compilation.common_latency_ms
+        ));
+        result.metadata.stage_outcomes.push(StageOutcome {
+            stage: "delay_compile_causal".to_string(),
+            status: if compilation.common_latency_ms > 0.0 || !compilation.advisories.is_empty() {
+                StageStatus::Applied
+            } else {
+                StageStatus::Skipped
+            },
+            advisories: compilation.advisories,
+            checks: vec![compile_check],
+        });
+    }
+    room_optimization_result::record_peq_candidates(&mut result, request.config);
+    let decision_processing = crate::final_ledger::processing_snapshot(&result)
+        .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    per_driver_fir::distribute_routed_firs(
         &mut result,
-        &seat_captures,
+        request.config,
+        context.output_dir.unwrap_or_else(|| Path::new(".")),
+        context.artifact_store,
+    )?;
+    validation_scorecard::attach_validation_scorecard(
+        &mut result,
         context.validation_measurements,
+        request.sample_rate,
+        roomeq_model::auto_tune::resolved_schroeder_hz(&request.config.optimizer),
+        request.config.optimizer.processing_mode.clone(),
+    )?;
+    if let Some(diagnostic) = finalization_diagnostic {
+        finalization::select_with_diagnostic_sink(
+            &mut result,
+            replay.captures,
+            context.validation_measurements,
+            request.config,
+            request.sample_rate,
+            context.output_dir.unwrap_or_else(|| Path::new(".")),
+            context.artifact_store,
+            Some(diagnostic),
+        )?;
+    } else {
+        finalization::select(
+            &mut result,
+            replay.captures,
+            context.validation_measurements,
+            request.config,
+            request.sample_rate,
+            context.output_dir.unwrap_or_else(|| Path::new(".")),
+            context.artifact_store,
+        )?;
+    }
+    if routed_pruning_requested {
+        routed_pruning::apply(
+            &mut result,
+            replay.captures,
+            context.validation_measurements,
+            request.config,
+            request.sample_rate,
+            context.output_dir.unwrap_or_else(|| Path::new(".")),
+        );
+    }
+    // Routed pruning can alter physical demand after candidate selection.
+    // Check the delivered controls, not a cached pre-pruning assessment.
+    finalization::verify_declared_physical_drive(
+        &mut result,
         request.config,
         request.sample_rate,
         context.output_dir.unwrap_or_else(|| Path::new(".")),
     )?;
-    generate_validation_bundle_report(
-        &mut result, request.config, context.output_dir, context.artifact_store,
+    result
+        .metadata
+        .stage_outcomes
+        .push(replay.identity_receipt.clone());
+    seat_replay::attach_configured_comparison(
+        &mut result,
+        replay.captures,
+        context.validation_measurements,
+        request.config,
         request.sample_rate,
-    )?;
+        context.output_dir.unwrap_or_else(|| Path::new(".")),
+    );
+    result
+        .metadata
+        .stage_outcomes
+        .push(replay.input_receipt.clone());
+    crate::evidence_intake::attach_measurement_conditioning(&mut result, request.config)
+        .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    crate::evidence_intake::attach_optimizer_conditioning(&mut result)
+        .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    crate::final_ledger::finalize_result_ledger(
+        &mut result,
+        &decision_processing,
+        request.sample_rate,
+    )
+    .map_err(|message| AutoeqError::OptimizationFailed { message })?;
+    temporal_fir::verify_final(&result, request.config)?;
     Ok(result)
 }
 
@@ -264,8 +700,20 @@ fn select_topology_route(
             )
         )
     });
+    let has_unsupported_physical_sub = sys.subwoofers.as_ref().is_some_and(|subwoofers| {
+        subwoofers.outputs.iter().any(|output| {
+            matches!(
+                config.speakers.get(&output.speaker),
+                Some(
+                    SpeakerConfig::Group(_)
+                        | SpeakerConfig::Topology(_)
+                        | SpeakerConfig::SupportingSource(_)
+                )
+            )
+        })
+    });
 
-    if has_group {
+    if has_group || has_unsupported_physical_sub {
         return Ok(TopologyRoute::Generic);
     }
 
@@ -389,6 +837,7 @@ fn execute_topology_workflow_on_pool(
             PipelineStepId::TopologyWorkflowExecution,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: String::new(),
                 speaker_index: 0,
                 total_speakers: sys.speakers.len(),
@@ -411,6 +860,7 @@ fn execute_topology_workflow_on_pool(
             PipelineStepId::GenericChannelOptimization,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: String::new(),
                 speaker_index: 0,
                 total_speakers: sys.speakers.len(),
@@ -447,7 +897,7 @@ fn execute_topology_workflow_on_pool(
             let stopped_for_callback = Arc::clone(&stopped);
             let workflow_cancelled = Arc::clone(&workflow_cancelled);
             let callback: roomeq_engine::OptimProgressCallback =
-                Box::new(move |iter: usize, loss: f64, epa: Option<f64>| {
+                Box::new(move |iter: usize, loss: f64, epa: Option<f64>, response| {
                     if workflow_cancelled.load(Ordering::Relaxed) {
                         stopped_for_callback.store(true, Ordering::Relaxed);
                         return roomeq_engine::CallbackAction::Stop;
@@ -466,6 +916,7 @@ fn execute_topology_workflow_on_pool(
                         PipelineStepId::GenericChannelOptimization,
                         PipelineStepStatus::InProgress,
                         &RoomOptimizationProgress {
+                            response: response.clone(),
                             current_speaker: name.clone(),
                             speaker_index: speaker_idx,
                             total_speakers,
@@ -549,6 +1000,7 @@ fn execute_topology_workflow_on_pool(
     }
 }
 
+#[cfg(test)]
 fn execute_generic_channels_with_frequency_samples(
     config: &RoomConfig,
     sample_rate: f64,
@@ -556,6 +1008,26 @@ fn execute_generic_channels_with_frequency_samples(
     probe_arrival_overrides: Option<&HashMap<String, f64>>,
     observer_shared: &SharedPipelineObserver,
     frequency_samples: usize,
+) -> Result<(GenericChannelCollection, usize)> {
+    execute_generic_channels_with_recovery_and_frequency_samples(
+        config,
+        sample_rate,
+        output_dir,
+        probe_arrival_overrides,
+        observer_shared,
+        frequency_samples,
+        None,
+    )
+}
+
+fn execute_generic_channels_with_recovery_and_frequency_samples(
+    config: &RoomConfig,
+    sample_rate: f64,
+    output_dir: Option<&Path>,
+    probe_arrival_overrides: Option<&HashMap<String, f64>>,
+    observer_shared: &SharedPipelineObserver,
+    frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
 ) -> Result<(GenericChannelCollection, usize)> {
     let channels_to_process = channels_for_generic_optimization(config);
     let total_speakers = channels_to_process.len();
@@ -575,6 +1047,7 @@ fn execute_generic_channels_with_frequency_samples(
         probe_arrival_overrides,
         observer_shared,
         frequency_samples,
+        recovery,
     )?;
 
     let collection = collect_generic_channel_results(
@@ -589,6 +1062,7 @@ fn execute_generic_channels_with_frequency_samples(
     Ok((collection, total_speakers))
 }
 
+#[cfg(test)]
 fn optimize_room_impl_with_frequency_samples(
     config: &RoomConfig,
     sample_rate: f64,
@@ -598,6 +1072,38 @@ fn optimize_room_impl_with_frequency_samples(
     store: &dyn autoeq_artifacts::ArtifactStore,
     frequency_samples: usize,
 ) -> Result<RoomOptimizationResult> {
+    optimize_room_impl_with_recovery_and_frequency_samples(
+        config,
+        sample_rate,
+        output_dir,
+        probe_arrival_overrides,
+        observer,
+        store,
+        RoomOptimizationRecovery {
+            frequency_samples,
+            recovery: None,
+        },
+    )
+}
+
+struct RoomOptimizationRecovery<'a> {
+    frequency_samples: usize,
+    recovery: Option<&'a crate::room_recovery::RoomRecoverySession>,
+}
+
+fn optimize_room_impl_with_recovery_and_frequency_samples(
+    config: &RoomConfig,
+    sample_rate: f64,
+    output_dir: Option<&Path>,
+    probe_arrival_overrides: Option<&HashMap<String, f64>>,
+    observer: Option<Box<dyn PipelineObserver>>,
+    store: &dyn autoeq_artifacts::ArtifactStore,
+    recovery: RoomOptimizationRecovery<'_>,
+) -> Result<RoomOptimizationResult> {
+    let RoomOptimizationRecovery {
+        frequency_samples,
+        recovery,
+    } = recovery;
     let (observer_shared, config) =
         prepare_room_optimization_with_frequency_samples(config, observer, frequency_samples)?;
     validate_room_optimization_with_frequency_samples(
@@ -606,6 +1112,11 @@ fn optimize_room_impl_with_frequency_samples(
         frequency_samples,
     )?;
     let route = select_topology_route(&config, &observer_shared)?;
+    if recovery.is_some() && route != TopologyRoute::Generic {
+        return Err(AutoeqError::InvalidConfiguration {
+            message: "exact recovery is available only for generic single-channel rooms".into(),
+        });
+    }
     let config = &config;
 
     let mut result = match route {
@@ -646,14 +1157,16 @@ fn optimize_room_impl_with_frequency_samples(
                     "Selected generic channel optimization",
                 ),
             )?;
-            let (generic, total_speakers) = execute_generic_channels_with_frequency_samples(
-                config,
-                sample_rate,
-                output_dir,
-                probe_arrival_overrides,
-                &observer_shared,
-                frequency_samples,
-            )?;
+            let (generic, total_speakers) =
+                execute_generic_channels_with_recovery_and_frequency_samples(
+                    config,
+                    sample_rate,
+                    output_dir,
+                    probe_arrival_overrides,
+                    &observer_shared,
+                    frequency_samples,
+                    recovery,
+                )?;
             assemble_generic_result_with_frequency_samples(
                 generic,
                 total_speakers,
@@ -700,10 +1213,40 @@ fn optimize_room_impl_with_frequency_samples(
     Ok(result)
 }
 
+fn broadband_matching_within_correction_band(config: &RoomConfig) -> bool {
+    let [low, high] = config.optimizer.active_correction_band();
+    broadband_shelves_supported_by_band((low, high))
+}
+
+fn broadband_shelves_supported_by_band((low, high): (f64, f64)) -> bool {
+    roomeq_engine::spectral_align::broadband_shelves_supported_by_band((low, high))
+}
+
 fn shared_alignment_fit_band(
     config: &RoomConfig,
     corrected_curves: &HashMap<String, Curve>,
 ) -> (f64, f64) {
+    if !broadband_matching_within_correction_band(config) {
+        // Level alignment needs an observation band, not the bass correction
+        // band. Callers doing height alignment supply original measurements.
+        let names = corrected_curves
+            .keys()
+            .filter(|name| !is_subwoofer_channel(config, name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let crossover = config.crossovers.as_ref().map_or(80.0, |crossovers| {
+            crossovers
+                .values()
+                .filter_map(|crossover| {
+                    crossover
+                        .frequency
+                        .or_else(|| crossover.frequency_range.map(|range| range.1))
+                })
+                .fold(80.0_f64, f64::max)
+        });
+        return crate::topology::main_level_alignment_band(corrected_curves, &names, crossover)
+            .unwrap_or((f64::NAN, f64::NAN));
+    }
     // Height/timbre fitting compares full-range channels. Including the routed
     // subwoofer band makes the intersection collapse at the crossover, which
     // triggers the full-band fallback and reintroduces intentional rolloff.
@@ -715,14 +1258,24 @@ fn shared_alignment_fit_band(
             |(shared_min, shared_max), channel_name| {
                 let (channel_min, channel_max) =
                     final_score_band_for_channel(config, channel_name, None);
-                (shared_min.max(channel_min), shared_max.min(channel_max))
+                let (passband, _) =
+                    roomeq_engine::analysis::response_metrics::detect_passband_and_mean(
+                        &corrected_curves[channel_name],
+                    );
+                let Some((pass_low, pass_high)) = passband else {
+                    return (f64::INFINITY, f64::NEG_INFINITY);
+                };
+                (
+                    shared_min.max(channel_min).max(pass_low),
+                    shared_max.min(channel_max).min(pass_high),
+                )
             },
         );
 
     if max_freq > min_freq {
         (min_freq, max_freq)
     } else {
-        (config.optimizer.min_freq, config.optimizer.max_freq)
+        (f64::NAN, f64::NAN)
     }
 }
 
@@ -816,6 +1369,14 @@ fn apply_inter_channel_timbre_matching_stage(
         .inter_channel_timbre_matching
         .as_ref()
         .filter(|config| config.enabled)?;
+    if !broadband_matching_within_correction_band(config) {
+        return Some(StageOutcome {
+            stage: "inter_channel_timbre_matching".into(),
+            status: StageStatus::Skipped,
+            advisories: vec!["broadband_shelves_outside_correction_band".into()],
+            checks: Vec::new(),
+        });
+    }
     let corrected_curves: HashMap<String, Curve> = channel_results
         .iter()
         .filter(|(name, _)| !is_subwoofer_channel(config, name))
@@ -829,7 +1390,19 @@ fn apply_inter_channel_timbre_matching_stage(
             )
         })
         .collect();
-    let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &corrected_curves);
+    let reference_curves = channel_results
+        .iter()
+        .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
+        .collect();
+    let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &reference_curves);
+    if !broadband_shelves_supported_by_band((fit_min_freq, fit_max_freq)) {
+        return Some(StageOutcome {
+            stage: "inter_channel_timbre_matching".into(),
+            status: StageStatus::Skipped,
+            advisories: vec!["broadband_shelves_outside_measured_passband".into()],
+            checks: Vec::new(),
+        });
+    }
 
     Some(
         match roomeq_engine::inter_channel_timbre_matching::compute_inter_channel_timbre_matching_with_threshold(
@@ -980,6 +1553,11 @@ fn stage_logical_input_plugins(
 }
 
 const FINAL_CHANNEL_LEVEL_TOLERANCE_DB: f64 = 0.5;
+/// Deepest permitted final level-alignment trim. Alignment beyond this is
+/// level correction, not channel matching: deeper trims are capped and the
+/// residual spread is accepted (reported Degraded) instead of discarding
+/// an otherwise valid correction to chase exact broadband equality.
+const FINAL_CHANNEL_LEVEL_MAX_TRIM_DB: f64 = 2.0;
 const FINAL_CHANNEL_LEVEL_MIN_HZ: f64 = 100.0;
 const FINAL_CHANNEL_LEVEL_MAX_HZ: f64 = 1_000.0;
 
@@ -988,7 +1566,8 @@ const FINAL_CHANNEL_LEVEL_MAX_HZ: f64 = 1_000.0;
 fn final_role_level_alignment_gains(
     config: &RoomConfig,
     curves: &HashMap<String, Curve>,
-) -> (HashMap<String, f64>, f64) {
+    reference_curves: &HashMap<String, Curve>,
+) -> (HashMap<String, f64>, f64, (f64, f64)) {
     let matching_enabled = config
         .optimizer
         .channel_matching
@@ -996,25 +1575,122 @@ fn final_role_level_alignment_gains(
         .unwrap_or_default()
         .enabled;
     if !matching_enabled {
-        return (HashMap::new(), 0.0);
+        return (HashMap::new(), 0.0, (0.0, 0.0));
     }
 
-    let band_max = config.optimizer.max_freq.min(FINAL_CHANNEL_LEVEL_MAX_HZ);
-    let band_min = config
+    if uses_routed_home_cinema_inputs(config) {
+        // Cinema calibration is shared by every main, not just left/right
+        // pairs. A pair-only check misses whole groups shifted by 10 dB.
+        let mains: HashMap<_, _> = curves
+            .iter()
+            .filter(|(name, _)| !is_subwoofer_channel(config, name))
+            .map(|(name, curve)| (name.clone(), curve.clone()))
+            .collect();
+        if mains.len() < 2 {
+            return (HashMap::new(), 0.0, (0.0, 0.0));
+        }
+        let crossover = config.crossovers.as_ref().map_or(80.0, |crossovers| {
+            crossovers
+                .values()
+                .filter_map(|crossover| {
+                    crossover
+                        .frequency
+                        .or_else(|| crossover.frequency_range.map(|range| range.1))
+                })
+                .fold(80.0_f64, f64::max)
+        });
+        let names = mains.keys().cloned().collect::<Vec<_>>();
+        let Ok(band) =
+            crate::topology::main_level_alignment_band(reference_curves, &names, crossover)
+        else {
+            return (HashMap::new(), f64::NAN, (0.0, 0.0));
+        };
+        let ranges = names.into_iter().map(|name| (name, band)).collect();
+        let gains = roomeq_engine::topology::align_channels_to_lowest(&mains, &ranges);
+        let spread = gains.values().map(|gain| -gain).fold(0.0_f64, f64::max);
+        let gains = if spread > FINAL_CHANNEL_LEVEL_TOLERANCE_DB {
+            gains
+                .into_iter()
+                .filter(|(_, gain)| *gain < -0.01)
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        return (gains, spread, band);
+    }
+    let fallback_max = config.optimizer.max_freq.min(FINAL_CHANNEL_LEVEL_MAX_HZ);
+    let fallback_min = config
         .optimizer
         .min_freq
         .max(FINAL_CHANNEL_LEVEL_MIN_HZ)
-        .min(band_max);
+        .min(fallback_max);
+    let upper_min = config.optimizer.max_freq;
+    let upper_max = curves
+        .values()
+        .filter_map(|curve| curve.freq.last().copied())
+        .fold(20_000.0_f64, f64::min)
+        .min(20_000.0);
+    let use_upper_band = upper_min.is_finite()
+        && upper_min > 0.0
+        && upper_max.is_finite()
+        && upper_max >= 2.0 * upper_min;
+    let band = if use_upper_band {
+        (upper_min, upper_max)
+    } else {
+        (fallback_min, fallback_max)
+    };
     let mut gains = HashMap::new();
     let mut max_spread_db = 0.0_f64;
 
     for group in role_aware_channel_matching_groups_with_keys(curves) {
-        let ranges = group
-            .curves
-            .keys()
-            .map(|name| (name.clone(), (band_min, band_max)))
-            .collect::<HashMap<_, _>>();
-        let group_gains = roomeq_engine::topology::align_channels_to_lowest(&group.curves, &ranges);
+        let group_gains = if use_upper_band {
+            let zero_targets = group
+                .curves
+                .iter()
+                .map(|(name, curve)| {
+                    (
+                        name.clone(),
+                        Curve {
+                            freq: curve.freq.clone(),
+                            spl: ndarray::Array1::zeros(curve.freq.len()),
+                            ..Curve::default()
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let levels = group
+                .curves
+                .iter()
+                .map(|(name, curve)| {
+                    roomeq_engine::spectral_align::upper_band_target_reference(
+                        curve,
+                        &zero_targets[name],
+                        config.optimizer.max_freq,
+                    )
+                    .map(|level| (name.clone(), level))
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(levels) = levels {
+                let quietest = levels
+                    .iter()
+                    .map(|(_, level)| *level)
+                    .fold(f64::INFINITY, f64::min);
+                levels
+                    .into_iter()
+                    .map(|(name, level)| (name, quietest - level))
+                    .collect()
+            } else {
+                max_spread_db = f64::NAN;
+                HashMap::new()
+            }
+        } else {
+            let ranges = group
+                .curves
+                .keys()
+                .map(|name| (name.clone(), band))
+                .collect::<HashMap<_, _>>();
+            roomeq_engine::topology::align_channels_to_lowest(&group.curves, &ranges)
+        };
         let spread_db = group_gains
             .values()
             .map(|gain_db| (-gain_db).max(0.0))
@@ -1030,7 +1706,7 @@ fn final_role_level_alignment_gains(
         }
     }
 
-    (gains, max_spread_db)
+    (gains, max_spread_db, band)
 }
 
 fn insert_final_level_gain(chain: &mut ChannelDspChain, gain_db: f64, routed_logical_input: bool) {
@@ -1103,15 +1779,21 @@ fn apply_final_channel_level_alignment(
     // reported group response against its explicit shared target after ICD and
     // safety replay, which can change the upper-band level after initial alignment.
     if result.deployed_source_curves.is_empty() {
-        let trims: Vec<_> = result.channel_results.iter().filter_map(|(name, channel)| {
-            let chain = result.channels.get(name)?;
-            chain.drivers.as_ref()?;
-            let target: Curve = chain.target_curve.clone()?.into();
-            let residual = roomeq_engine::spectral_align::upper_band_target_reference(
-                &channel.final_curve, &target, config.optimizer.max_freq,
-            )?;
-            Some((name.clone(), residual))
-        }).collect();
+        let trims: Vec<_> = result
+            .channel_results
+            .iter()
+            .filter_map(|(name, channel)| {
+                let chain = result.channels.get(name)?;
+                chain.drivers.as_ref()?;
+                let target: Curve = chain.target_curve.clone()?.into();
+                let residual = roomeq_engine::spectral_align::upper_band_target_reference(
+                    &channel.final_curve,
+                    &target,
+                    config.optimizer.max_freq,
+                )?;
+                Some((name.clone(), residual))
+            })
+            .collect();
         if !trims.is_empty() {
             for (name, residual) in &trims {
                 let gain = (-residual).clamp(-12.0, 12.0);
@@ -1119,23 +1801,42 @@ fn apply_final_channel_level_alignment(
                     if let Some(chain) = result.channels.get_mut(name) {
                         insert_final_level_gain(chain, gain, false);
                     }
-                    sync_reported_gain_adjustment(name, &mut result.channel_results,
-                        &mut result.channels, gain, false, sample_rate);
+                    sync_reported_gain_adjustment(
+                        name,
+                        &mut result.channel_results,
+                        &mut result.channels,
+                        gain,
+                        false,
+                        sample_rate,
+                    );
                 }
             }
-            let worst_residual = trims.iter().map(|(name, _)| {
-                let target: Curve = result.channels[name].target_curve.clone().unwrap().into();
-                roomeq_engine::spectral_align::upper_band_target_reference(
-                    &result.channel_results[name].final_curve, &target, config.optimizer.max_freq,
-                ).map(f64::abs).unwrap_or(f64::INFINITY)
-            }).fold(0.0_f64, f64::max);
-            let mut check = StageCheck::pass("final_upper_band_target_error_db", StageCheckKind::Safety);
+            let worst_residual = trims
+                .iter()
+                .map(|(name, _)| {
+                    let target: Curve = result.channels[name].target_curve.clone().unwrap().into();
+                    roomeq_engine::spectral_align::upper_band_target_reference(
+                        &result.channel_results[name].final_curve,
+                        &target,
+                        config.optimizer.max_freq,
+                    )
+                    .map(f64::abs)
+                    .unwrap_or(f64::INFINITY)
+                })
+                .fold(0.0_f64, f64::max);
+            let mut check =
+                StageCheck::pass("final_upper_band_target_error_db", StageCheckKind::Safety);
             check.observed = Some(worst_residual);
             check.limit = Some(FINAL_CHANNEL_LEVEL_TOLERANCE_DB);
             check.passed = worst_residual <= FINAL_CHANNEL_LEVEL_TOLERANCE_DB;
             return Ok(StageOutcome {
-                checks: vec![check], stage: "final_channel_level_alignment".to_string(),
-                status: if worst_residual <= FINAL_CHANNEL_LEVEL_TOLERANCE_DB { StageStatus::Applied } else { StageStatus::Degraded },
+                checks: vec![check],
+                stage: "final_channel_level_alignment".to_string(),
+                status: if worst_residual <= FINAL_CHANNEL_LEVEL_TOLERANCE_DB {
+                    StageStatus::Applied
+                } else {
+                    StageStatus::Degraded
+                },
                 advisories: Vec::new(),
             });
         }
@@ -1146,7 +1847,104 @@ fn apply_final_channel_level_alignment(
         .filter(|(name, _)| !is_subwoofer_channel(config, name))
         .map(|(name, curve)| (name.clone(), curve.clone()))
         .collect::<HashMap<_, _>>();
-    let (gains, spread_before_db) = final_role_level_alignment_gains(config, &curves);
+    // Freeze support from measurements, not the candidate being judged.
+    // Otherwise a spectral correction can shrink the calibration band.
+    let reference_curves = result
+        .channel_results
+        .iter()
+        .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
+        .collect::<HashMap<_, _>>();
+    let (mut gains, spread_before_db, alignment_band) =
+        final_role_level_alignment_gains(config, &curves, &reference_curves);
+    // Re-anchor the aligned channels to their calibrated target level.
+    // Down-only alignment preserves relative levels but can leave every
+    // channel below the absolute target the native seat gate scores
+    // against; a common restore keeps the spread the verification below
+    // checks while removing that broadband penalty. The restore only
+    // compensates attenuation the alignment itself applied: a candidate
+    // may deliberately trade common level for lower electrical or
+    // physical drive, and re-anchoring that trade away would silently
+    // defeat the drive ranking that selected it. It never raises a
+    // channel above its measured level in the alignment band, and the
+    // final level gains elsewhere in this module bound trims to 12 dB;
+    // electrical and replay gates still bound the delivered graph.
+    let band_mean = |curve: &Curve| -> Option<f64> {
+        let (mut sum, mut count) = (0.0_f64, 0usize);
+        for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
+            if *freq >= alignment_band.0 && *freq <= alignment_band.1 {
+                sum += level;
+                count += 1;
+            }
+        }
+        (count > 0).then(|| sum / count as f64)
+    };
+    let target_restore = curves
+        .iter()
+        .filter_map(|(name, curve)| {
+            let target: Curve = result
+                .channels
+                .get(name)
+                .and_then(|chain| chain.target_curve.clone())?
+                .into();
+            let (mut sum, mut count) = (0.0_f64, 0usize);
+            for (freq, level) in curve.freq.iter().zip(curve.spl.iter()) {
+                if *freq < alignment_band.0 || *freq > alignment_band.1 {
+                    continue;
+                }
+                let target_level = target
+                    .freq
+                    .iter()
+                    .zip(target.spl.iter())
+                    .min_by(|a, b| {
+                        (a.0 - freq)
+                            .abs()
+                            .partial_cmp(&(b.0 - freq).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(_, value)| *value)?;
+                sum += target_level - level;
+                count += 1;
+            }
+            (count > 0).then(|| sum / count as f64)
+        })
+        .reduce(f64::min);
+    let measured_restore = curves
+        .iter()
+        .filter_map(|(name, curve)| {
+            let initial = reference_curves.get(name)?;
+            Some(band_mean(initial)? - band_mean(curve)?)
+        })
+        .reduce(f64::min);
+    let deepest_alignment_gain = gains.values().copied().fold(0.0_f64, f64::min);
+    let level_reanchor_db = if deepest_alignment_gain < -0.01 {
+        target_restore
+            .map(|restore| {
+                restore
+                    .min(measured_restore.unwrap_or(restore))
+                    .min(-deepest_alignment_gain)
+            })
+            .unwrap_or(0.0)
+            .clamp(0.0, 12.0)
+    } else {
+        0.0
+    };
+    if level_reanchor_db > 0.01 {
+        for name in curves.keys() {
+            *gains.entry(name.clone()).or_insert(0.0) += level_reanchor_db;
+        }
+    }
+    // Cap alignment trims (see FINAL_CHANNEL_LEVEL_MAX_TRIM_DB). Relative
+    // alignment is preserved; any spread the cap leaves behind is accepted
+    // at the verification below instead of rejecting the candidate.
+    for gain in gains.values_mut() {
+        *gain = (*gain).max(-FINAL_CHANNEL_LEVEL_MAX_TRIM_DB);
+    }
+
+    if !spread_before_db.is_finite() {
+        return Err(AutoeqError::OptimizationFailed {
+            message: "final channel level spread is non-finite".to_string(),
+        });
+    }
 
     if gains.is_empty() {
         let mut check = StageCheck::pass("final_channel_level_spread_db", StageCheckKind::Safety);
@@ -1156,7 +1954,10 @@ fn apply_final_channel_level_alignment(
             checks: vec![check],
             stage: "final_channel_level_alignment".to_string(),
             status: StageStatus::Skipped,
-            advisories: Vec::new(),
+            advisories: vec![format!(
+                "alignment_band_hz={:.1}-{:.1}; spread_before_db={spread_before_db:.3}; spread_after_db={spread_before_db:.3}",
+                alignment_band.0, alignment_band.1
+            )],
         });
     }
 
@@ -1210,14 +2011,28 @@ fn apply_final_channel_level_alignment(
         && let Some(graph) = report.routing_graph.as_ref()
     {
         let fir_coeffs = retained_fir_coeffs_by_channel(result);
-        crate::topology::reconstruct_deployed_source_curves(
-            &result.channels,
-            &fir_coeffs,
-            graph,
-            report.optimization.as_ref(),
-            sample_rate,
-            sidecar_dir,
-        )
+        // Without calibrated main/sub timing the coherent splice verdict is
+        // arbitrary: verify levels on unenforced curves instead of rejecting
+        // the alignment on luck. Level matching itself is phase-independent.
+        if crate::topology::crossover_timing_refused(report.optimization.as_ref()) {
+            crate::topology::reconstruct_deployed_source_curves_unenforced(
+                &result.channels,
+                &fir_coeffs,
+                graph,
+                report.optimization.as_ref(),
+                sample_rate,
+                sidecar_dir,
+            )
+        } else {
+            crate::topology::reconstruct_deployed_source_curves(
+                &result.channels,
+                &fir_coeffs,
+                graph,
+                report.optimization.as_ref(),
+                sample_rate,
+                sidecar_dir,
+            )
+        }
     } else {
         Ok(result
             .channel_results
@@ -1239,8 +2054,9 @@ fn apply_final_channel_level_alignment(
         .filter(|(name, _)| !is_subwoofer_channel(config, name))
         .map(|(name, curve)| (name.clone(), curve.clone()))
         .collect::<HashMap<_, _>>();
-    let (_, spread_after_db) = final_role_level_alignment_gains(config, &verification_curves);
-    if !spread_after_db.is_finite() || spread_after_db > FINAL_CHANNEL_LEVEL_TOLERANCE_DB {
+    let (_, spread_after_db, _) =
+        final_role_level_alignment_gains(config, &verification_curves, &reference_curves);
+    if !spread_after_db.is_finite() {
         *result = snapshot;
         return Err(AutoeqError::OptimizationFailed {
             message: format!(
@@ -1251,17 +2067,47 @@ fn apply_final_channel_level_alignment(
     }
 
     refresh_deployed_inter_channel_deviation(result, config);
-    let mut check = StageCheck::pass("final_channel_level_spread_db", StageCheckKind::Safety);
+    // Residual spread beyond tolerance is accepted as a Degraded outcome:
+    // trims are capped (above), so exact broadband equality is no longer
+    // chased at the cost of discarding the whole correction. The measured
+    // spread stays on the check against its original limit.
+    let spread_accepted = spread_after_db > FINAL_CHANNEL_LEVEL_TOLERANCE_DB;
+    let mut check = if spread_accepted {
+        StageCheck::fail(
+            "final_channel_level_spread_db",
+            StageCheckKind::Safety,
+            "residual spread accepted after trim cap",
+        )
+    } else {
+        StageCheck::pass("final_channel_level_spread_db", StageCheckKind::Safety)
+    };
     check.observed = Some(spread_after_db);
     check.limit = Some(FINAL_CHANNEL_LEVEL_TOLERANCE_DB);
     Ok(StageOutcome {
         checks: vec![check],
         stage: "final_channel_level_alignment".to_string(),
-        status: StageStatus::Applied,
-        advisories: applied
-            .into_iter()
-            .map(|(name, gain_db)| format!("{name}:{gain_db:.3}dB"))
-            .collect(),
+        status: if spread_accepted {
+            StageStatus::Degraded
+        } else {
+            StageStatus::Applied
+        },
+        advisories: std::iter::once(format!(
+            "alignment_band_hz={:.1}-{:.1}; spread_before_db={spread_before_db:.3}; spread_after_db={spread_after_db:.3}",
+            alignment_band.0, alignment_band.1
+        ))
+        .chain(
+            applied
+                .into_iter()
+                .map(|(name, gain_db)| format!("{name}:{gain_db:.3}dB")),
+        )
+        .chain(
+            spread_accepted.then(|| {
+                format!(
+                    "residual_spread_accepted_after_trim_cap:max_trim_db={FINAL_CHANNEL_LEVEL_MAX_TRIM_DB:.1}"
+                )
+            }),
+        )
+        .collect(),
     })
 }
 
@@ -1370,6 +2216,7 @@ fn assemble_workflow_result_with_frequency_samples(
         PipelineStepId::TopologyWorkflowExecution,
         PipelineStepStatus::Completed,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: result.channel_results.len(),
             total_speakers: result.channel_results.len(),
@@ -1398,6 +2245,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::FirGeneration,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "FIR generation".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -1494,6 +2342,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::MixedPhaseFirGeneration,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Mixed-phase FIR".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -1598,6 +2447,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::PhaseCorrection,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Phase correction".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -1612,17 +2462,62 @@ fn assemble_workflow_result_with_frequency_samples(
             },
         )?;
     }
+    // Evidence intake runs on every pipeline pass: per-channel operation
+    // boundaries are evaluated from declared provenance and attached to the
+    // result whether or not phase correction is enabled.
+    let mut phase_names: Vec<String> = result.channel_results.keys().cloned().collect();
+    // Canonical order: HashMap iteration is per-process random; sort so
+    // `operation_gates` (and hashes over it) are deterministic across runs.
+    phase_names.sort();
+    let gate_inputs: Vec<crate::evidence_intake::ChannelGateInput<'_>> = phase_names
+        .iter()
+        .filter_map(|name| {
+            result.channel_results.get(name).map(|ch| {
+                let source = crate::evidence_intake::resolve_channel_source(config, name);
+                crate::evidence_intake::ChannelGateInput {
+                    channel: name,
+                    source,
+                    freq_hz: ch.initial_curve.freq.as_slice().unwrap_or(&[]),
+                    has_phase_data: ch
+                        .initial_curve
+                        .phase
+                        .as_ref()
+                        .is_some_and(|p| !p.is_empty()),
+                }
+            })
+        })
+        .collect();
+    let phase_gates = crate::evidence_intake::gate_all_channels(&gate_inputs, None);
+    result.metadata.operation_gates = Some(phase_gates.clone());
     if should_run_standalone_phase_correction(config)
         && let Some(ref pc_config) = config.optimizer.phase_correction
     {
         let out_dir = output_dir.unwrap_or(Path::new("."));
-        let names: Vec<String> = result.channel_results.keys().cloned().collect();
-        for name in &names {
+        for name in &phase_names {
             if let Some(ch) = result.channel_results.get_mut(name)
                 && let Some(chain) = result.channels.get_mut(name)
             {
+                let gate = phase_gates.iter().find(|gate| gate.channel == *name);
                 let before_plugins = chain.plugins.len();
-                apply_phase_correction(name, ch, chain, pc_config, sample_rate, Some(out_dir));
+                if let Some(gate) = gate {
+                    let refusals = apply_phase_correction(
+                        name,
+                        ch,
+                        chain,
+                        pc_config,
+                        sample_rate,
+                        Some(out_dir),
+                        gate,
+                        config.optimizer.target_response.as_ref(),
+                        config
+                            .optimizer
+                            .schroeder_split
+                            .as_ref()
+                            .filter(|split| split.enabled)
+                            .map(|split| split.schroeder_freq),
+                    );
+                    result.metadata.provisional_decisions.extend(refusals);
+                }
                 workflow_refresh_needed |= chain.plugins.len() != before_plugins;
             }
         }
@@ -1818,6 +2713,7 @@ fn assemble_workflow_result_with_frequency_samples(
         PipelineStepId::ImpulseResponseComputation,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: "IR computation".to_string(),
             speaker_index: 0,
             total_speakers: result.channel_results.len(),
@@ -1891,6 +2787,7 @@ fn assemble_workflow_result_with_frequency_samples(
             PipelineStepId::ChannelMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Channel matching".to_string(),
                 speaker_index: 0,
                 total_speakers: result.channel_results.len(),
@@ -1944,7 +2841,7 @@ fn assemble_workflow_result_with_frequency_samples(
             outcome.stage == "temporal_fir" && outcome.status == StageStatus::Applied
         });
     refresh_temporal_ir_evidence(&mut result, config, sample_rate, sidecar_dir);
-    apply_final_correction_safety_gate_preserving_routed_crossover(
+    prepare_cumulative_correction(
         &mut result,
         sample_rate,
         config.optimizer.smooth_n,
@@ -1958,7 +2855,7 @@ fn assemble_workflow_result_with_frequency_samples(
         config.optimizer.processing_mode.clone(),
     );
     let level_alignment =
-        apply_final_channel_level_alignment(&mut result, config, sample_rate, sidecar_dir)?;
+        prepare_final_channel_level_alignment(&mut result, config, sample_rate, sidecar_dir);
     workflow_refresh_needed |= level_alignment.status == StageStatus::Applied;
     result.metadata.stage_outcomes.push(level_alignment);
 
@@ -2023,12 +2920,21 @@ fn commit_or_restore_routed_safety_replay(
         Ok(deployed) => result.deployed_source_curves = deployed,
         Err(error) => {
             let playback = |state: &RoomOptimizationResult| {
-                let channels: std::collections::BTreeMap<_, _> = state.channels.iter().map(|(name, chain)| {
-                    let drivers = chain.drivers.as_ref().map(|drivers| drivers.iter().map(|driver| {
+                let channels: std::collections::BTreeMap<_, _> = state
+                    .channels
+                    .iter()
+                    .map(|(name, chain)| {
+                        let drivers = chain.drivers.as_ref().map(|drivers| {
+                            drivers.iter().map(|driver| {
                         serde_json::json!({"name": driver.name, "plugins": driver.plugins})
-                    }).collect::<Vec<_>>());
-                    (name, serde_json::json!({"plugins": chain.plugins, "drivers": drivers}))
-                }).collect();
+                    }).collect::<Vec<_>>()
+                        });
+                        (
+                            name,
+                            serde_json::json!({"plugins": chain.plugins, "drivers": drivers}),
+                        )
+                    })
+                    .collect();
                 serde_json::json!({
                     "channels": channels,
                     "fir": retained_fir_coeffs_by_channel(state),
@@ -2052,6 +2958,7 @@ fn commit_or_restore_routed_safety_replay(
                     .push("safety_replay_rejected_pre_gate_dsp_restored".to_string());
                 report.violations.sort();
                 report.violations.dedup();
+                report.refresh_outcome();
             }
             let pre_gate_outcomes = pre_safety_result.metadata.stage_outcomes.len();
             let mut gate_outcomes = std::mem::take(&mut result.metadata.stage_outcomes);
@@ -2084,6 +2991,142 @@ fn commit_or_restore_routed_safety_replay(
 }
 
 #[allow(clippy::too_many_arguments)]
+// Inner assembly may retain a rejected graph only as a refinement seed. The
+// public pipeline must pass finalization::select before publishing any result.
+fn prepare_cumulative_correction(
+    result: &mut RoomOptimizationResult,
+    sample_rate: f64,
+    smoothing_n: usize,
+    evaluation_band: (f64, f64),
+    sidecar_dir: &Path,
+    processing_mode: ProcessingMode,
+    group_delay_budget_ms: Option<f64>,
+) -> Result<()> {
+    // Routed replay already retains its rejected pre-gate graph on failure.
+    // Unrouted stage reversions also need their original kernels available to
+    // finalization's bounded-strength search, rather than only an identity seed.
+    let refinement_seed = result
+        .metadata
+        .bass_management
+        .as_ref()
+        .and_then(|bass| bass.routing_graph.as_ref())
+        .is_none()
+        .then(|| result.clone());
+    let gate_result = apply_final_correction_safety_gate_preserving_routed_crossover(
+        result,
+        sample_rate,
+        smoothing_n,
+        evaluation_band,
+        sidecar_dir,
+        processing_mode,
+        group_delay_budget_ms,
+    );
+    if gate_result.is_ok()
+        && let Some(mut seed) = refinement_seed
+        && !finalization::same_correction_kernels(&seed, result)
+    {
+        // The restored graph must have its own replayed carriers. Never keep
+        // the gate's identity curves or revive an unreadable FIR resource.
+        if let Err(error) =
+            refresh_non_routed_deployed_source_curves(&mut seed, sample_rate, sidecar_dir)
+        {
+            result.metadata.stage_outcomes.push(StageOutcome {
+                stage: "correction_refinement_seed_unavailable".into(),
+                status: StageStatus::Degraded,
+                advisories: vec![error.to_string()],
+                checks: Vec::new(),
+            });
+        } else {
+            let mut acceptance = result.metadata.correction_acceptance.take();
+            if let Some(report) = acceptance.as_mut() {
+                report.accepted = false;
+                report.decision = roomeq_model::CorrectionDecision::Rejected;
+                report.refresh_outcome();
+            }
+            let outcomes = std::mem::take(&mut result.metadata.stage_outcomes);
+            *result = seed;
+            result.metadata.correction_acceptance = acceptance;
+            result.metadata.stage_outcomes = outcomes;
+            result.metadata.stage_outcomes.push(StageOutcome {
+                stage: "correction_seed_requires_final_refinement".into(),
+                status: StageStatus::Degraded,
+                advisories: vec![
+                    "pre_gate_correction_kernels_retained_only_as_rejected_refinement_seed".into(),
+                    "every_trial_requires_independent_final_safety_and_physical_seat_replay".into(),
+                ],
+                checks: Vec::new(),
+            });
+        }
+    }
+    if let Err(error) = gate_result {
+        result.metadata.stage_outcomes.push(StageOutcome {
+            stage: "correction_candidate_requires_final_refinement".into(),
+            status: StageStatus::Degraded,
+            advisories: vec![error.to_string()],
+            checks: Vec::new(),
+        });
+    }
+    Ok(())
+}
+
+fn prepare_final_channel_level_alignment(
+    result: &mut RoomOptimizationResult,
+    config: &RoomConfig,
+    sample_rate: f64,
+    sidecar_dir: &Path,
+) -> StageOutcome {
+    apply_final_channel_level_alignment(result, config, sample_rate, sidecar_dir).unwrap_or_else(
+        |error| StageOutcome {
+            stage: "channel_level_candidate_requires_final_refinement".into(),
+            status: StageStatus::Degraded,
+            advisories: vec![error.to_string()],
+            checks: Vec::new(),
+        },
+    )
+}
+
+fn refresh_non_routed_deployed_source_curves(
+    result: &mut RoomOptimizationResult,
+    sample_rate: f64,
+    sidecar_dir: &Path,
+) -> Result<()> {
+    // Generic driver groups use an empty deployed map to signal that their
+    // reported aggregate/target response, rather than a logical source replay,
+    // owns final level validation.
+    if result.deployed_source_curves.is_empty()
+        && result
+            .channels
+            .values()
+            .any(|chain| chain.drivers.is_some())
+    {
+        return Ok(());
+    }
+    let embedded_irs = retained_fir_coeffs_by_channel(result);
+    let realized = result
+        .channel_results
+        .iter()
+        .map(|(name, channel)| {
+            let chain =
+                result
+                    .channels
+                    .get(name)
+                    .ok_or_else(|| AutoeqError::OptimizationFailed {
+                        message: format!("missing serialized DSP chain for channel '{name}'"),
+                    })?;
+            let curve = crate::ctc::apply_channel_dsp_chain_to_curve_with_embedded_irs(
+                chain,
+                &channel.initial_curve,
+                sample_rate,
+                sidecar_dir,
+                &embedded_irs,
+            )?;
+            Ok((name.clone(), curve))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    result.deployed_source_curves = realized;
+    Ok(())
+}
+
 fn apply_final_correction_safety_gate_preserving_routed_crossover(
     result: &mut RoomOptimizationResult,
     sample_rate: f64,
@@ -2101,16 +3144,30 @@ fn apply_final_correction_safety_gate_preserving_routed_crossover(
         // An accepted joint-route residual must not fail the run here after
         // surviving every correction stage: snapshot best-effort curves with
         // a degraded advisory instead. Anything else keeps the hard error.
+        // Without calibrated main/sub timing there is no coherent verdict to
+        // snapshot: use unenforced curves directly instead of rejecting the
+        // safety replay on luck.
         let mut splice_degraded = Vec::new();
-        let deployed = crate::topology::reconstruct_deployed_snapshot_best_effort(
-            &result.channels,
-            &fir_coeffs,
-            &graph,
-            optimization.as_ref(),
-            sample_rate,
-            sidecar_dir,
-            &mut splice_degraded,
-        )?;
+        let deployed = if crate::topology::crossover_timing_refused(optimization.as_ref()) {
+            crate::topology::reconstruct_deployed_source_curves_unenforced(
+                &result.channels,
+                &fir_coeffs,
+                &graph,
+                optimization.as_ref(),
+                sample_rate,
+                sidecar_dir,
+            )?
+        } else {
+            crate::topology::reconstruct_deployed_snapshot_best_effort(
+                &result.channels,
+                &fir_coeffs,
+                &graph,
+                optimization.as_ref(),
+                sample_rate,
+                sidecar_dir,
+                &mut splice_degraded,
+            )?
+        };
         for entry in &splice_degraded {
             result.metadata.stage_outcomes.push(StageOutcome {
                 checks: Vec::new(),
@@ -2134,16 +3191,39 @@ fn apply_final_correction_safety_gate_preserving_routed_crossover(
         group_delay_budget_ms,
     );
 
+    // The safety gate may serialize per-output gain changes after the deployed
+    // curves were captured. For non-routed results, publish the newly realized
+    // channel curves before final role-pair alignment. An empty map is the
+    // intentional sentinel for generic driver groups and must remain empty.
+    if routed_snapshot.is_none() {
+        refresh_non_routed_deployed_source_curves(result, sample_rate, sidecar_dir)?;
+    }
+
     if let Some((pre_safety_result, pre_safety_deployed, graph, optimization)) = routed_snapshot {
         let fir_coeffs = retained_fir_coeffs_by_channel(result);
-        let post_safety_deployed = crate::topology::reconstruct_deployed_source_curves(
-            &result.channels,
-            &fir_coeffs,
-            &graph,
-            optimization.as_ref(),
-            sample_rate,
-            sidecar_dir,
-        );
+        // Without calibrated main/sub timing the coherent splice verdict is
+        // arbitrary: replay unenforced instead of restoring pre-gate DSP on
+        // luck. Structural replay failures still restore and fail.
+        let post_safety_deployed =
+            if crate::topology::crossover_timing_refused(optimization.as_ref()) {
+                crate::topology::reconstruct_deployed_source_curves_unenforced(
+                    &result.channels,
+                    &fir_coeffs,
+                    &graph,
+                    optimization.as_ref(),
+                    sample_rate,
+                    sidecar_dir,
+                )
+            } else {
+                crate::topology::reconstruct_deployed_source_curves(
+                    &result.channels,
+                    &fir_coeffs,
+                    &graph,
+                    optimization.as_ref(),
+                    sample_rate,
+                    sidecar_dir,
+                )
+            };
         commit_or_restore_routed_safety_replay(
             result,
             pre_safety_result,
@@ -2188,6 +3268,7 @@ fn record_missing_mixed_phase_fir_reversions(
         report.reverted_stages.dedup();
         report.violations.sort();
         report.violations.dedup();
+        report.refresh_outcome();
     }
 
     result
@@ -2291,6 +3372,7 @@ fn apply_topology_phase_alignment(
         PipelineStepId::PhaseAlignment,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: String::new(),
             speaker_index: 0,
             total_speakers: pairings.len(),
@@ -2380,6 +3462,12 @@ fn apply_topology_height_alignment_with_frequency_samples(
     sample_rate: f64,
     frequency_samples: usize,
 ) -> StageOutcome {
+    let mut timbre_outside_band =
+        height_config.match_timbre && !broadband_matching_within_correction_band(config);
+    let mut height_config = height_config.clone();
+    if timbre_outside_band {
+        height_config.match_timbre = false;
+    }
     let mut channel_arrivals = phase_arrivals_for_channels_with_frequency_samples(
         config,
         &result.channel_results,
@@ -2392,12 +3480,23 @@ fn apply_topology_height_alignment_with_frequency_samples(
         }
     }
     let corrected_curves = collect_current_final_curves(&result.channel_results);
-    let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &corrected_curves);
+    let reference_curves = result
+        .channel_results
+        .iter()
+        .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
+        .collect();
+    let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &reference_curves);
+    if height_config.match_timbre
+        && !broadband_shelves_supported_by_band((fit_min_freq, fit_max_freq))
+    {
+        timbre_outside_band = true;
+        height_config.match_timbre = false;
+    }
     let mut height_results =
         match roomeq_engine::height_channel_alignment::compute_height_channel_alignment_with_coherence_threshold(
             &corrected_curves,
             &channel_arrivals,
-            height_config,
+        &height_config,
             sample_rate,
             fit_min_freq,
             fit_max_freq,
@@ -2508,6 +3607,9 @@ fn apply_topology_height_alignment_with_frequency_samples(
     if height_results.is_empty() {
         advisories.push("no_height_channels".to_string());
     }
+    if timbre_outside_band {
+        advisories.push("broadband_shelves_outside_correction_band".into());
+    }
     advisories.sort();
     advisories.dedup();
     let degraded = advisories.iter().any(|advisory| {
@@ -2554,6 +3656,7 @@ fn assemble_generic_result_with_frequency_samples(
         mut curves,
         channel_means,
         mut channel_arrivals,
+        provisional_decisions,
     } = generic;
     let mut stage_outcomes = Vec::new();
 
@@ -2721,12 +3824,26 @@ fn assemble_generic_result_with_frequency_samples(
         .filter(|(name, _)| !is_subwoofer_channel(config, name))
         .map(|(name, curve)| (name.clone(), curve.clone()))
         .collect();
-    if spectral_curves.len() > 1 {
+    let spectral_reference_curves = channel_results
+        .iter()
+        .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
+        .collect();
+    let spectral_band = shared_alignment_fit_band(config, &spectral_reference_curves);
+    let broadband_timbre_supported = broadband_matching_within_correction_band(config)
+        && broadband_shelves_supported_by_band(spectral_band);
+    if spectral_curves.len() > 1 && broadband_timbre_supported {
         // Group EQ has anchored each target to its measured upper band. Use
         // one shared absolute target when applying inter-channel level trims.
-        let targets: Option<Vec<Curve>> = spectral_curves.keys().map(|name| {
-            channel_chains.get(name)?.target_curve.clone().map(Curve::from)
-        }).collect();
+        let targets: Option<Vec<Curve>> = spectral_curves
+            .keys()
+            .map(|name| {
+                channel_chains
+                    .get(name)?
+                    .target_curve
+                    .clone()
+                    .map(Curve::from)
+            })
+            .collect();
         if let Some(targets) = targets {
             let mut shared = targets[0].clone();
             shared.spl.fill(0.0);
@@ -2745,6 +3862,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::SpectralAlignment,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Spectral alignment".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -2758,8 +3876,7 @@ fn assemble_generic_result_with_frequency_samples(
                 step_status: None,
             },
         )?;
-        let min_freq = config.optimizer.min_freq;
-        let max_freq = config.optimizer.max_freq;
+        let (min_freq, max_freq) = spectral_band;
         // Compute post-EQ mean SPL per channel for the level spread warning
         let mut post_eq_means: HashMap<String, f64> = HashMap::new();
         for (channel_name, final_curve) in &spectral_curves {
@@ -2895,12 +4012,14 @@ fn assemble_generic_result_with_frequency_samples(
     let timbre_config = config.optimizer.inter_channel_timbre_matching.as_ref();
     if let Some(timbre_config) = timbre_config
         && timbre_config.enabled
+        && broadband_timbre_supported
     {
         send_progress(
             observer_shared,
             PipelineStepId::InterChannelTimbreMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Inter-channel timbre matching".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -2928,7 +4047,7 @@ fn assemble_generic_result_with_frequency_samples(
             .filter(|(name, _)| !is_subwoofer_channel(config, name))
             .map(|(name, result)| (name.clone(), result.final_curve.clone()))
             .collect();
-        let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &corrected_curves);
+        let (fit_min_freq, fit_max_freq) = spectral_band;
 
         let stage_outcome = match roomeq_engine::inter_channel_timbre_matching::compute_inter_channel_timbre_matching_with_threshold(
             &corrected_curves,
@@ -3032,12 +4151,20 @@ fn assemble_generic_result_with_frequency_samples(
         emit_pipeline_event(observer_shared, event)?;
         stage_outcomes.push(stage_outcome);
     }
-    if !timbre_config.is_some_and(|config| config.enabled) {
+    if !timbre_config.is_some_and(|config| config.enabled) || !broadband_timbre_supported {
+        if timbre_config.is_some_and(|config| config.enabled) {
+            stage_outcomes.push(StageOutcome {
+                stage: "inter_channel_timbre_matching".into(),
+                status: StageStatus::Skipped,
+                advisories: vec!["broadband_shelves_outside_supported_band".into()],
+                checks: Vec::new(),
+            });
+        }
         emit_pipeline_event(
             observer_shared,
             PipelineEvent::skipped(
                 PipelineStepId::InterChannelTimbreMatching,
-                "Inter-channel timbre matching not enabled",
+                "Inter-channel timbre matching disabled or outside correction band",
             ),
         )?;
     }
@@ -3056,6 +4183,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::HeightChannelAlignment,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Height-channel alignment".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -3069,13 +4197,19 @@ fn assemble_generic_result_with_frequency_samples(
                 step_status: None,
             },
         )?;
+        let mut height_config = height_config.clone();
+        height_config.match_timbre &= broadband_timbre_supported;
         let corrected_curves = collect_current_final_curves(&channel_results);
-        let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &corrected_curves);
+        let reference_curves = channel_results
+            .iter()
+            .map(|(name, channel)| (name.clone(), channel.initial_curve.clone()))
+            .collect();
+        let (fit_min_freq, fit_max_freq) = shared_alignment_fit_band(config, &reference_curves);
         let stage_outcome =
             match roomeq_engine::height_channel_alignment::compute_height_channel_alignment_with_coherence_threshold(
                 &corrected_curves,
                 &channel_arrivals,
-            height_config,
+            &height_config,
             sample_rate,
             fit_min_freq,
             fit_max_freq,
@@ -3263,6 +4397,7 @@ fn assemble_generic_result_with_frequency_samples(
                 PipelineStepId::PhaseAlignment,
                 PipelineStepStatus::Started,
                 &RoomOptimizationProgress {
+                    response: None,
                     current_speaker: String::new(),
                     speaker_index: 0,
                     total_speakers: pairings.len(),
@@ -3400,6 +4535,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::PhaseCorrection,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Phase correction".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -3414,15 +4550,57 @@ fn assemble_generic_result_with_frequency_samples(
             },
         )?;
     }
+    // Evidence intake runs on every assembly: per-channel operation
+    // boundaries are evaluated from declared provenance and attached to the
+    // result whether or not phase correction is enabled.
+    let mut phase_names: Vec<String> = channel_results.keys().cloned().collect();
+    // Canonical order: HashMap iteration is per-process random; sort so
+    // `operation_gates` (and hashes over it) are deterministic across runs.
+    phase_names.sort();
+    let gate_inputs: Vec<crate::evidence_intake::ChannelGateInput<'_>> = phase_names
+        .iter()
+        .filter_map(|name| {
+            channel_results.get(name.as_str()).map(|ch| {
+                let source = crate::evidence_intake::resolve_channel_source(config, name);
+                crate::evidence_intake::ChannelGateInput {
+                    channel: name,
+                    source,
+                    freq_hz: ch.initial_curve.freq.as_slice().unwrap_or(&[]),
+                    has_phase_data: ch
+                        .initial_curve
+                        .phase
+                        .as_ref()
+                        .is_some_and(|p| !p.is_empty()),
+                }
+            })
+        })
+        .collect();
+    let phase_gates = crate::evidence_intake::gate_all_channels(&gate_inputs, None);
+    let mut phase_refusals = provisional_decisions;
     if should_run_standalone_phase_correction(config)
         && let Some(ref pc_config) = config.optimizer.phase_correction
     {
-        let names: Vec<String> = channel_results.keys().cloned().collect();
-        for name in &names {
+        for name in &phase_names {
             if let Some(ch) = channel_results.get_mut(name.as_str())
                 && let Some(chain) = channel_chains.get_mut(name.as_str())
+                && let Some(gate) = phase_gates.iter().find(|gate| gate.channel == *name)
             {
-                apply_phase_correction(name, ch, chain, pc_config, sample_rate, output_dir);
+                phase_refusals.extend(apply_phase_correction(
+                    name,
+                    ch,
+                    chain,
+                    pc_config,
+                    sample_rate,
+                    output_dir,
+                    gate,
+                    config.optimizer.target_response.as_ref(),
+                    config
+                        .optimizer
+                        .schroeder_split
+                        .as_ref()
+                        .filter(|split| split.enabled)
+                        .map(|split| split.schroeder_freq),
+                ));
             }
         }
         emit_pipeline_event(
@@ -3512,6 +4690,7 @@ fn assemble_generic_result_with_frequency_samples(
         PipelineStepId::ImpulseResponseComputation,
         PipelineStepStatus::Started,
         &RoomOptimizationProgress {
+            response: None,
             current_speaker: "IR computation".to_string(),
             speaker_index: 0,
             total_speakers,
@@ -3601,7 +4780,7 @@ fn assemble_generic_result_with_frequency_samples(
         roomeq_engine::output::take_mixed_phase_reports(&mut channel_chains);
 
     let metadata = OptimizationMetadata {
-            final_convolution_sha256: None,
+        final_convolution_sha256: None,
         pre_score: avg_pre_score,
         post_score: avg_post_score,
         algorithm: config.optimizer.algorithm.clone(),
@@ -3625,13 +4804,22 @@ fn assemble_generic_result_with_frequency_samples(
         validation_bundle: None,
         supporting_source: None,
         correction_acceptance: None,
+        audibility_veto: None,
+        veto_adjudication: None,
         optimizer_evidence: None,
         stage_outcomes,
         qa_seed_distribution: None,
         effective_config: None,
+        t60_flatness_tolerance_s: config.report_t60_tolerance_s(),
+        operation_gates: None,
+
+        provisional_decisions: phase_refusals,
+        epa_provenance: None,
+        playback_summary: None,
     };
 
     let mut result = RoomOptimizationResult {
+        finalized_decisions: None,
         channels: channel_chains,
         channel_results,
         deployed_source_curves: HashMap::new(),
@@ -3639,6 +4827,7 @@ fn assemble_generic_result_with_frequency_samples(
         combined_post_score: avg_post_score,
         metadata,
     };
+    result.metadata.operation_gates = Some(phase_gates);
 
     // Compute inter-channel deviation and optionally correct it
     if curves.len() > 1 {
@@ -3647,6 +4836,7 @@ fn assemble_generic_result_with_frequency_samples(
             PipelineStepId::ChannelMatching,
             PipelineStepStatus::Started,
             &RoomOptimizationProgress {
+                response: None,
                 current_speaker: "Channel matching".to_string(),
                 speaker_index: 0,
                 total_speakers,
@@ -3678,7 +4868,7 @@ fn assemble_generic_result_with_frequency_samples(
     let sidecar_dir = output_dir.unwrap_or(Path::new("."));
     temporal_fir::apply(&mut result, config, sample_rate, sidecar_dir, store)?;
     refresh_temporal_ir_evidence(&mut result, config, sample_rate, sidecar_dir);
-    apply_final_correction_safety_gate_preserving_routed_crossover(
+    prepare_cumulative_correction(
         &mut result,
         sample_rate,
         config.optimizer.smooth_n,
@@ -3692,7 +4882,7 @@ fn assemble_generic_result_with_frequency_samples(
         config.optimizer.processing_mode.clone(),
     );
     let level_alignment =
-        apply_final_channel_level_alignment(&mut result, config, sample_rate, sidecar_dir)?;
+        prepare_final_channel_level_alignment(&mut result, config, sample_rate, sidecar_dir);
     result.metadata.stage_outcomes.push(level_alignment);
 
     emit_pipeline_event(
@@ -3742,15 +4932,18 @@ pub fn optimize_speaker(
         target_curve: target_curve.cloned(),
         optimizer: optimizer_config,
         recording_config: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
+        reporting: None,
         cea2034_cache: None,
         provenance: Default::default(),
     };
     let max_iterations = generic_channel_progress_iterations(&room_config);
     let channel_for_progress = channel_name.to_string();
     let eq_callback: Option<roomeq_engine::OptimProgressCallback> = callback.map(|mut callback| {
-        Box::new(move |iteration, loss, epa_preference| {
+        Box::new(move |iteration, loss, epa_preference, response| {
             let action = callback(&RoomOptimizationProgress {
+                response,
                 current_speaker: channel_for_progress.clone(),
                 speaker_index: 0,
                 total_speakers: 1,
@@ -3785,6 +4978,13 @@ pub fn optimize_speaker(
         _arrival_time_ms,
         fir_coeffs,
         optimizer_evidence,
+        audibility_veto,
+        veto_adjudication,
+        measurement_conditioning,
+        // Multi-segment authorization is enforced in-engine; the per-segment
+        // report is visible at the single-channel boundary and is not
+        // re-published down this chain.
+        _segment_support,
     ) = process_speaker_internal(
         channel_name,
         speaker_config,
@@ -3795,6 +4995,7 @@ pub fn optimize_speaker(
         None, // no shared mean for standalone single-channel optimization
         None, // no probe_arrival_overrides on the standalone path
         crate::DEFAULT_FREQUENCY_SAMPLES,
+        None,
     )?;
 
     Ok(SpeakerOptimizationResult {
@@ -3806,5 +5007,8 @@ pub fn optimize_speaker(
         biquads,
         fir_coeffs,
         optimizer_evidence,
+        audibility_veto,
+        veto_adjudication,
+        measurement_conditioning,
     })
 }

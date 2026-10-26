@@ -1,16 +1,41 @@
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
+  "measured_impulse_responses": {
+    "L": {
+      "path": "measured_ir/Left_speaker__ir.csv",
+      "sample_rate_hz": 48000
+    },
+    "R": {
+      "path": "measured_ir/Right_speaker__ir.csv",
+      "sample_rate_hz": 48000
+    },
+    "sub_left": {
+      "path": "measured_ir/left_sub_better_placement__ir.csv",
+      "sample_rate_hz": 3000,
+      "output_channel": "Sub1",
+      "driver": "Sub1"
+    },
+    "sub_right": {
+      "path": "measured_ir/right_sub_better_placement__ir.csv",
+      "sample_rate_hz": 3000,
+      "output_channel": "Sub1",
+      "driver": "Sub2"
+    }
+  },
   "system": {
     "model": "stereo",
     "speakers": {
       "L": "L",
-      "R": "R",
-      "LFE": "subs"
+      "R": "R"
     },
     "subwoofers": {
-      "config": "mso",
+      "strategy": "mso",
+      "routing": "optimize",
       "crossover": ["bass_xover1", "bass_xover2"],
-      "subs": "L"
+      "outputs": [
+        { "id": "Sub1", "speaker": "sub_left" },
+        { "id": "Sub2", "speaker": "sub_right" }
+      ]
     }
   },
   "speakers": {
@@ -22,20 +47,8 @@
       "path": "right.csv",
       "name": "Right"
     },
-    "subs": {
-      "name": "Two subs",
-      "subwoofers": [
-        {
-          "path": "left_sub.csv",
-          "name": "Left Sub"
-        },
-        {
-          "path": "right_sub.csv",
-          "name": "Right Sub"
-        }
-      ],
-      "allpass_optimization": false
-    }
+    "sub_left": { "path": "left_sub.csv", "name": "Left Sub" },
+    "sub_right": { "path": "right_sub.csv", "name": "Right Sub" }
   },
   "crossovers": {
     "bass_xover1": {

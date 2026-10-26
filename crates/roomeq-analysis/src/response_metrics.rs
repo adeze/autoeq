@@ -21,6 +21,27 @@ pub fn mean_response_in_range(curve: &Curve, min_freq: f64, max_freq: f64) -> f6
 
 /// Detect the reproducible response band and its unsmoothed mean level.
 pub fn detect_passband_and_mean(curve: &Curve) -> (Option<(f64, f64)>, f64) {
+    detect_passband_with_reference(curve, None)
+}
+
+/// Detect the passband with the -10 dB reference restricted to a band.
+///
+/// Peaks outside `[reference_low_hz, reference_high_hz]` must not set the
+/// reference: a room mode below the band cannot veto usable in-band response.
+/// Threshold crossings still use the full measurement; callers intersect the
+/// returned band with their own usable range.
+pub fn detect_passband_and_mean_in_range(
+    curve: &Curve,
+    reference_low_hz: f64,
+    reference_high_hz: f64,
+) -> (Option<(f64, f64)>, f64) {
+    detect_passband_with_reference(curve, Some((reference_low_hz, reference_high_hz)))
+}
+
+fn detect_passband_with_reference(
+    curve: &Curve,
+    reference_band: Option<(f64, f64)>,
+) -> (Option<(f64, f64)>, f64) {
     let frequencies: Vec<f32> = curve
         .freq
         .iter()
@@ -33,8 +54,24 @@ pub fn detect_passband_and_mean(curve: &Curve) -> (Option<(f64, f64)>, f64) {
 
     let smoothed = autoeq_core::smooth_one_over_n_octave(curve, 1);
     let smoothed_levels: Vec<f32> = smoothed.spl.iter().map(|&level| level as f32).collect();
-    let reference_level = compute_average_response(&frequencies, &smoothed_levels, None);
-    if !reference_level.is_finite() || reference_level < -100.0 {
+    // A measured stopband must not lower the passband threshold. Use the
+    // octave-smoothed peak so narrow room modes do not set the reference.
+    let reference_level = match reference_band {
+        Some((low, high)) => smoothed_levels
+            .iter()
+            .zip(frequencies.iter())
+            .filter(|(_, frequency)| {
+                let frequency = f64::from(**frequency);
+                frequency >= low && frequency <= high
+            })
+            .map(|(level, _)| *level)
+            .fold(f32::NEG_INFINITY, f32::max),
+        None => smoothed_levels
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max),
+    };
+    if !reference_level.is_finite() {
         return (None, 0.0);
     }
     let threshold = reference_level - 10.0;
@@ -219,6 +256,53 @@ mod tests {
         assert!(low < 100.0);
         assert!(high > 200.0);
         assert!(mean.is_finite());
+    }
+
+    #[test]
+    fn in_range_reference_ignores_out_of_band_peak() {
+        // A +20 dB mode below the reference band must not veto the flat
+        // midrange (measured 2.2_genelec mains near 41 Hz).
+        let freq = Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 96);
+        let spl = freq.mapv(|f| if f < 60.0 { 100.0 } else { 80.0 });
+        let curve = Curve {
+            freq,
+            spl,
+            ..Curve::default()
+        };
+        let (band, _) = detect_passband_and_mean_in_range(&curve, 144.0, 2_000.0);
+        let (low, high) = band.expect("midrange passband");
+        assert!(low <= 144.0, "unexpected low {low}");
+        assert!(high >= 2_000.0, "unexpected high {high}");
+        let (unrestricted, _) = detect_passband_and_mean(&curve);
+        let (_, unrestricted_high) = unrestricted.expect("bass hump passband");
+        assert!(
+            unrestricted_high < 500.0,
+            "unrestricted reference keeps the veto: {unrestricted_high}"
+        );
+        assert!(
+            detect_passband_and_mean_in_range(&curve, 30_000.0, 40_000.0)
+                .0
+                .is_none(),
+            "an empty reference band must fail closed"
+        );
+    }
+
+    #[test]
+    fn passband_excludes_subwoofer_stopband_independently_of_level() {
+        for offset in [0.0, 80.0, -120.0] {
+            let freq = Array1::from_iter((0..241).map(|i| 20.0 * 800.0_f64.powf(i as f64 / 240.0)));
+            let spl = freq.mapv(|f| offset - 24.0 * (f / 200.0).log2().max(0.0));
+            let curve = Curve {
+                freq,
+                spl,
+                ..Curve::default()
+            };
+            let (band, mean) = detect_passband_and_mean(&curve);
+            let (low, high) = band.expect("measured bass passband");
+            assert!((low - 20.0).abs() < 0.01);
+            assert!((200.0..400.0).contains(&high), "stopband included: {high}");
+            assert!((mean - offset).abs() < 2.0, "stopband dragged mean: {mean}");
+        }
     }
 
     #[test]

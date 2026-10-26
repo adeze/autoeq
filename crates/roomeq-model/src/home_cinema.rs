@@ -104,9 +104,21 @@ pub fn matching_group_key_for_role(role: HomeCinemaRole) -> Option<&'static str>
 /// Determine the logical channels that a RoomEQ configuration exposes.
 pub fn logical_channel_names(config: &RoomConfig) -> Vec<String> {
     if let Some(system) = config.system.as_ref() {
-        let mut pairs: Vec<_> = system.speakers.keys().cloned().collect();
-        pairs.sort();
-        pairs
+        match system.model {
+            crate::SystemModel::Stereo => vec!["L".to_string(), "R".to_string()],
+            crate::SystemModel::HomeCinema => {
+                let mut channels: Vec<_> = system.speakers.keys().cloned().collect();
+                channels.retain(|channel| !channel.eq_ignore_ascii_case("LFE"));
+                channels.sort();
+                channels.push("LFE".to_string());
+                channels
+            }
+            crate::SystemModel::Custom => {
+                let mut channels: Vec<_> = system.speakers.keys().cloned().collect();
+                channels.sort();
+                channels
+            }
+        }
     } else if let Some(recording) = config.recording_config.as_ref()
         && let Some(names) = recording.channel_names.as_ref()
         && !names.is_empty()
@@ -122,7 +134,7 @@ pub fn logical_channel_names(config: &RoomConfig) -> Vec<String> {
 /// Resolve physical speaker configurations into their logical channel names.
 pub fn logical_speaker_configs(config: &RoomConfig) -> HashMap<String, SpeakerConfig> {
     if let Some(system) = config.system.as_ref() {
-        system
+        let mut resolved: HashMap<String, SpeakerConfig> = system
             .speakers
             .iter()
             .filter_map(|(role, key)| {
@@ -132,7 +144,15 @@ pub fn logical_speaker_configs(config: &RoomConfig) -> HashMap<String, SpeakerCo
                     .cloned()
                     .map(|speaker| (role.clone(), speaker))
             })
-            .collect()
+            .collect();
+        if let Some(subwoofers) = system.subwoofers.as_ref() {
+            for output in &subwoofers.outputs {
+                if let Some(speaker) = config.speakers.get(&output.speaker) {
+                    resolved.insert(output.id.clone(), speaker.clone());
+                }
+            }
+        }
+        resolved
     } else {
         config.speakers.clone()
     }
@@ -408,20 +428,22 @@ pub struct AllChannelMultiSeatAcceptance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BassManagementReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crossover_cancellation: Vec<crate::CrossoverCancellationEvidence>,
+    pub routing_title: String,
     pub enabled: bool,
     pub crossover_type: String,
     pub crossover_frequency_hz: Option<f64>,
     pub redirected_bass_enabled: bool,
-    pub lfe_channel: String,
-    pub lfe_playback_gain_db: f64,
-    pub lfe_low_pass_hz: f64,
-    pub lfe_gain_applied_to_chain: bool,
+    /// Home-cinema-only LFE programme-input policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lfe: Option<LfeBassManagementReport>,
     pub sub_trim_db: f64,
     pub max_sub_boost_db: f64,
     pub headroom_margin_db: f64,
     pub applied_sub_gain_db: Option<f64>,
     pub gain_limited: bool,
-    pub physical_sub_output: String,
+    pub physical_sub_outputs: Vec<String>,
     pub redirected_bass_channel_count: usize,
     pub main_high_pass_hz: Option<f64>,
     pub sub_low_pass_hz: Option<f64>,
@@ -441,8 +463,19 @@ pub struct BassManagementReport {
     pub advisory: String,
 }
 
+/// Canonical home-cinema LFE programme-input policy.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LfeBassManagementReport {
+    pub input_channel: String,
+    pub playback_gain_db: f64,
+    pub low_pass_hz: f64,
+    pub gain_applied_to_chain: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BassManagementOptimizationReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossover_cancellation: Option<crate::CrossoverCancellationContext>,
     pub applied: bool,
     pub phase_required: bool,
     pub phase_available: bool,
@@ -471,6 +504,9 @@ pub struct BassManagementOptimizationReport {
     pub source_results: Vec<BassManagementSourceReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_output_results: Vec<BassManagementSubOutputReport>,
+    /// Stereo-only independently optimized input-to-physical-output routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stereo_routing: Option<StereoBassRoutingReport>,
     pub advisories: Vec<String>,
 }
 
@@ -485,9 +521,16 @@ pub struct BassManagementSignalFlowEntry {
     pub redirects_bass: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BassManagementRoutingGraph {
+    /// Internal primary-output compatibility accessor. Serialized metadata uses
+    /// `physical_sub_outputs` exclusively.
+    #[serde(skip)]
+    #[schemars(skip)]
     pub physical_sub_output: String,
+    /// Ordered physical subwoofer output identities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub physical_sub_outputs: Vec<String>,
     pub input_channels: Vec<String>,
     pub output_channels: Vec<String>,
     pub routes: Vec<BassManagementRoute>,
@@ -496,7 +539,91 @@ pub struct BassManagementRoutingGraph {
     /// Final down-only calibration trims per logical input channel.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub input_trim_db: HashMap<String, f64>,
+    /// Original measured-curve band used for post-DSP main-level alignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_dsp_main_alignment_band_hz: Option<[f64; 2]>,
+    /// Stereo-only topology diagnostics. Home cinema always leaves this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stereo_routing: Option<StereoBassRoutingReport>,
     pub advisories: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for BassManagementRoutingGraph {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The v3 wire format has one ordered output list, not a second legacy
+        // primary identity. Restore the internal accessor after a JSON round trip.
+        #[derive(Deserialize)]
+        struct Fields {
+            #[serde(default)]
+            physical_sub_outputs: Vec<String>,
+            input_channels: Vec<String>,
+            output_channels: Vec<String>,
+            routes: Vec<BassManagementRoute>,
+            #[serde(default)]
+            matrix: Option<BassManagementMatrix>,
+            #[serde(default)]
+            input_trim_db: HashMap<String, f64>,
+            #[serde(default)]
+            post_dsp_main_alignment_band_hz: Option<[f64; 2]>,
+            #[serde(default)]
+            stereo_routing: Option<StereoBassRoutingReport>,
+            advisories: Vec<String>,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        if let Some([low_hz, high_hz]) = fields.post_dsp_main_alignment_band_hz
+            && (!low_hz.is_finite() || !high_hz.is_finite() || low_hz <= 0.0 || low_hz >= high_hz)
+        {
+            return Err(serde::de::Error::custom(
+                "post-DSP main alignment band must contain finite positive ordered frequencies",
+            ));
+        }
+        Ok(Self {
+            physical_sub_output: fields
+                .physical_sub_outputs
+                .first()
+                .cloned()
+                .unwrap_or_default(),
+            physical_sub_outputs: fields.physical_sub_outputs,
+            input_channels: fields.input_channels,
+            output_channels: fields.output_channels,
+            routes: fields.routes,
+            matrix: fields.matrix,
+            input_trim_db: fields.input_trim_db,
+            post_dsp_main_alignment_band_hz: fields.post_dsp_main_alignment_band_hz,
+            stereo_routing: fields.stereo_routing,
+            advisories: fields.advisories,
+        })
+    }
+}
+
+/// Supported stereo input-to-subwoofer matrices.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StereoBassTopology {
+    DirectPair,
+    CrossedPair,
+    DualMono,
+}
+
+/// One evaluated stereo routing candidate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct StereoBassRoutingCandidateReport {
+    pub topology: StereoBassTopology,
+    pub objective: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
+    pub headroom_margin_db: f64,
+    /// Row-major `[physical output][L, R]` coefficients.
+    pub matrix: Vec<Vec<f64>>,
+}
+
+/// Selected stereo topology plus evidence for every evaluated candidate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct StereoBassRoutingReport {
+    pub selected_topology: StereoBassTopology,
+    pub matrix: Vec<Vec<f64>>,
+    pub candidates: Vec<StereoBassRoutingCandidateReport>,
+    pub selection_basis: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -533,6 +660,59 @@ mod tests {
     use crate::{CrossoverConfig, SubwooferSystemConfig, SystemConfig};
 
     #[test]
+    fn routing_graph_restores_primary_output_from_v3_order() {
+        let wire = serde_json::json!({
+            "physical_sub_outputs": ["Sub2", "Sub1"],
+            "input_channels": ["L", "LFE"],
+            "output_channels": ["L", "Sub2", "Sub1"],
+            "routes": [],
+            "advisories": []
+        });
+        let graph: super::BassManagementRoutingGraph = serde_json::from_value(wire).unwrap();
+        assert_eq!(graph.physical_sub_output, "Sub2");
+        let saved = serde_json::to_value(&graph).unwrap();
+        assert!(saved.get("physical_sub_output").is_none());
+        assert_eq!(
+            saved["physical_sub_outputs"],
+            serde_json::json!(["Sub2", "Sub1"])
+        );
+        let restored: super::BassManagementRoutingGraph = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.physical_sub_output, "Sub2");
+    }
+
+    #[test]
+    fn routing_graph_accepts_only_a_finite_ordered_calibration_band() {
+        let wire = serde_json::json!({
+            "physical_sub_outputs": ["Sub1"],
+            "input_channels": ["L", "R", "LFE"],
+            "output_channels": ["L", "R", "Sub1"],
+            "routes": [],
+            "post_dsp_main_alignment_band_hz": [250.0, 2000.0],
+            "advisories": []
+        });
+        let graph: super::BassManagementRoutingGraph =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(graph.post_dsp_main_alignment_band_hz, Some([250.0, 2000.0]));
+
+        for band in [[0.0, 100.0], [100.0, 100.0], [200.0, 100.0]] {
+            let mut invalid = wire.clone();
+            invalid["post_dsp_main_alignment_band_hz"] = serde_json::json!(band);
+            assert!(
+                serde_json::from_value::<super::BassManagementRoutingGraph>(invalid).is_err(),
+                "invalid alignment band should be rejected: {band:?}"
+            );
+        }
+
+        let mut legacy = wire;
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("post_dsp_main_alignment_band_hz");
+        let graph: super::BassManagementRoutingGraph = serde_json::from_value(legacy).unwrap();
+        assert_eq!(graph.post_dsp_main_alignment_band_hz, None);
+    }
+
+    #[test]
     fn default_route_matrix_gain_is_unity() {
         assert_eq!(default_route_matrix_gain(), 1.0);
     }
@@ -557,8 +737,9 @@ mod tests {
                 }),
                 subwoofers: Some(SubwooferSystemConfig {
                     config: crate::SubwooferStrategy::default(),
+                    routing: Default::default(),
+                    outputs: Vec::new(),
                     crossover: Some("main".into()),
-                    mapping: HashMap::new(),
                 }),
                 ..SystemConfig::default()
             }),

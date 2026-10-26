@@ -78,16 +78,124 @@ fn reference(name: &str) -> ConvolutionSidecarReference {
 }
 
 #[test]
+fn external_target_keeps_pre_score_identical_across_fir_modes() {
+    let measurement = curve(false);
+    let target_curve = Curve {
+        freq: measurement.freq.clone(),
+        spl: measurement.freq.mapv(|f| -10.0 * (f / 20.0).log10() / 3.0),
+        ..Curve::default()
+    };
+    let resources = EqResources {
+        target: Some(crate::eq::PreparedEqTarget::Curve(Box::new(
+            target_curve.clone(),
+        ))),
+        ..EqResources::default()
+    };
+    let prepared = prepared(measurement.clone());
+    let room = config();
+    let target = build_target_context("left", &room, &measurement, None);
+    let features = preprocessed(&measurement);
+    let evaluation = roomeq_quality::QualityEvaluationConfig {
+        min_freq_hz: 20.0,
+        max_freq_hz: 20_000.0,
+        normalize_level: true,
+        schroeder_hz: None,
+    };
+    let score = |target: &Curve| {
+        roomeq_quality::evaluate_acoustic_quality(
+            std::slice::from_ref(&measurement),
+            std::slice::from_ref(&measurement),
+            &[],
+            &[],
+            Some(target),
+            evaluation,
+            roomeq_quality::TemporalQualityEvidence::default(),
+        )
+        .unwrap()
+        .training
+        .pre_weighted_rms_median_db
+    };
+    let expected = score(&target_curve);
+    for mode in [
+        FirChannelMode::PhaseLinear,
+        FirChannelMode::Hybrid,
+        FirChannelMode::MixedPhase,
+    ] {
+        let result = process_fir_channel(FirChannelRequest {
+            mode,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("left.wav"),
+            callback: None,
+        })
+        .unwrap();
+        let published = Curve::from(
+            result
+                .channel
+                .target_curve
+                .expect("external target survives assembly"),
+        );
+        assert!((score(&published) - expected).abs() < 1e-10);
+    }
+}
+
+#[test]
+fn kirkeby_excess_phase_request_exports_causal_design_delay() {
+    let curve = curve(true);
+    let prepared = prepared(curve.clone());
+    let mut room = config();
+    room.optimizer.fir.as_mut().unwrap().phase = "kirkeby".into();
+    room.optimizer.fir.as_mut().unwrap().correct_excess_phase = true;
+    let target = build_target_context("left", &room, &curve, None);
+    let features = preprocessed(&curve);
+    let result = process_fir_channel(FirChannelRequest {
+        mode: FirChannelMode::PhaseLinear,
+        channel_name: "left",
+        prepared: &prepared,
+        room_config: &room,
+        sample_rate: 48000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &room.optimizer,
+        eq_resources: &EqResources::default(),
+        sidecar_reference: reference("left.wav"),
+        callback: None,
+    })
+    .unwrap();
+    let convolution = result
+        .channel
+        .plugins
+        .iter()
+        .find(|p| p.plugin_type == "convolution")
+        .unwrap();
+    assert_eq!(
+        convolution.parameters["correction_design_delay_ms"],
+        serde_json::json!(32.0 * 1000.0 / 48000.0)
+    );
+}
+
+#[test]
 fn spatial_fir_native_stop_does_not_return_coefficients() {
     use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     let curve = curve(false);
     let prepared = PreparedChannelInput::new(
         PreparedChannelMeasurements::new(curve.clone(), vec![curve.clone(), curve.clone()], true),
-        None, PreparedCea2034::default(), EqResources::default(),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
     );
     for phase in ["linear", "minimum"] {
-        for algorithm in ["autoeq:de", "autoeq:cmaes"] {
+        for algorithm in ["autoeq:de", "autoeq:cmaes", "cobra"] {
             let mut room_config = config();
             room_config.optimizer.algorithm = algorithm.into();
             room_config.optimizer.strategy = "rand1bin".into();
@@ -96,23 +204,31 @@ fn spatial_fir_native_stop_does_not_return_coefficients() {
             room_config.optimizer.fir.as_mut().unwrap().phase = phase.into();
             room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
                 strategy: MultiMeasurementStrategy::WeightedSum,
-                weights: Some(vec![0.5, 0.5]), ..Default::default()
+                weights: Some(vec![0.5, 0.5]),
+                ..Default::default()
             });
             let target = build_target_context("left", &room_config, &curve, None);
             let features = preprocessed(&curve);
             let resources = EqResources::default();
             let request = FirChannelRequest {
-                mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-                room_config: &room_config, sample_rate: 48_000.0, target: &target,
-                preprocessed: &features, optimizer: &room_config.optimizer,
-                eq_resources: &resources, sidecar_reference: reference("stop.wav"), callback: None,
+                mode: FirChannelMode::Hybrid,
+                channel_name: "left",
+                prepared: &prepared,
+                room_config: &room_config,
+                sample_rate: 48_000.0,
+                target: &target,
+                preprocessed: &features,
+                optimizer: &room_config.optimizer,
+                eq_resources: &resources,
+                sidecar_reference: reference("stop.wav"),
+                callback: None,
             };
             // Two seats plus neutral, and the additional representative in the
             // linear basis. Continue through every vertex, then stop natively.
             let vertices = if phase == "linear" { 4 } else { 3 };
             let calls = Arc::new(AtomicUsize::new(0));
             let observed = calls.clone();
-            let progress = progress::FirProgress::new(Some(Box::new(move |_, _, _| {
+            let progress = progress::FirProgress::new(Some(Box::new(move |_, _, _, _| {
                 if observed.fetch_add(1, Ordering::Relaxed) >= vertices {
                     autoeq_optim::de::CallbackAction::Stop
                 } else {
@@ -127,7 +243,12 @@ fn spatial_fir_native_stop_does_not_return_coefficients() {
                 spatial_realized::optimize(&request, &curve, &[], &progress)
             };
             let error = result.expect_err("native Stop must not deliver FIR coefficients");
-            assert!(error.to_string().contains("scalar optimization stopped by user"), "{phase}/{algorithm}: {error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("scalar optimization stopped by user"),
+                "{phase}/{algorithm}: {error}"
+            );
             assert_eq!(calls.load(Ordering::Relaxed), vertices + 1);
         }
     }
@@ -139,7 +260,9 @@ fn hybrid_callback_survives_iir_into_spatial_fir() {
     let curve = curve(false);
     let prepared = PreparedChannelInput::new(
         PreparedChannelMeasurements::new(curve.clone(), vec![curve.clone(), curve.clone()], true),
-        None, PreparedCea2034::default(), EqResources::default(),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
     );
     for phase in ["linear", "minimum"] {
         let mut room_config = config();
@@ -150,27 +273,43 @@ fn hybrid_callback_survives_iir_into_spatial_fir() {
         room_config.optimizer.fir.as_mut().unwrap().phase = phase.into();
         room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
             strategy: MultiMeasurementStrategy::WeightedSum,
-            weights: Some(vec![0.5, 0.5]), ..Default::default()
+            weights: Some(vec![0.5, 0.5]),
+            ..Default::default()
         });
         let target = build_target_context("left", &room_config, &curve, None);
         let features = preprocessed(&curve);
         let resources = EqResources::default();
         let mut previous = 0;
         let result = process_fir_channel(FirChannelRequest {
-            mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-            room_config: &room_config, sample_rate: 48_000.0, target: &target,
-            preprocessed: &features, optimizer: &room_config.optimizer,
-            eq_resources: &resources, sidecar_reference: reference("stop_after_iir.wav"),
-            callback: Some(Box::new(move |iteration, _, _| {
+            mode: FirChannelMode::Hybrid,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room_config,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room_config.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("stop_after_iir.wav"),
+            callback: Some(Box::new(move |iteration, _, _, _| {
                 let action = if iteration < previous {
                     autoeq_optim::de::CallbackAction::Stop
-                } else { autoeq_optim::de::CallbackAction::Continue };
+                } else {
+                    autoeq_optim::de::CallbackAction::Continue
+                };
                 previous = iteration;
                 action
             })),
         });
-        let error = result.err().expect("Stop at the first FIR vertex must survive IIR dispatch");
-        assert!(error.to_string().contains("Hybrid FIR stopped by progress callback"), "{phase}: {error}");
+        let error = result
+            .err()
+            .expect("Stop at the first FIR vertex must survive IIR dispatch");
+        assert!(
+            error
+                .to_string()
+                .contains("Hybrid FIR stopped by progress callback"),
+            "{phase}: {error}"
+        );
     }
 }
 
@@ -217,7 +356,7 @@ fn hybrid_narrow_band_preserves_fixed_target_in_direct_dtft() {
         &execution,
         &resources,
         Some(reference("lfe_observed.wav")),
-        Some(Box::new(move |_, _, _| {
+        Some(Box::new(move |_, _, _, _| {
             observed_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             autoeq_optim::de::CallbackAction::Continue
         })),
@@ -247,7 +386,9 @@ fn hybrid_narrow_band_preserves_fixed_target_in_direct_dtft() {
         &execution,
         &resources,
         Some(reference("lfe_stopped.wav")),
-        Some(Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Stop)),
+        Some(Box::new(|_, _, _, _| {
+            autoeq_optim::de::CallbackAction::Stop
+        })),
     );
     assert!(
         stopped
@@ -341,6 +482,86 @@ fn phase_linear_returns_required_sidecar_and_in_memory_coefficients() {
 }
 
 #[test]
+fn short_phase_linear_firs_realize_broad_correction() {
+    let frequency = Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 160);
+    let spl: Vec<f64> = frequency
+        .iter()
+        .map(|frequency| {
+            80.0 + 4.0 * (-0.5 * (frequency.ln() - 300.0_f64.ln()).powi(2) / 0.7_f64.powi(2)).exp()
+        })
+        .collect();
+    let curve = Curve {
+        freq: frequency,
+        spl: Array1::from(spl),
+        ..Curve::default()
+    };
+    let prepared = prepared(curve.clone());
+    let features = preprocessed(&curve);
+    let resources = EqResources::default();
+    for duration_ms in [5_u64, 10] {
+        let mut room_config = config();
+        let taps = duration_ms as usize * 48;
+        room_config.optimizer.fir.as_mut().unwrap().taps = taps;
+        room_config.optimizer.max_freq = 1_000.0;
+        let target = build_target_context("left", &room_config, &curve, None);
+        let result = process_fir_channel(FirChannelRequest {
+            mode: FirChannelMode::PhaseLinear,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room_config,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room_config.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("short_fir.wav"),
+            callback: None,
+        })
+        .unwrap();
+        let coefficients = result.fir_coeffs.as_ref().unwrap();
+        assert_eq!(coefficients.len(), taps, "{duration_ms} ms");
+        assert!(
+            result
+                .convolution_sidecar
+                .as_ref()
+                .is_some_and(|sidecar| sidecar.required)
+        );
+        assert!(
+            result
+                .channel
+                .plugins
+                .iter()
+                .any(|plugin| plugin.plugin_type == "convolution")
+        );
+        let peak_index = curve
+            .freq
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                (*left - 300.0).abs().total_cmp(&(*right - 300.0).abs())
+            })
+            .unwrap()
+            .0;
+        let frequency = curve.freq[peak_index];
+        let (real, imaginary) = coefficients.iter().enumerate().fold(
+            (0.0, 0.0),
+            |(real, imaginary), (index, coefficient)| {
+                let angle = -std::f64::consts::TAU * frequency * index as f64 / 48_000.0;
+                (
+                    real + coefficient * angle.cos(),
+                    imaginary + coefficient * angle.sin(),
+                )
+            },
+        );
+        let correction_db = 20.0 * real.hypot(imaginary).log10();
+        assert!(
+            correction_db.is_finite() && correction_db < -0.5,
+            "{duration_ms} ms: {correction_db} dB"
+        );
+    }
+}
+
+#[test]
 fn hybrid_returns_iir_filters_and_required_residual_sidecar() {
     let curve = curve(false);
     let prepared = prepared(curve.clone());
@@ -399,6 +620,9 @@ fn hybrid_returns_iir_filters_and_required_residual_sidecar() {
 
 #[test]
 fn hybrid_honours_multi_measurement_weights() {
+    // Give the regularized objective enough search to discriminate seat weights;
+    // a 50-evaluation run can stop at a shallow cut before finding the mode.
+    const SEARCH_BUDGET: usize = 500;
     // F04: Hybrid must optimize the configured multi-measurement objective,
     // not just the representative curve. Opposed seats with swapped weights
     // must yield different IIR solutions.
@@ -437,7 +661,7 @@ fn hybrid_honours_multi_measurement_weights() {
         );
         let mut room_config = config();
         room_config.optimizer.num_filters = 1;
-        room_config.optimizer.max_iter = 50;
+        room_config.optimizer.max_iter = SEARCH_BUDGET;
         room_config.optimizer.population = 12;
         room_config.optimizer.seed = Some(42);
         room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
@@ -492,7 +716,7 @@ fn hybrid_honours_multi_measurement_weights() {
     );
     let mut room_config = config();
     room_config.optimizer.num_filters = 1;
-    room_config.optimizer.max_iter = 50;
+    room_config.optimizer.max_iter = SEARCH_BUDGET;
     room_config.optimizer.population = 12;
     room_config.optimizer.seed = Some(42);
     room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
@@ -504,7 +728,7 @@ fn hybrid_honours_multi_measurement_weights() {
     let target = build_target_context("left", &room_config, &representative, None);
     let features = preprocessed(&representative);
     let callback: autoeq_optim::optim::OptimProgressCallback =
-        Box::new(|_, _, _| autoeq_optim::de::CallbackAction::Continue);
+        Box::new(|_, _, _, _| autoeq_optim::de::CallbackAction::Continue);
     let with_callback = process_fir_channel(FirChannelRequest {
         mode: FirChannelMode::Hybrid,
         channel_name: "left",
@@ -532,117 +756,187 @@ fn hybrid_honours_multi_measurement_weights() {
 fn hybrid_complete_chain_preserves_seat_weight_choice() {
     use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
     let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 192);
-    let flat = Curve { freq: frequencies.clone(), spl: Array1::from_elem(192, 80.0), ..Curve::default() };
+    let flat = Curve {
+        freq: frequencies.clone(),
+        spl: Array1::from_elem(192, 80.0),
+        ..Curve::default()
+    };
     let mut peak = flat.clone();
     peak.spl = frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp());
     let mut representative = flat.clone();
     representative.spl = (&peak.spl + &flat.spl) / 2.0;
     let prepared = PreparedChannelInput::new(
         PreparedChannelMeasurements::new(representative.clone(), vec![peak, flat], true),
-        None, PreparedCea2034::default(), EqResources::default(),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
     );
     let mut outcomes = Vec::new();
     for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
-    for (strategy, weights) in [
-        (MultiMeasurementStrategy::WeightedSum, Some(vec![1.0, 0.0])),
-        (MultiMeasurementStrategy::WeightedSum, Some(vec![0.0, 1.0])),
-        (MultiMeasurementStrategy::Minimax, None),
-    ] {
-        let mut room_config = config();
-        room_config.optimizer.num_filters = 1;
-        room_config.optimizer.max_iter = 120;
-        room_config.optimizer.population = 12;
-        room_config.optimizer.seed = Some(42);
-        room_config.optimizer.fir.as_mut().unwrap().taps = 8192;
-        room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
-            strategy, weights: weights.clone(), ..MultiMeasurementConfig::default()
-        });
-        let resources = EqResources::default();
-        let target = build_target_context("left", &room_config, &representative, None);
-        let features = preprocessed(&representative);
-        let result = process_fir_channel(FirChannelRequest {
-            mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-            room_config: &room_config, sample_rate, target: &target,
-            preprocessed: &features, optimizer: &room_config.optimizer,
-            eq_resources: &resources, sidecar_reference: reference("spatial_residual.wav"),
-            callback: None,
-        }).unwrap();
-        let iir = response::compute_peq_complex_response(&result.filters, &Array1::from_vec(vec![120.0]), sample_rate)[0];
-        // Independent direct DTFT of the actual in-memory FIR coefficients.
-        let taps = result.fir_coeffs.as_ref().unwrap();
-        let fir = taps.iter().enumerate().fold(num_complex::Complex64::new(0.0, 0.0), |sum, (n, tap)| {
-            sum + num_complex::Complex64::from_polar(*tap, -std::f64::consts::TAU * 120.0 * n as f64 / sample_rate)
-        });
-        // Serialize the actual chain and round-trip the taps through a mono
-        // float WAV before canonical replay. Compare against an independent
-        // direct DTFT; this is not an external playback-backend test.
-        let chain = serde_json::from_slice(&serde_json::to_vec(&result.channel).unwrap()).unwrap();
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        {
-            let mut wav = hound::WavWriter::new(&mut bytes, hound::WavSpec {
-                channels: 1, sample_rate: sample_rate as u32, bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            }).unwrap();
-            for tap in taps { wav.write_sample(*tap as f32).unwrap(); }
-            wav.finalize().unwrap();
-        }
-        let mut wav = hound::WavReader::new(std::io::Cursor::new(bytes.into_inner())).unwrap();
-        struct Sidecar(Vec<f64>, u32);
-        impl crate::dsp_realization::ConvolutionIrProvider for Sidecar {
-            fn taps(&mut self, name: &str, rate: u32) -> Result<&[f64]> {
-                assert_eq!(name, "spatial_residual.wav");
-                assert_eq!(rate, self.1);
-                Ok(&self.0)
+        for (strategy, weights) in [
+            (MultiMeasurementStrategy::WeightedSum, Some(vec![1.0, 0.0])),
+            (MultiMeasurementStrategy::WeightedSum, Some(vec![0.0, 1.0])),
+            (MultiMeasurementStrategy::Minimax, None),
+        ] {
+            let mut room_config = config();
+            room_config.optimizer.num_filters = 1;
+            room_config.optimizer.max_iter = 120;
+            room_config.optimizer.population = 12;
+            room_config.optimizer.seed = Some(42);
+            room_config.optimizer.fir.as_mut().unwrap().taps = 8192;
+            room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
+                strategy,
+                weights: weights.clone(),
+                ..MultiMeasurementConfig::default()
+            });
+            let resources = EqResources::default();
+            let target = build_target_context("left", &room_config, &representative, None);
+            let features = preprocessed(&representative);
+            let result = process_fir_channel(FirChannelRequest {
+                mode: FirChannelMode::Hybrid,
+                channel_name: "left",
+                prepared: &prepared,
+                room_config: &room_config,
+                sample_rate,
+                target: &target,
+                preprocessed: &features,
+                optimizer: &room_config.optimizer,
+                eq_resources: &resources,
+                sidecar_reference: reference("spatial_residual.wav"),
+                callback: None,
+            })
+            .unwrap();
+            let iir = response::compute_peq_complex_response(
+                &result.filters,
+                &Array1::from_vec(vec![120.0]),
+                sample_rate,
+            )[0];
+            // Independent direct DTFT of the actual in-memory FIR coefficients.
+            let taps = result.fir_coeffs.as_ref().unwrap();
+            let fir = taps.iter().enumerate().fold(
+                num_complex::Complex64::new(0.0, 0.0),
+                |sum, (n, tap)| {
+                    sum + num_complex::Complex64::from_polar(
+                        *tap,
+                        -std::f64::consts::TAU * 120.0 * n as f64 / sample_rate,
+                    )
+                },
+            );
+            // Serialize the actual chain and round-trip the taps through a mono
+            // float WAV before canonical replay. Compare against an independent
+            // direct DTFT; this is not an external playback-backend test.
+            let chain =
+                serde_json::from_slice(&serde_json::to_vec(&result.channel).unwrap()).unwrap();
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            {
+                let mut wav = hound::WavWriter::new(
+                    &mut bytes,
+                    hound::WavSpec {
+                        channels: 1,
+                        sample_rate: sample_rate as u32,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
+                    },
+                )
+                .unwrap();
+                for tap in taps {
+                    wav.write_sample(*tap as f32).unwrap();
+                }
+                wav.finalize().unwrap();
             }
-        }
-        let mut sidecar = Sidecar(wav.samples::<f32>().map(|v| v.unwrap() as f64).collect(), sample_rate as u32);
-        let mut replay = crate::dsp_realization::RealizedDsp::new(&chain, sample_rate, &mut sidecar).unwrap();
-        let verification_grid = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 257);
-        let iir_grid = response::compute_peq_complex_response(&result.filters, &verification_grid, sample_rate);
-        let mut maximum_roundtrip_error = 0.0_f64;
-        let mut maximum_fir_group_delay_error_samples = 0.0_f64;
-        let native_peak = &prepared.measurements().individual()[0];
-        let native_levels: Vec<_> = native_peak.freq.iter().zip(&native_peak.spl)
-            .filter(|(frequency, _)| **frequency >= 20.0 && **frequency <= 500.0)
-            .map(|(_, level)| *level - 80.0).collect();
-        let peak_reference = native_levels.iter().sum::<f64>() / native_levels.len() as f64;
-        let mut peak_errors = Vec::new();
-        let mut flat_errors = Vec::new();
-        for (bin, &frequency) in verification_grid.iter().enumerate() {
-            let reference_fir: num_complex::Complex64 = taps.iter().enumerate().map(|(n, tap)|
-                num_complex::Complex64::from_polar(*tap, -std::f64::consts::TAU * frequency * n as f64 / sample_rate)
-            ).sum();
-            let expected = iir_grid[bin] * reference_fir;
-            // Exact DTFT derivative, not differencing wrapped phase:
-            // group delay in samples = Re(sum n*h[n]*exp(-j*w*n) / H).
-            let moment: num_complex::Complex64 = taps.iter().enumerate().map(|(n, tap)|
-                num_complex::Complex64::from_polar(n as f64 * tap,
-                    -std::f64::consts::TAU * frequency * n as f64 / sample_rate)
-            ).sum();
-            assert!(reference_fir.norm() > 1e-8, "group delay needs nonzero transfer");
-            let delay_samples = (moment / reference_fir).re;
-            maximum_fir_group_delay_error_samples = maximum_fir_group_delay_error_samples
-                .max((delay_samples - (taps.len() / 2) as f64).abs());
-            let correction_db = 20.0 * expected.norm().log10();
-            peak_errors.push(6.0 * (-((frequency - 120.0) / 30.0).powi(2)).exp() - peak_reference + correction_db);
-            flat_errors.push(correction_db);
-            let error = (replay.response_at(frequency).unwrap() - expected).norm();
-            maximum_roundtrip_error = maximum_roundtrip_error.max(error);
-            assert!(error < 2e-6, "serialized Hybrid at {frequency} Hz: {error}");
-        }
-        // Independent log-frequency quadrature with the original native
-        // reference level fixed before correction, matching the declared
-        // normalized shape task without fitting away candidate gain changes.
-        let rms = |errors: &[f64]| {
-            let integral: f64 = (1..errors.len()).map(|i|
-                (verification_grid[i] / verification_grid[i - 1]).ln()
-                    * (errors[i - 1].powi(2) + errors[i].powi(2)) / 2.0
-            ).sum();
-            (integral / (500.0_f64 / 20.0).ln()).sqrt()
-        };
-        let peak_rms = rms(&peak_errors);
-        let flat_rms = rms(&flat_errors);
-        outcomes.push(serde_json::json!({
+            let mut wav = hound::WavReader::new(std::io::Cursor::new(bytes.into_inner())).unwrap();
+            struct Sidecar(Vec<f64>, u32);
+            impl crate::dsp_realization::ConvolutionIrProvider for Sidecar {
+                fn taps(&mut self, name: &str, rate: u32) -> Result<&[f64]> {
+                    assert_eq!(name, "spatial_residual.wav");
+                    assert_eq!(rate, self.1);
+                    Ok(&self.0)
+                }
+            }
+            let mut sidecar = Sidecar(
+                wav.samples::<f32>().map(|v| v.unwrap() as f64).collect(),
+                sample_rate as u32,
+            );
+            let mut replay =
+                crate::dsp_realization::RealizedDsp::new(&chain, sample_rate, &mut sidecar)
+                    .unwrap();
+            let verification_grid =
+                Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 257);
+            let iir_grid = response::compute_peq_complex_response(
+                &result.filters,
+                &verification_grid,
+                sample_rate,
+            );
+            let mut maximum_roundtrip_error = 0.0_f64;
+            let mut maximum_fir_group_delay_error_samples = 0.0_f64;
+            let native_peak = &prepared.measurements().individual()[0];
+            let native_levels: Vec<_> = native_peak
+                .freq
+                .iter()
+                .zip(&native_peak.spl)
+                .filter(|(frequency, _)| **frequency >= 20.0 && **frequency <= 500.0)
+                .map(|(_, level)| *level - 80.0)
+                .collect();
+            let peak_reference = native_levels.iter().sum::<f64>() / native_levels.len() as f64;
+            let mut peak_errors = Vec::new();
+            let mut flat_errors = Vec::new();
+            for (bin, &frequency) in verification_grid.iter().enumerate() {
+                let reference_fir: num_complex::Complex64 = taps
+                    .iter()
+                    .enumerate()
+                    .map(|(n, tap)| {
+                        num_complex::Complex64::from_polar(
+                            *tap,
+                            -std::f64::consts::TAU * frequency * n as f64 / sample_rate,
+                        )
+                    })
+                    .sum();
+                let expected = iir_grid[bin] * reference_fir;
+                // Exact DTFT derivative, not differencing wrapped phase:
+                // group delay in samples = Re(sum n*h[n]*exp(-j*w*n) / H).
+                let moment: num_complex::Complex64 = taps
+                    .iter()
+                    .enumerate()
+                    .map(|(n, tap)| {
+                        num_complex::Complex64::from_polar(
+                            n as f64 * tap,
+                            -std::f64::consts::TAU * frequency * n as f64 / sample_rate,
+                        )
+                    })
+                    .sum();
+                assert!(
+                    reference_fir.norm() > 1e-8,
+                    "group delay needs nonzero transfer"
+                );
+                let delay_samples = (moment / reference_fir).re;
+                maximum_fir_group_delay_error_samples = maximum_fir_group_delay_error_samples
+                    .max((delay_samples - (taps.len() / 2) as f64).abs());
+                let correction_db = 20.0 * expected.norm().log10();
+                peak_errors.push(
+                    6.0 * (-((frequency - 120.0) / 30.0).powi(2)).exp() - peak_reference
+                        + correction_db,
+                );
+                flat_errors.push(correction_db);
+                let error = (replay.response_at(frequency).unwrap() - expected).norm();
+                maximum_roundtrip_error = maximum_roundtrip_error.max(error);
+                assert!(error < 2e-6, "serialized Hybrid at {frequency} Hz: {error}");
+            }
+            // Independent log-frequency quadrature with the original native
+            // reference level fixed before correction, matching the declared
+            // normalized shape task without fitting away candidate gain changes.
+            let rms = |errors: &[f64]| {
+                let integral: f64 = (1..errors.len())
+                    .map(|i| {
+                        (verification_grid[i] / verification_grid[i - 1]).ln()
+                            * (errors[i - 1].powi(2) + errors[i].powi(2))
+                            / 2.0
+                    })
+                    .sum();
+                (integral / (500.0_f64 / 20.0).ln()).sqrt()
+            };
+            let peak_rms = rms(&peak_errors);
+            let flat_rms = rms(&flat_errors);
+            outcomes.push(serde_json::json!({
             "strategy": strategy, "weights": weights, "sample_rate_hz": sample_rate, "actual_fir_taps": taps.len(),
             "iir_db_at_120hz": 20.0 * iir.norm().log10(),
             "fir_db_at_120hz": 20.0 * fir.norm().log10(),
@@ -657,32 +951,41 @@ fn hybrid_complete_chain_preserves_seat_weight_choice() {
             "expected_fir_delay_samples": taps.len() / 2,
             "max_fir_group_delay_error_samples": maximum_fir_group_delay_error_samples,
         }));
+        }
     }
-    }
-    let evidence_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa");
+    let evidence_directory = crate::qa_evidence_dir();
     std::fs::create_dir_all(&evidence_directory).unwrap();
     std::fs::write(evidence_directory.join("hybrid-spatial-complete-chain.json"), serde_json::to_vec_pretty(&serde_json::json!({
         "scope": "analytic_training_seat_in_memory_iir_plus_fir_not_workflow_acceptance_or_backend_render",
         "frequency_hz": 120.0, "peak_seat_db": 86.0, "flat_seat_db": 80.0, "outcomes": outcomes,
     })).unwrap()).unwrap();
     assert_eq!(outcomes.len(), 9);
-    for pair in outcomes.chunks_exact(3) {
-    for outcome in pair {
-        assert!(outcome["max_fir_group_delay_error_samples"].as_f64().unwrap() < 0.05,
-            "linear FIR timing changed over supported band: {outcome}");
-    }
-    assert_eq!(pair[0]["actual_fir_taps"], 8192);
-    assert_eq!(pair[1]["actual_fir_taps"], 8192);
-    assert_eq!(pair[2]["actual_fir_taps"], 8192);
-    let peak_weighted = pair[0]["complete_chain_db_at_120hz"].as_f64().unwrap();
-    let flat_weighted = pair[1]["complete_chain_db_at_120hz"].as_f64().unwrap();
-    assert!(flat_weighted - peak_weighted > 2.0,
-        "complete hybrid erased seat-weight choice: peak {peak_weighted:.3} dB, flat {flat_weighted:.3} dB");
-    let minimax = pair[2]["worst_seat_shape_rms_db"].as_f64().unwrap();
-    for single_seat in &pair[..2] {
-        assert!(minimax + 0.05 < single_seat["worst_seat_shape_rms_db"].as_f64().unwrap(),
-            "minimax must improve worst-seat error over a single-seat choice: {pair:?}");
-    }
+    for pair in outcomes.as_chunks::<3>().0 {
+        for outcome in pair {
+            assert!(
+                outcome["max_fir_group_delay_error_samples"]
+                    .as_f64()
+                    .unwrap()
+                    < 0.05,
+                "linear FIR timing changed over supported band: {outcome}"
+            );
+        }
+        assert_eq!(pair[0]["actual_fir_taps"], 8192);
+        assert_eq!(pair[1]["actual_fir_taps"], 8192);
+        assert_eq!(pair[2]["actual_fir_taps"], 8192);
+        let peak_weighted = pair[0]["complete_chain_db_at_120hz"].as_f64().unwrap();
+        let flat_weighted = pair[1]["complete_chain_db_at_120hz"].as_f64().unwrap();
+        assert!(
+            flat_weighted - peak_weighted > 2.0,
+            "complete hybrid erased seat-weight choice: peak {peak_weighted:.3} dB, flat {flat_weighted:.3} dB"
+        );
+        let minimax = pair[2]["worst_seat_shape_rms_db"].as_f64().unwrap();
+        for single_seat in &pair[..2] {
+            assert!(
+                minimax + 0.05 < single_seat["worst_seat_shape_rms_db"].as_f64().unwrap(),
+                "minimax must improve worst-seat error over a single-seat choice: {pair:?}"
+            );
+        }
     }
 }
 
@@ -746,6 +1049,8 @@ fn fir_assembly_exports_every_preprocessing_and_preference_stage() {
         },
         Vec::new(),
         None,
+        Vec::new(),
+        None,
     )
     .unwrap();
 
@@ -795,34 +1100,128 @@ fn kirkeby_hybrid_preserves_seat_weights_without_phase_correction() {
 }
 
 #[test]
-fn kirkeby_hybrid_cannot_use_iir_phase_as_missing_acoustic_phase() {
-    let measurement = curve(false);
-    let prepared = prepared(measurement.clone());
-    let features = preprocessed(&measurement);
+fn kirkeby_hybrid_missing_acoustic_phase_falls_back_to_magnitude_only() {
+    // A phase-less measurement must not fail the channel, and must not
+    // synthesize phase from the IIR stage: the excess-phase request
+    // degrades to exactly the explicit magnitude-only design.
+    let run = |correct_excess_phase: bool| {
+        let measurement = curve(false);
+        let prepared = prepared(measurement.clone());
+        let features = preprocessed(&measurement);
+        let mut room_config = config();
+        room_config.optimizer.seed = Some(42);
+        let fir = room_config.optimizer.fir.as_mut().unwrap();
+        fir.phase = "kirkeby".into();
+        fir.correct_excess_phase = correct_excess_phase;
+        let target = build_target_context("left", &room_config, &measurement, None);
+        let resources = EqResources::default();
+        process_fir_channel(FirChannelRequest {
+            mode: FirChannelMode::Hybrid,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room_config,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room_config.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("missing_phase.wav"),
+            callback: None,
+        })
+        .expect("missing acoustic phase must fall back to magnitude-only")
+    };
+    let fallback = run(true);
+    let explicit = run(false);
+    assert!(
+        fallback
+            .channel
+            .plugins
+            .iter()
+            .any(|plugin| plugin.plugin_type == "convolution")
+    );
+    assert_eq!(
+        fallback.fir_coeffs.as_ref().unwrap(),
+        explicit.fir_coeffs.as_ref().unwrap()
+    );
+}
+
+#[test]
+fn kirkeby_spatial_missing_reference_phase_falls_back_to_magnitude_only() {
+    use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
+    let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 96);
+    let flat = Curve {
+        freq: frequencies.clone(),
+        spl: Array1::from_elem(96, 80.0),
+        ..Default::default()
+    };
+    let peak = Curve {
+        freq: frequencies.clone(),
+        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()),
+        ..Default::default()
+    };
+    let representative = Curve {
+        freq: frequencies.clone(),
+        spl: (&peak.spl + &flat.spl) / 2.0,
+        ..Default::default()
+    };
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(representative.clone(), vec![peak, flat], true),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
+    );
     let mut room_config = config();
-    let fir = room_config.optimizer.fir.as_mut().unwrap();
-    fir.phase = "kirkeby".into();
-    fir.correct_excess_phase = true;
-    let target = build_target_context("left", &room_config, &measurement, None);
+    room_config.optimizer.algorithm = "autoeq:cobyla".into();
+    room_config.optimizer.max_iter = 10;
+    room_config.optimizer.seed = Some(42);
+    let fir_config = room_config.optimizer.fir.as_mut().unwrap();
+    fir_config.phase = "kirkeby".into();
+    fir_config.correct_excess_phase = true;
+    fir_config.taps = 256;
+    room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
+        strategy: MultiMeasurementStrategy::WeightedSum,
+        weights: Some(vec![0.5, 0.5]),
+        ..Default::default()
+    });
+    let target = build_target_context("left", &room_config, &representative, None);
+    let features = preprocessed(&representative);
     let resources = EqResources::default();
     let result = process_fir_channel(FirChannelRequest {
-        mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-        room_config: &room_config, sample_rate: 48_000.0, target: &target,
-        preprocessed: &features, optimizer: &room_config.optimizer, eq_resources: &resources,
-        sidecar_reference: reference("missing_phase.wav"), callback: None,
-    });
-    assert!(result.err().expect("missing acoustic phase must fail before IIR generation")
-        .to_string().contains("requires acoustic phase"));
+        mode: FirChannelMode::Hybrid,
+        channel_name: "left",
+        prepared: &prepared,
+        room_config: &room_config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &room_config.optimizer,
+        eq_resources: &resources,
+        sidecar_reference: reference("missing_spatial_phase.wav"),
+        callback: None,
+    })
+    .expect("missing spatial reference phase must fall back to magnitude-only");
+    assert_eq!(result.fir_coeffs.as_ref().unwrap().len(), 256);
 }
 
 #[test]
 fn hybrid_complete_transfer_is_invariant_to_weighted_seat_permutation() {
     use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
     let frequencies = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 96);
-    let flat = Curve { freq: frequencies.clone(), spl: Array1::from_elem(96, 80.0), ..Default::default() };
-    let peak = Curve { freq: frequencies.clone(),
-        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()), ..Default::default() };
-    let representative = Curve { freq: frequencies, spl: (&peak.spl + &flat.spl) / 2.0, ..Default::default() };
+    let flat = Curve {
+        freq: frequencies.clone(),
+        spl: Array1::from_elem(96, 80.0),
+        ..Default::default()
+    };
+    let peak = Curve {
+        freq: frequencies.clone(),
+        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()),
+        ..Default::default()
+    };
+    let representative = Curve {
+        freq: frequencies,
+        spl: (&peak.spl + &flat.spl) / 2.0,
+        ..Default::default()
+    };
     let replay_grid = Array1::logspace(10.0, 20.0_f64.log10(), 500.0_f64.log10(), 257);
     let mut records = Vec::new();
     let mut failures = Vec::new();
@@ -830,11 +1229,22 @@ fn hybrid_complete_transfer_is_invariant_to_weighted_seat_permutation() {
         for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
             let mut transfers = Vec::new();
             for reversed in [false, true] {
-                let seats = if reversed { vec![flat.clone(), peak.clone()] } else { vec![peak.clone(), flat.clone()] };
-                let weights = if reversed { vec![0.2, 0.8] } else { vec![0.8, 0.2] };
+                let seats = if reversed {
+                    vec![flat.clone(), peak.clone()]
+                } else {
+                    vec![peak.clone(), flat.clone()]
+                };
+                let weights = if reversed {
+                    vec![0.2, 0.8]
+                } else {
+                    vec![0.8, 0.2]
+                };
                 let prepared = PreparedChannelInput::new(
                     PreparedChannelMeasurements::new(representative.clone(), seats, true),
-                    None, PreparedCea2034::default(), EqResources::default());
+                    None,
+                    PreparedCea2034::default(),
+                    EqResources::default(),
+                );
                 let mut room_config = config();
                 room_config.optimizer.num_filters = 1;
                 room_config.optimizer.algorithm = "autoeq:cobyla".into();
@@ -844,25 +1254,51 @@ fn hybrid_complete_transfer_is_invariant_to_weighted_seat_permutation() {
                 fir.phase = phase_kind.into();
                 fir.taps = 2048;
                 room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
-                    strategy: MultiMeasurementStrategy::WeightedSum, weights: Some(weights), ..Default::default()
+                    strategy: MultiMeasurementStrategy::WeightedSum,
+                    weights: Some(weights),
+                    ..Default::default()
                 });
                 let target = build_target_context("left", &room_config, &representative, None);
                 let features = preprocessed(&representative);
                 let resources = EqResources::default();
                 let result = process_fir_channel(FirChannelRequest {
-                    mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-                    room_config: &room_config, sample_rate, target: &target,
-                    preprocessed: &features, optimizer: &room_config.optimizer,
-                    eq_resources: &resources, sidecar_reference: reference("permuted.wav"), callback: None,
-                }).unwrap();
-                let iir = response::compute_peq_complex_response(&result.filters, &replay_grid, sample_rate);
+                    mode: FirChannelMode::Hybrid,
+                    channel_name: "left",
+                    prepared: &prepared,
+                    room_config: &room_config,
+                    sample_rate,
+                    target: &target,
+                    preprocessed: &features,
+                    optimizer: &room_config.optimizer,
+                    eq_resources: &resources,
+                    sidecar_reference: reference("permuted.wav"),
+                    callback: None,
+                })
+                .unwrap();
+                let iir = response::compute_peq_complex_response(
+                    &result.filters,
+                    &replay_grid,
+                    sample_rate,
+                );
                 let taps = result.fir_coeffs.as_ref().unwrap();
                 // H(exp(j*omega)) = sum_n h[n] exp(-j*omega*n), no FFT normalization.
-                let transfer: Vec<_> = replay_grid.iter().zip(iir.iter()).map(|(&f, &iir)| {
-                    let fir: num_complex::Complex64 = taps.iter().enumerate().map(|(n, &tap)|
-                        num_complex::Complex64::from_polar(tap, -std::f64::consts::TAU * f * n as f64 / sample_rate)).sum();
-                    iir * fir
-                }).collect();
+                let transfer: Vec<_> = replay_grid
+                    .iter()
+                    .zip(iir.iter())
+                    .map(|(&f, &iir)| {
+                        let fir: num_complex::Complex64 = taps
+                            .iter()
+                            .enumerate()
+                            .map(|(n, &tap)| {
+                                num_complex::Complex64::from_polar(
+                                    tap,
+                                    -std::f64::consts::TAU * f * n as f64 / sample_rate,
+                                )
+                            })
+                            .sum();
+                        iir * fir
+                    })
+                    .collect();
                 records.push(serde_json::json!({"phase": phase_kind, "rate": sample_rate,
                     "reversed": reversed, "optimizer": result.optimizer_evidence}));
                 transfers.push(transfer);
@@ -884,7 +1320,7 @@ fn hybrid_complete_transfer_is_invariant_to_weighted_seat_permutation() {
             }
         }
     }
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa");
+    let directory = crate::qa_evidence_dir();
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("hybrid-seat-permutation.json"), serde_json::to_vec_pretty(&serde_json::json!({
         "scope": "analytic_training_seats_direct_finite_transfer_not_physical_holdouts_or_backend",
@@ -907,18 +1343,29 @@ fn fixed_budget_hybrid_stop_does_not_continue_into_fir() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
     let result = process_fir_channel(FirChannelRequest {
-        mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-        room_config: &room_config, sample_rate: 48_000.0, target: &target,
-        preprocessed: &features, optimizer: &room_config.optimizer, eq_resources: &resources,
+        mode: FirChannelMode::Hybrid,
+        channel_name: "left",
+        prepared: &prepared,
+        room_config: &room_config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &room_config.optimizer,
+        eq_resources: &resources,
         sidecar_reference: reference("stopped.wav"),
-        callback: Some(Box::new(move |_, _, _| {
+        callback: Some(Box::new(move |_, _, _, _| {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             autoeq_optim::de::CallbackAction::Stop
         })),
     });
     assert!(calls.load(std::sync::atomic::Ordering::Relaxed) > 0);
-    let error = result.err().expect("stopped IIR search must not produce a completed Hybrid artifact");
-    assert!(error.to_string().contains("stopped by progress callback"), "{error}");
+    let error = result
+        .err()
+        .expect("stopped IIR search must not produce a completed Hybrid artifact");
+    assert!(
+        error.to_string().contains("stopped by progress callback"),
+        "{error}"
+    );
 }
 
 fn nonlinear_spatial_weight_fixture(phase_kind: &str, correct_excess_phase: bool) {
@@ -927,16 +1374,39 @@ fn nonlinear_spatial_weight_fixture(phase_kind: &str, correct_excess_phase: bool
     // Stable first-order digital all-pass plus common arrival delay. The
     // all-pass creates dispersion that cannot be explained by delay alone.
     let allpass_pole = (-std::f64::consts::TAU * 150.0 / 48_000.0).exp();
-    let phase = (phase_kind == "kirkeby").then(|| frequencies.mapv(|f| {
-        let z = num_complex::Complex64::from_polar(1.0, -std::f64::consts::TAU * f / 48_000.0);
-        ((z - allpass_pole) / (1.0 - allpass_pole * z)).arg().to_degrees() - 360.0 * f * 0.01
-    }));
-    let flat = Curve { freq: frequencies.clone(), spl: Array1::from_elem(96, 80.0), phase: phase.clone(), ..Default::default() };
-    let peak = Curve { freq: frequencies.clone(),
-        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()), phase: phase.clone(), ..Default::default() };
-    let representative = Curve { freq: frequencies.clone(), spl: (&peak.spl + &flat.spl) / 2.0, phase, ..Default::default() };
-    let prepared = PreparedChannelInput::new(PreparedChannelMeasurements::new(
-        representative.clone(), vec![peak, flat], true), None, PreparedCea2034::default(), EqResources::default());
+    let phase = (phase_kind == "kirkeby").then(|| {
+        frequencies.mapv(|f| {
+            let z = num_complex::Complex64::from_polar(1.0, -std::f64::consts::TAU * f / 48_000.0);
+            ((z - allpass_pole) / (1.0 - allpass_pole * z))
+                .arg()
+                .to_degrees()
+                - 360.0 * f * 0.01
+        })
+    });
+    let flat = Curve {
+        freq: frequencies.clone(),
+        spl: Array1::from_elem(96, 80.0),
+        phase: phase.clone(),
+        ..Default::default()
+    };
+    let peak = Curve {
+        freq: frequencies.clone(),
+        spl: frequencies.mapv(|f| 80.0 + 6.0 * (-((f - 120.0) / 30.0).powi(2)).exp()),
+        phase: phase.clone(),
+        ..Default::default()
+    };
+    let representative = Curve {
+        freq: frequencies.clone(),
+        spl: (&peak.spl + &flat.spl) / 2.0,
+        phase,
+        ..Default::default()
+    };
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(representative.clone(), vec![peak, flat], true),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
+    );
     let mut outcomes = Vec::new();
     for weights in [vec![1.0, 0.0], vec![0.0, 1.0]] {
         let mut room_config = config();
@@ -948,61 +1418,115 @@ fn nonlinear_spatial_weight_fixture(phase_kind: &str, correct_excess_phase: bool
         fir_config.correct_excess_phase = correct_excess_phase;
         fir_config.taps = 2048;
         room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
-            strategy: MultiMeasurementStrategy::WeightedSum, weights: Some(weights.clone()), ..Default::default()
+            strategy: MultiMeasurementStrategy::WeightedSum,
+            weights: Some(weights.clone()),
+            ..Default::default()
         });
         let target = build_target_context("left", &room_config, &representative, None);
         let features = preprocessed(&representative);
         let resources = EqResources::default();
         let result = process_fir_channel(FirChannelRequest {
-            mode: FirChannelMode::Hybrid, channel_name: "left", prepared: &prepared,
-            room_config: &room_config, sample_rate: 48_000.0, target: &target,
-            preprocessed: &features, optimizer: &room_config.optimizer, eq_resources: &resources,
-            sidecar_reference: reference("minimum_spatial.wav"), callback: None,
-        }).unwrap();
+            mode: FirChannelMode::Hybrid,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room_config,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room_config.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("minimum_spatial.wav"),
+            callback: None,
+        })
+        .unwrap();
         let taps = result.fir_coeffs.as_ref().unwrap();
         assert_eq!(taps.len(), 2048);
-        let iir = response::compute_peq_complex_response(&result.filters, &Array1::from_vec(vec![120.0]), 48_000.0)[0];
-        let fir: num_complex::Complex64 = taps.iter().enumerate().map(|(n, tap)|
-            num_complex::Complex64::from_polar(*tap, -std::f64::consts::TAU * 120.0 * n as f64 / 48_000.0)).sum();
+        let iir = response::compute_peq_complex_response(
+            &result.filters,
+            &Array1::from_vec(vec![120.0]),
+            48_000.0,
+        )[0];
+        let fir: num_complex::Complex64 = taps
+            .iter()
+            .enumerate()
+            .map(|(n, tap)| {
+                num_complex::Complex64::from_polar(
+                    *tap,
+                    -std::f64::consts::TAU * 120.0 * n as f64 / 48_000.0,
+                )
+            })
+            .sum();
         let energy: f64 = taps.iter().map(|tap| tap * tap).sum();
-        let centroid = taps.iter().enumerate().map(|(n, tap)| n as f64 * tap * tap).sum::<f64>() / energy;
+        let centroid = taps
+            .iter()
+            .enumerate()
+            .map(|(n, tap)| n as f64 * tap * tap)
+            .sum::<f64>()
+            / energy;
         let mut pre_delays = Vec::new();
         let mut post_delays = Vec::new();
         let mut complete_delays = Vec::new();
         let mut iir_delays = Vec::new();
         for frequency in [40.0, 100.0, 200.0, 400.0] {
             let omega = std::f64::consts::TAU * frequency / 48_000.0;
-            let allpass_delay = (1.0 - allpass_pole.powi(2)) /
-                (1.0 + allpass_pole.powi(2) - 2.0 * allpass_pole * omega.cos());
-            let h: num_complex::Complex64 = taps.iter().enumerate().map(|(n, tap)|
-                num_complex::Complex64::from_polar(*tap, -omega * n as f64)).sum();
-            let moment: num_complex::Complex64 = taps.iter().enumerate().map(|(n, tap)|
-                num_complex::Complex64::from_polar(n as f64 * tap, -omega * n as f64)).sum();
+            let allpass_delay = (1.0 - allpass_pole.powi(2))
+                / (1.0 + allpass_pole.powi(2) - 2.0 * allpass_pole * omega.cos());
+            let h: num_complex::Complex64 = taps
+                .iter()
+                .enumerate()
+                .map(|(n, tap)| num_complex::Complex64::from_polar(*tap, -omega * n as f64))
+                .sum();
+            let moment: num_complex::Complex64 = taps
+                .iter()
+                .enumerate()
+                .map(|(n, tap)| {
+                    num_complex::Complex64::from_polar(n as f64 * tap, -omega * n as f64)
+                })
+                .sum();
             pre_delays.push(allpass_delay);
             post_delays.push(allpass_delay + (moment / h).re);
             // Differentiate the actual IIR transfer, not only the FIR. Check
             // two frequency steps so the numerical oracle is not step-sensitive.
             let iir_delay = |step: f64| {
                 let grid = Array1::from_vec(vec![frequency - step, frequency + step]);
-                let response = response::compute_peq_complex_response(&result.filters, &grid, 48_000.0);
-                -(response[1] / response[0]).arg() * 48_000.0
-                    / (std::f64::consts::TAU * 2.0 * step)
+                let response =
+                    response::compute_peq_complex_response(&result.filters, &grid, 48_000.0);
+                -(response[1] / response[0]).arg() * 48_000.0 / (std::f64::consts::TAU * 2.0 * step)
             };
             let delay = iir_delay(0.01);
-            assert!((delay - iir_delay(0.001)).abs() < 1e-3,
-                "IIR delay oracle is step-sensitive at {frequency} Hz");
+            assert!(
+                (delay - iir_delay(0.001)).abs() < 1e-3,
+                "IIR delay oracle is step-sensitive at {frequency} Hz"
+            );
             assert!(delay.is_finite() && (moment / h).re.is_finite());
             iir_delays.push(delay);
-            let acoustic_delay = if phase_kind == "kirkeby" { 480.0 + allpass_delay } else { 0.0 };
+            let acoustic_delay = if phase_kind == "kirkeby" {
+                480.0 + allpass_delay
+            } else {
+                0.0
+            };
             complete_delays.push(acoustic_delay + delay + (moment / h).re);
         }
-        let spread = |values: &[f64]| values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-            - values.iter().copied().fold(f64::INFINITY, f64::min);
+        let spread = |values: &[f64]| {
+            values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                - values.iter().copied().fold(f64::INFINITY, f64::min)
+        };
         if phase_kind == "minimum" {
-            assert!(centroid < 100.0, "minimum-phase design acquired linear-phase latency: {centroid}");
+            assert!(
+                centroid < 100.0,
+                "minimum-phase design acquired linear-phase latency: {centroid}"
+            );
         }
-        let expected_kind = if phase_kind == "minimum" { "minimum-phase" } else { "kirkeby reference-phase" };
-        assert!(result.optimizer_evidence.iter().any(|evidence| evidence.status.contains(&format!("{expected_kind} realized dB-basis"))));
+        let expected_kind = if phase_kind == "minimum" {
+            "minimum-phase"
+        } else {
+            "kirkeby reference-phase"
+        };
+        assert!(result.optimizer_evidence.iter().any(|evidence| {
+            evidence
+                .status
+                .contains(&format!("{expected_kind} realized dB-basis"))
+        }));
         outcomes.push(serde_json::json!({"weights": weights, "correction_db_at_120hz": 20.0 * (iir * fir).norm().log10(),
             "fir_taps": taps.len(), "energy_centroid_samples": centroid, "optimizer_evidence": result.optimizer_evidence,
             "analytic_allpass_delay_spread_samples": spread(&pre_delays),
@@ -1013,7 +1537,7 @@ fn nonlinear_spatial_weight_fixture(phase_kind: &str, correct_excess_phase: bool
             "delay_probe_frequencies_hz": [40.0, 100.0, 200.0, 400.0],
             "common_arrival_samples": if phase_kind == "kirkeby" { 480.0 } else { 0.0 }}));
     }
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/qa");
+    let directory = crate::qa_evidence_dir();
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join(format!("hybrid-{phase_kind}-spatial-phase-{correct_excess_phase}.json")), serde_json::to_vec_pretty(&serde_json::json!({
         "scope": "analytic_training_seats_in_memory_not_backend_or_minimum_phase_zero_certificate",
@@ -1021,12 +1545,22 @@ fn nonlinear_spatial_weight_fixture(phase_kind: &str, correct_excess_phase: bool
     })).unwrap()).unwrap();
     let peak = outcomes[0]["correction_db_at_120hz"].as_f64().unwrap();
     let flat = outcomes[1]["correction_db_at_120hz"].as_f64().unwrap();
-    assert!(flat - peak > 2.0, "{phase_kind} Hybrid erased weight choice: {peak} vs {flat}");
+    assert!(
+        flat - peak > 2.0,
+        "{phase_kind} Hybrid erased weight choice: {peak} vs {flat}"
+    );
     if phase_kind == "kirkeby" && correct_excess_phase {
         let flat_case = &outcomes[1];
-        assert!(flat_case["complete_acoustic_iir_fir_delay_spread_samples"].as_f64().unwrap()
-            < 0.5 * flat_case["analytic_allpass_delay_spread_samples"].as_f64().unwrap(),
-            "Kirkeby did not correct reference all-pass dispersion: {flat_case}");
+        assert!(
+            flat_case["complete_acoustic_iir_fir_delay_spread_samples"]
+                .as_f64()
+                .unwrap()
+                < 0.5
+                    * flat_case["analytic_allpass_delay_spread_samples"]
+                        .as_f64()
+                        .unwrap(),
+            "Kirkeby did not correct reference all-pass dispersion: {flat_case}"
+        );
     }
 }
 
@@ -1072,6 +1606,8 @@ fn fir_post_score_does_not_count_intended_target_tilt() {
             coefficients: vec![1.0],
             sidecar_reference: request.sidecar_reference.clone(),
         },
+        Vec::new(),
+        None,
         Vec::new(),
         None,
     )
@@ -1123,6 +1659,8 @@ fn mixed_phase_with_phase_data_returns_optional_sidecar() {
         pre_ringing_threshold_db: -30.0,
         min_spatial_depth: 0.5,
         phase_smoothing_octaves: 1.0 / 6.0,
+        assessment: Default::default(),
+        max_correction_latency_ms: None,
     });
     let resources = EqResources::default();
     let target = build_target_context("left", &room_config, &curve, None);
@@ -1161,8 +1699,13 @@ fn mixed_phase_with_phase_data_returns_optional_sidecar() {
 #[test]
 fn mixed_phase_adapts_depth_to_preserve_phase_only_magnitude() {
     let curve = curve(true);
+    #[expect(
+        clippy::approx_constant,
+        reason = "Retain the rounded phase step of this deterministic regression fixture"
+    )]
+    const PHASE_STEP: f64 = 1.618_033_988_75;
     let residual_phase_deg = Array1::from_iter(
-        (0..curve.freq.len()).map(|index| 170.0 * ((index as f64) * 1.618_033_988_75).sin()),
+        (0..curve.freq.len()).map(|index| 170.0 * ((index as f64) * PHASE_STEP).sin()),
     );
     let config = crate::mixed_phase::MixedPhaseConfig {
         max_fir_length_ms: 10.0,
@@ -1201,4 +1744,289 @@ fn mixed_phase_adapts_depth_to_preserve_phase_only_magnitude() {
 
     assert!(applied_depth > 0.0 && applied_depth < 1.0);
     assert!(deviation <= MAX_PHASE_ONLY_MAGNITUDE_DEVIATION_DB);
+}
+
+fn ceiling_optimizer(max_db: f64) -> OptimizerConfig {
+    OptimizerConfig {
+        max_db,
+        max_boost_envelope: None,
+        ..OptimizerConfig::default()
+    }
+}
+
+fn ceiling_grid() -> Array1<f64> {
+    Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 64)
+}
+
+#[test]
+fn roadmap_correction_fir_checks_ceiling_away_from_response_peak() {
+    let grid = Array1::from_vec(vec![100.0, 12_000.0]);
+    let mut optimizer = ceiling_optimizer(6.0);
+    optimizer.max_boost_envelope = Some(vec![(100.0, 6.0), (12_000.0, 0.0)]);
+    // This two-tap FIR peaks at +3.52 dB in bass, but its smaller
+    // +1.85 dB treble response violates the local 0 dB ceiling.
+    let report = check_realized_fir_ceiling(&[1.2, 0.3], &[grid], 48_000.0, &optimizer);
+    assert!(
+        !report.within_ceiling,
+        "every bin must respect its local bound"
+    );
+    assert_eq!(report.peak_freq_hz, 12_000.0);
+    assert_eq!(report.bound_db, 0.0);
+}
+
+#[test]
+fn roadmap_correction_fir_rejects_invalid_evaluation_support() {
+    let optimizer = ceiling_optimizer(6.0);
+    for grid in [
+        Array1::from_vec(vec![100.0, f64::NAN]),
+        Array1::from_vec(vec![100.0, 30_000.0]),
+        Array1::from_vec(vec![100.0, 50.0]),
+    ] {
+        assert!(!check_realized_fir_ceiling(&[1.0], &[grid], 48_000.0, &optimizer).within_ceiling);
+    }
+    assert!(
+        !check_realized_fir_ceiling(&[], &[ceiling_grid()], 48_000.0, &optimizer).within_ceiling
+    );
+}
+
+#[test]
+fn realized_fir_ceiling_catches_overshoot() {
+    let grid = ceiling_grid();
+    let optimizer = ceiling_optimizer(4.0);
+    // Unity tap: 0 dB everywhere, within the 4 dB ceiling.
+    let flat =
+        check_realized_fir_ceiling(&[1.0], std::slice::from_ref(&grid), 48_000.0, &optimizer);
+    assert!(flat.within_ceiling, "identity FIR must pass: {flat:?}");
+    assert!(flat.peak_db.abs() < 1e-9, "{}", flat.peak_db);
+    // x2 gain: +6.02 dB everywhere, over the 4 dB ceiling.
+    let hot = check_realized_fir_ceiling(&[2.0], std::slice::from_ref(&grid), 48_000.0, &optimizer);
+    assert!(!hot.within_ceiling, "overshooting FIR must breach");
+    assert!((hot.peak_db - 6.0206).abs() < 1e-3, "{}", hot.peak_db);
+    assert_eq!(hot.bound_db, 4.0);
+    // A configured envelope overrides the flat ceiling.
+    let mut enveloped = ceiling_optimizer(12.0);
+    enveloped.max_boost_envelope = Some(vec![(20.0, 1.0), (20_000.0, 1.0)]);
+    let breach =
+        check_realized_fir_ceiling(&[1.5], std::slice::from_ref(&grid), 48_000.0, &enveloped);
+    assert!(!breach.within_ceiling, "+3.5 dB over a 1 dB envelope");
+    assert!((breach.bound_db - 1.0).abs() < 1e-9, "{}", breach.bound_db);
+    // Fail closed on non-finite taps.
+    let invalid = check_realized_fir_ceiling(&[1.0, f64::NAN], &[grid], 48_000.0, &optimizer);
+    assert!(!invalid.within_ceiling, "non-finite taps must breach");
+}
+
+#[test]
+fn realized_fir_ceiling_reverts_to_neutral_with_reason() {
+    let grid = ceiling_grid();
+    let optimizer = ceiling_optimizer(4.0);
+    let (taps, note) = enforce_realized_fir_ceiling(
+        "test",
+        vec![2.0],
+        vec![1.0],
+        std::slice::from_ref(&grid),
+        48_000.0,
+        &optimizer,
+    )
+    .expect("neutral fallback saves the emission");
+    assert_eq!(taps, vec![1.0]);
+    let reason = note.expect("revert must be recorded");
+    assert!(reason.contains("reverted to neutral"), "{reason}");
+    assert!(reason.contains("breaches"), "{reason}");
+    // A clean winner passes through untouched with no note.
+    let (taps, note) = enforce_realized_fir_ceiling(
+        "test",
+        vec![1.0],
+        vec![1.0],
+        std::slice::from_ref(&grid),
+        48_000.0,
+        &optimizer,
+    )
+    .expect("clean winner");
+    assert_eq!(taps, vec![1.0]);
+    assert!(note.is_none());
+    // A breaching neutral refuses explicitly instead of emitting.
+    let error =
+        enforce_realized_fir_ceiling("test", vec![2.0], vec![2.0], &[grid], 48_000.0, &optimizer)
+            .expect_err("double breach must refuse");
+    assert!(error.to_string().contains("refused"), "{error}");
+}
+
+#[test]
+fn hybrid_linear_fir_emission_respects_ceiling() {
+    use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
+    // Deep narrow dip: a full correction needs ~+12 dB, far over the 2 dB
+    // ceiling. The regularized bank designs stay under it here, so this
+    // pins the emission invariant: whatever wins, the emitted taps respect
+    // the ceiling and the evidence carries the re-verified objective.
+    let frequency = Array1::logspace(10.0, f64::log10(20.0), f64::log10(20_000.0), 96);
+    let spl = frequency.mapv(|f| 80.0 - 12.0 * (-((f - 120.0) / 8.0).powi(2)).exp());
+    let dip = Curve {
+        freq: frequency,
+        spl,
+        ..Curve::default()
+    };
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(dip.clone(), vec![dip.clone(), dip.clone()], true),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
+    );
+    let mut room_config = config();
+    room_config.optimizer.algorithm = "autoeq:cobyla".into();
+    room_config.optimizer.max_iter = 60;
+    room_config.optimizer.seed = Some(7);
+    room_config.optimizer.max_db = 2.0;
+    room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
+        strategy: MultiMeasurementStrategy::WeightedSum,
+        weights: Some(vec![0.5, 0.5]),
+        ..Default::default()
+    });
+    let target = build_target_context("left", &room_config, &dip, None);
+    let features = preprocessed(&dip);
+    let resources = EqResources::default();
+    let request = FirChannelRequest {
+        mode: FirChannelMode::Hybrid,
+        channel_name: "left",
+        prepared: &prepared,
+        room_config: &room_config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &room_config.optimizer,
+        eq_resources: &resources,
+        sidecar_reference: reference("ceiling.wav"),
+        callback: None,
+    };
+    let mut representative = vec![0.0; 64];
+    representative[32] = 1.0;
+    let progress = progress::FirProgress::new(None);
+    let (coefficients, _evidence) =
+        spatial_linear::optimize(&request, &dip, &[], representative, &progress)
+            .expect("bank search succeeds");
+    let check = check_realized_fir_ceiling(
+        &coefficients,
+        std::slice::from_ref(&dip.freq),
+        48_000.0,
+        &room_config.optimizer,
+    );
+    assert!(
+        check.within_ceiling,
+        "emitted taps respect the ceiling: {check:?}"
+    );
+}
+
+#[test]
+fn roadmap_correction_fir_records_objective_normalization() {
+    use roomeq_model::{MultiMeasurementConfig, NormalizationPopulation};
+
+    for phase in ["linear", "minimum", "kirkeby"] {
+        let mut first = curve(true);
+        first.spl.fill(80.0);
+        let mut second = first.clone();
+        second.spl.fill(86.0);
+        let prepared = PreparedChannelInput::new(
+            PreparedChannelMeasurements::new(first.clone(), vec![first.clone(), second], true),
+            None,
+            PreparedCea2034::default(),
+            EqResources::default(),
+        );
+        let mut room = config();
+        room.optimizer.algorithm = "autoeq:cobyla".into();
+        room.optimizer.seed = Some(7);
+        room.optimizer.multi_measurement = Some(MultiMeasurementConfig::default());
+        room.optimizer.fir.as_mut().unwrap().phase = phase.into();
+        let target = build_target_context("left", &room, &first, None);
+        let features = preprocessed(&first);
+        let resources = EqResources::default();
+        let request = FirChannelRequest {
+            mode: FirChannelMode::Hybrid,
+            channel_name: "left",
+            prepared: &prepared,
+            room_config: &room,
+            sample_rate: 48_000.0,
+            target: &target,
+            preprocessed: &features,
+            optimizer: &room.optimizer,
+            eq_resources: &resources,
+            sidecar_reference: reference("normalization.wav"),
+            callback: None,
+        };
+        let progress = progress::FirProgress::new(None);
+        let (_, evidence) = if phase == "linear" {
+            let mut neutral = vec![0.0; 64];
+            neutral[32] = 1.0;
+            spatial_linear::optimize(&request, &first, &[], neutral, &progress)
+        } else {
+            spatial_realized::optimize(&request, &first, &[], &progress)
+        }
+        .unwrap();
+        let receipt = evidence
+            .multi_input_normalization
+            .as_ref()
+            .expect("actual FIR objective preparation must retain its normalization");
+        assert_eq!(
+            receipt.population,
+            NormalizationPopulation::AlignedMeasurements
+        );
+        assert_eq!(receipt.objectives.len(), 2);
+        for (record, expected) in receipt.objectives.iter().zip([-80.0, -86.0]) {
+            assert!(
+                (record.applied_gain_db - expected).abs() < 1e-9,
+                "{phase}: {record:?}"
+            );
+            assert!(!record.input_curve_identity.is_empty());
+            assert!(!record.normalized_curve_identity.is_empty());
+        }
+        assert_ne!(
+            receipt.objectives[0].input_curve_identity,
+            receipt.objectives[1].input_curve_identity
+        );
+    }
+}
+
+#[test]
+fn hybrid_linear_fir_impossible_ceiling_refuses_explicitly() {
+    use roomeq_model::{MultiMeasurementConfig, MultiMeasurementStrategy};
+    // A -40 dB ceiling no non-silent FIR can meet: the winner breaches and
+    // so does the neutral fallback, so emission must refuse explicitly.
+    // Removing the realized-ceiling call would return Ok and fail this test.
+    let dip = curve(false);
+    let prepared = PreparedChannelInput::new(
+        PreparedChannelMeasurements::new(dip.clone(), vec![dip.clone(), dip.clone()], true),
+        None,
+        PreparedCea2034::default(),
+        EqResources::default(),
+    );
+    let mut room_config = config();
+    room_config.optimizer.algorithm = "autoeq:cobyla".into();
+    room_config.optimizer.max_iter = 60;
+    room_config.optimizer.seed = Some(7);
+    room_config.optimizer.max_db = -40.0;
+    room_config.optimizer.multi_measurement = Some(MultiMeasurementConfig {
+        strategy: MultiMeasurementStrategy::WeightedSum,
+        weights: Some(vec![0.5, 0.5]),
+        ..Default::default()
+    });
+    let target = build_target_context("left", &room_config, &dip, None);
+    let features = preprocessed(&dip);
+    let resources = EqResources::default();
+    let request = FirChannelRequest {
+        mode: FirChannelMode::Hybrid,
+        channel_name: "left",
+        prepared: &prepared,
+        room_config: &room_config,
+        sample_rate: 48_000.0,
+        target: &target,
+        preprocessed: &features,
+        optimizer: &room_config.optimizer,
+        eq_resources: &resources,
+        sidecar_reference: reference("impossible_ceiling.wav"),
+        callback: None,
+    };
+    let mut representative = vec![0.0; 64];
+    representative[32] = 1.0;
+    let progress = progress::FirProgress::new(None);
+    let error = spatial_linear::optimize(&request, &dip, &[], representative, &progress)
+        .expect_err("impossible ceiling must refuse");
+    assert!(error.to_string().contains("refused"), "{error}");
 }

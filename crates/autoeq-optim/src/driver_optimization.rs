@@ -36,6 +36,7 @@ pub fn create_driver_optimization_params(
         num_filters: 0,
         peq_model: PeqModel::Pk,
         sample_rate,
+        tilt_bands_hz: None,
         min_freq,
         max_freq,
         min_q: 0.5,
@@ -49,6 +50,7 @@ pub fn create_driver_optimization_params(
         spacing_weight: 0.0,
         smoothness_penalty: None,
         audibility_deadband: None,
+        frequency_q_policy: None,
         algo: algorithm.to_string(),
         population,
         maxeval: max_iter,
@@ -134,6 +136,10 @@ pub fn optimize_drivers_crossover(
         &params,
     )
     .is_ok();
+    // Acceptance-side budget record: the search was given these bounds, so
+    // the emitted drivers/crossovers must honor them.
+    crate::optim::verify_joint_budgets("drivers-crossover", &x, &lower_bounds, &upper_bounds)
+        .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
     let mut post_objective = crate::optim::compute_base_fitness(&x, &objective_data);
     if !post_objective.is_finite() || post_objective > pre_objective {
         x = initial_x;
@@ -197,6 +203,10 @@ pub fn optimize_multisub(
         &params,
     )
     .is_ok();
+    // Acceptance-side budget record: the search was given these bounds, so
+    // the emitted sub gains/delays must honor them.
+    crate::optim::verify_joint_budgets("multisub", &x, &lower_bounds, &upper_bounds)
+        .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
     let mut post_objective = crate::optim::compute_base_fitness(&x, &objective_data);
     if !post_objective.is_finite() || post_objective > pre_objective {
         x = initial_x;

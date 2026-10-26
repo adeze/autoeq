@@ -4,7 +4,10 @@ use std::path::Path;
 
 use log::{info, warn};
 use math_audio_iir_fir::Biquad;
-use roomeq_engine::channel_execution::{execute_prepared_channel, prepare_channel_execution};
+use roomeq_engine::channel_execution::{
+    execute_prepared_channel, execute_prepared_channel_with_exact_checkpoint,
+    prepare_channel_execution,
+};
 use roomeq_engine::channel_result::ChannelProcessingResult;
 use roomeq_engine::error::{AutoeqError, Result};
 use roomeq_engine::{Curve, OptimProgressCallback, OptimizerRunEvidence};
@@ -28,6 +31,10 @@ pub type ChannelWorkflowResult = (
     Option<f64>,
     Option<Vec<f64>>,
     Vec<OptimizerRunEvidence>,
+    Vec<roomeq_model::FilterVetoVerdict>,
+    Option<roomeq_model::VetoAdjudicationReport>,
+    Option<roomeq_engine::channel_measurements::MeasurementConditioningReceipt>,
+    Option<roomeq_engine::segment_support::SegmentSupportReport>,
 );
 
 /// Load resources, execute one channel, and persist any generated sidecar.
@@ -68,6 +75,74 @@ pub fn process_single_channel_with_frequency_samples(
     shared_mean_spl: Option<f64>,
     frequency_samples: usize,
 ) -> Result<ChannelWorkflowResult> {
+    process_single_channel_with_optional_recovery(
+        channel_name,
+        source,
+        room_config,
+        sample_rate,
+        output_dir,
+        callback,
+        probe_arrival_ms,
+        shared_mean_spl,
+        frequency_samples,
+        None,
+    )
+}
+
+/// Process one supported exact-recovery channel after validating its inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn process_single_channel_with_recovery(
+    channel_name: &str,
+    source: &MeasurementSource,
+    room_config: &RoomConfig,
+    sample_rate: f64,
+    output_dir: &Path,
+    callback: Option<OptimProgressCallback>,
+    probe_arrival_ms: Option<f64>,
+    shared_mean_spl: Option<f64>,
+    frequency_samples: usize,
+    recovery: &crate::room_recovery::RoomRecoverySession,
+) -> Result<ChannelWorkflowResult> {
+    process_single_channel_with_optional_recovery(
+        channel_name,
+        source,
+        room_config,
+        sample_rate,
+        output_dir,
+        callback,
+        probe_arrival_ms,
+        shared_mean_spl,
+        frequency_samples,
+        Some(recovery),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_single_channel_with_optional_recovery(
+    channel_name: &str,
+    source: &MeasurementSource,
+    room_config: &RoomConfig,
+    sample_rate: f64,
+    output_dir: &Path,
+    callback: Option<OptimProgressCallback>,
+    probe_arrival_ms: Option<f64>,
+    shared_mean_spl: Option<f64>,
+    frequency_samples: usize,
+    recovery: Option<&crate::room_recovery::RoomRecoverySession>,
+) -> Result<ChannelWorkflowResult> {
+    let recovery_source = if let Some(recovery) = recovery {
+        recovery
+            .verify_configuration(room_config, sample_rate, frequency_samples)
+            .map_err(|message| AutoeqError::InvalidConfiguration { message })?;
+        Some(
+            recovery
+                .freeze_and_verify_measurement_source(source)
+                .map_err(|message| AutoeqError::InvalidConfiguration { message })?,
+        )
+    } else {
+        None
+    };
+    let source = recovery_source.as_ref().unwrap_or(source);
     let prepared = prepare_channel_input_with_frequency_samples(
         channel_name,
         source,
@@ -79,6 +154,13 @@ pub fn process_single_channel_with_frequency_samples(
     .map_err(|error| AutoeqError::InvalidMeasurement {
         message: format!("Failed to load measurement for channel {channel_name}: {error}"),
     })?;
+    let exact = recovery
+        .map(|recovery| {
+            recovery
+                .exact_de_options()
+                .map_err(|message| AutoeqError::InvalidConfiguration { message })
+        })
+        .transpose()?;
     let execution = prepare_channel_execution(
         channel_name,
         &prepared,
@@ -95,7 +177,7 @@ pub fn process_single_channel_with_frequency_samples(
     let phase_linear = room_config.optimizer.processing_mode == ProcessingMode::PhaseLinear;
     let mut callback = callback;
     if phase_linear && let Some(callback) = callback.as_mut() {
-        callback(1, execution.target().pre_score, None);
+        callback(1, execution.target().pre_score, None, None);
     }
 
     let reservation = if room_config.optimizer.processing_mode == ProcessingMode::Hybrid
@@ -127,16 +209,47 @@ pub fn process_single_channel_with_frequency_samples(
         .as_ref()
         .map(|reservation| reservation.reference().clone());
 
-    let result = execute_prepared_channel(
-        channel_name,
-        &prepared,
-        room_config,
-        sample_rate,
-        &execution,
-        &eq_resources,
-        sidecar_reference,
-        if phase_linear { None } else { callback.take() },
-    )?;
+    let execution_callback = if phase_linear { None } else { callback.take() };
+    let mut result = match exact {
+        Some(exact) => execute_prepared_channel_with_exact_checkpoint(
+            channel_name,
+            &prepared,
+            room_config,
+            sample_rate,
+            &execution,
+            &eq_resources,
+            sidecar_reference,
+            execution_callback,
+            exact,
+        )?,
+        None => execute_prepared_channel(
+            channel_name,
+            &prepared,
+            room_config,
+            sample_rate,
+            &execution,
+            &eq_resources,
+            sidecar_reference,
+            execution_callback,
+        )?,
+    };
+    // Measured-room acoustics ride with the delivered chain: a declared
+    // optimization-time IR yields third-octave early/late energies, while
+    // channels without one keep the viewer "pending" state.
+    if result.channel.early_late_curves.is_none() {
+        let sub_or_lfe = roomeq_model::home_cinema::role_for_channel(channel_name).is_sub_or_lfe();
+        result.channel.early_late_curves = prepared
+            .eq_resources()
+            .impulse_response
+            .as_ref()
+            .and_then(|ir| {
+                crate::channel_acoustics::measured_early_late_curves(
+                    &ir.samples,
+                    ir.sample_rate,
+                    sub_or_lfe,
+                )
+            });
+    }
 
     if let Some(generated) = result.convolution_sidecar.as_ref() {
         let reservation =
@@ -170,12 +283,18 @@ pub fn process_single_channel_with_frequency_samples(
         }
     }
     if phase_linear && let Some(callback) = callback.as_mut() {
-        callback(2, result.post_score, None);
+        callback(2, result.post_score, None, None);
     }
-    Ok(result_tuple(result))
+    Ok(result_tuple(
+        result,
+        prepared.measurements().conditioning_receipt()?,
+    ))
 }
 
-fn result_tuple(result: ChannelProcessingResult) -> ChannelWorkflowResult {
+fn result_tuple(
+    result: ChannelProcessingResult,
+    conditioning: roomeq_engine::channel_measurements::MeasurementConditioningReceipt,
+) -> ChannelWorkflowResult {
     (
         result.channel,
         result.pre_score,
@@ -187,6 +306,10 @@ fn result_tuple(result: ChannelProcessingResult) -> ChannelWorkflowResult {
         result.arrival_time_ms,
         result.fir_coeffs,
         result.optimizer_evidence,
+        result.audibility_veto,
+        result.veto_adjudication,
+        Some(conditioning),
+        result.segment_support,
     )
 }
 
@@ -254,7 +377,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let callback_events = Arc::clone(&events);
         let expected_sidecar = directory.path().join("left_fir_48000hz.wav");
-        let callback: OptimProgressCallback = Box::new(move |iteration, _, _| {
+        let callback: OptimProgressCallback = Box::new(move |iteration, _, _, _| {
             if iteration == 2 {
                 assert!(expected_sidecar.exists());
             }

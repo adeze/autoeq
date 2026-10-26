@@ -11,12 +11,40 @@ pub trait OptimizerConfigExt {
     fn to_optim_params(&self, sample_rate: f64) -> OptimParams;
 }
 
+/// Maps a base Pk layout plus an enabled tilt stage to the PkLsHs layout.
+///
+/// Takes base values (not already-mapped ones), so repeated application stays
+/// idempotent. Non-Pk bases are left untouched: validation rejects them before
+/// optimization, and silently reinterpreting another layout here would hide
+/// the misconfiguration.
+pub(crate) fn apply_tilt_stage(
+    base: PeqModel,
+    base_num_filters: usize,
+    tilt: Option<roomeq_model::TiltStageConfig>,
+) -> (PeqModel, usize, Option<autoeq_optim::TiltBandsHz>) {
+    let Some(tilt) = tilt.filter(|tilt| tilt.enabled) else {
+        return (base, base_num_filters, None);
+    };
+    if base != PeqModel::Pk {
+        debug_assert!(false, "tilt_stage requires peq_model pk");
+        return (base, base_num_filters, None);
+    }
+    let bands = autoeq_optim::TiltBandsHz {
+        ls: tilt.ls_band_hz,
+        hs: tilt.hs_band_hz,
+    };
+    (PeqModel::PkLsHs, base_num_filters + 2, Some(bands))
+}
+
 impl OptimizerConfigExt for OptimizerConfig {
     fn to_optim_params(&self, sample_rate: f64) -> OptimParams {
-        let peq_model = self.peq_model.parse::<PeqModel>().unwrap_or(PeqModel::Pk);
+        let base_model = self.peq_model.parse::<PeqModel>().unwrap_or(PeqModel::Pk);
+        let (peq_model, num_filters, tilt_bands_hz) =
+            apply_tilt_stage(base_model, self.num_filters, self.tilt_stage);
         let loss = match self.loss_type.as_str() {
             "flat" if self.asymmetric_loss => LossType::SpeakerFlatAsymmetric,
             "flat" => LossType::SpeakerFlat,
+            "headphone_flat" => LossType::HeadphoneFlat,
             "score" => LossType::SpeakerScore,
             "epa" => LossType::Epa,
             _ => LossType::SpeakerFlat,
@@ -53,13 +81,44 @@ impl OptimizerConfigExt for OptimizerConfig {
                 schroeder_hz: value.schroeder_hz,
             }
         });
+        let frequency_q_policy = {
+            let transition = self
+                .schroeder_split
+                .as_ref()
+                .filter(|split| split.enabled)
+                .map(|split| {
+                    (
+                        split
+                            .room_dimensions
+                            .as_ref()
+                            .map(|dimensions| dimensions.schroeder_frequency())
+                            .unwrap_or(split.schroeder_freq),
+                        split.low_freq_config.max_q,
+                    )
+                });
+            let high = self
+                .high_frequency_correction
+                .filter(|config| config.enabled)
+                .map(|config| (config.start_hz, config.max_q));
+            match (transition, high) {
+                (None, None) => None,
+                (transition, high) => Some(autoeq_optim::FrequencyQPolicy {
+                    schroeder_hz: transition.map(|(frequency, _)| frequency),
+                    low_max_q: transition.map(|(_, max_q)| max_q),
+                    high_start_hz: high.map(|(frequency, _)| frequency),
+                    high_max_q: high.map(|(_, max_q)| max_q),
+                }),
+            }
+        };
 
+        let [active_min_freq, active_max_freq] = self.active_correction_band();
         OptimParams {
-            num_filters: self.num_filters,
+            num_filters,
             peq_model,
             sample_rate,
-            min_freq: self.min_freq,
-            max_freq: self.max_freq,
+            tilt_bands_hz,
+            min_freq: active_min_freq,
+            max_freq: active_max_freq,
             min_q: self.min_q,
             max_q: self.max_q,
             min_db: self.min_db,
@@ -71,6 +130,7 @@ impl OptimizerConfigExt for OptimizerConfig {
             spacing_weight: 20.0,
             smoothness_penalty,
             audibility_deadband,
+            frequency_q_policy,
             algo: self.algorithm.clone(),
             population: self.population,
             maxeval: self.max_iter,
@@ -224,11 +284,64 @@ mod tests {
     }
 
     #[test]
+    fn optimizer_adapter_maps_tilt_stage_to_trailing_pair() {
+        let config = OptimizerConfig {
+            num_filters: 3,
+            tilt_stage: Some(roomeq_model::TiltStageConfig {
+                ls_band_hz: Some([20.0, 500.0]),
+                hs_band_hz: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let params = config.to_optim_params(48_000.0);
+        assert_eq!(params.peq_model, PeqModel::PkLsHs);
+        assert_eq!(params.num_filters, 5);
+        let bands = params.tilt_bands_hz.expect("tilt bands pass through");
+        assert_eq!(bands.ls, Some([20.0, 500.0]));
+        assert_eq!(bands.hs, None);
+    }
+
+    #[test]
+    fn optimizer_adapter_leaves_layout_without_tilt_stage() {
+        let config = OptimizerConfig {
+            num_filters: 3,
+            ..Default::default()
+        };
+        let params = config.to_optim_params(48_000.0);
+        assert_eq!(params.peq_model, PeqModel::Pk);
+        assert_eq!(params.num_filters, 3);
+        assert!(params.tilt_bands_hz.is_none());
+
+        let mut disabled = config.clone();
+        disabled.tilt_stage = Some(roomeq_model::TiltStageConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        let params = disabled.to_optim_params(48_000.0);
+        assert_eq!(params.peq_model, PeqModel::Pk);
+        assert_eq!(params.num_filters, 3);
+        assert!(params.tilt_bands_hz.is_none());
+    }
+
+    #[test]
     fn optimizer_adapter_uses_required_sample_rate() {
         let config = OptimizerConfig::default();
         for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
             assert_eq!(config.to_optim_params(sample_rate).sample_rate, sample_rate);
         }
+    }
+
+    #[test]
+    fn optimizer_adapter_preserves_headphone_flat_loss() {
+        let config = OptimizerConfig {
+            loss_type: "headphone_flat".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.to_optim_params(48_000.0).loss,
+            LossType::HeadphoneFlat
+        );
     }
 
     #[test]
@@ -271,5 +384,41 @@ mod tests {
         assert_eq!(params.bo_posterior_std_threshold, 0.02);
         assert_eq!(params.bo_acquisition, "ei");
         assert!(params.bo_ehvi);
+    }
+
+    #[test]
+    fn optimizer_adapter_carries_frequency_q_policy() {
+        let high = roomeq_model::HighFrequencyCorrectionConfig {
+            start_hz: 1_600.0,
+            max_q: 0.8,
+            ..Default::default()
+        };
+        let config = OptimizerConfig {
+            high_frequency_correction: Some(high),
+            ..Default::default()
+        };
+        let params = config.to_optim_params(48_000.0);
+        let policy = params
+            .frequency_q_policy
+            .expect("HF policy should be present");
+        assert_eq!(policy.high_start_hz, Some(1_600.0));
+        assert_eq!(policy.high_max_q, Some(0.8));
+    }
+
+    #[test]
+    fn optimizer_adapter_uses_explicit_correction_band() {
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 20_000.0,
+            correction_band: Some(roomeq_model::CorrectionBandPolicy {
+                min_hz: 40.0,
+                max_hz: 16_000.0,
+                allow_natural_rolloff: true,
+            }),
+            ..OptimizerConfig::default()
+        };
+        let params = config.to_optim_params(48_000.0);
+        assert_eq!(params.min_freq, 40.0);
+        assert_eq!(params.max_freq, 16_000.0);
     }
 }

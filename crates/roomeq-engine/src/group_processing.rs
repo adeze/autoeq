@@ -46,6 +46,10 @@ mod tests {
     use super::{
         bounded_sub_eq_max, expand_acoustic_optimization_bands, initial_crossover_frequencies,
     };
+    use crate::eq::optimize_channel_eq_detailed;
+    use crate::group::flat_loss_score;
+    use math_audio_iir_fir::BiquadFilterType;
+    use roomeq_model::{CorrectionBandPolicy, OptimizerConfig};
 
     #[test]
     fn internal_room_null_does_not_truncate_sub_alignment_band() {
@@ -54,9 +58,11 @@ mod tests {
             spl: ndarray::array![80.0, 85.0, 60.0, 40.0, 82.0, 68.0, 45.0, 20.0],
             ..Default::default()
         };
-        let mut config = roomeq_model::OptimizerConfig::default();
-        config.min_freq = 20.0;
-        config.max_freq = 16_000.0;
+        let config = roomeq_model::OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 16_000.0,
+            ..Default::default()
+        };
         assert_eq!(bounded_sub_eq_max(&curve, &config), 130.0);
     }
 
@@ -100,9 +106,11 @@ mod tests {
             phase: None,
             ..Default::default()
         };
-        let mut config = roomeq_model::OptimizerConfig::default();
-        config.min_freq = 20.0;
-        config.max_freq = 16_000.0;
+        let config = roomeq_model::OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 16_000.0,
+            ..Default::default()
+        };
         let bounded = bounded_sub_eq_max(&combined, &config);
         assert!(
             bounded < 249.0,
@@ -113,12 +121,69 @@ mod tests {
             "shared sub EQ must keep the useful bass band, got {bounded:.1} Hz"
         );
     }
+
+    #[test]
+    fn explicit_correction_band_limits_filters_but_not_observation_score() {
+        let curve = crate::Curve {
+            freq: ndarray::array![20.0, 40.0, 1000.0, 16_000.0, 20_000.0],
+            spl: ndarray::array![10.0, 0.0, 0.0, 0.0, -10.0],
+            ..Default::default()
+        };
+        let config = OptimizerConfig {
+            min_freq: 20.0,
+            max_freq: 20_000.0,
+            correction_band: Some(CorrectionBandPolicy {
+                min_hz: 40.0,
+                max_hz: 16_000.0,
+                allow_natural_rolloff: true,
+            }),
+            num_filters: 1,
+            max_iter: 8,
+            population: 8,
+            seed: Some(7),
+            ..Default::default()
+        };
+
+        let observation_score = flat_loss_score(&curve, config.min_freq, config.max_freq);
+        let active_score = flat_loss_score(&curve, 40.0, 16_000.0);
+        assert!(
+            observation_score > active_score,
+            "out-of-band source response must remain visible to the observation score"
+        );
+
+        let result = optimize_channel_eq_detailed(&curve, &config, None, 48_000.0)
+            .expect("bounded correction-band optimization should succeed");
+        // This deliberately sparse grid cannot warrant any configured peak
+        // bandwidth. Retain its uncorrected response and the actual refusal.
+        assert!(result.filters.is_empty());
+        assert!(result.optimizer_evidence.iter().any(|run| {
+            !run.selected_for_output
+                && !run.converged
+                && !run.best_effort
+                && run.status.contains("measurement resolution")
+        }));
+        assert!(result.filters.iter().all(|filter| {
+            (40.0..=16_000.0).contains(&filter.freq)
+                && !matches!(
+                    filter.filter_type,
+                    BiquadFilterType::Highpass
+                        | BiquadFilterType::Lowpass
+                        | BiquadFilterType::HighpassVariableQ
+                )
+        }));
+    }
 }
 
 /// In-memory measurements for a multi-sub group and its optional seat matrix.
 pub struct PreparedMultiSubGroup {
     pub subwoofers: Vec<Curve>,
     pub seat_measurements: Option<Vec<Vec<Curve>>>,
+    /// Verified shared-timing labels per `[sub][seat]`; every sub must
+    /// agree within each seat before coherent joint or legacy multi-seat optimization.
+    /// `None` is unknown: coherent dispatch refuses it without substituting
+    /// another optimizer. The measurement adapter derives these labels from
+    /// stationary capture provenance; phase columns alone do not authorize timing.
+    pub reference_scope: Option<Vec<Vec<String>>>,
 }
 
 /// In-memory front/rear measurements for gradient-cardioid processing.
@@ -305,6 +370,9 @@ fn aggregate_topology_bands(
             sample_rate,
         );
         acoustic_drivers.push(Curve {
+            resolution: autoeq_core::resolution::MeasurementResolution::combine(
+                members.iter().map(|index| &drivers[*index]),
+            ),
             freq: data.freq_grid,
             spl: response.mapv(|value| 20.0 * value.norm().max(1e-12).log10()),
             phase: preserve_phase.then(|| response.mapv(|value| value.arg().to_degrees())),
@@ -422,6 +490,10 @@ fn process_speaker_topology_impl(
     group
         .validate()
         .map_err(|message| AutoeqError::InvalidConfiguration { message })?;
+    // The configured optimizer range is the observation/evaluation band.  An
+    // explicit correction-band policy narrows only where filters may be
+    // optimized; keep the observation band for scoring and reporting.
+    let [active_min_freq, active_max_freq] = room_config.optimizer.active_correction_band();
     if prepared.drivers.len() != group.drivers.len() {
         return Err(AutoeqError::InvalidMeasurement {
             message: format!(
@@ -515,35 +587,21 @@ fn process_speaker_topology_impl(
                 &acoustic_bands,
                 &acoustic_ranges,
                 driver_curves.len(),
-                (
-                    room_config.optimizer.min_freq,
-                    room_config.optimizer.max_freq,
-                ),
+                (active_min_freq, active_max_freq),
             )
         })
-        .unwrap_or_else(|| {
-            vec![
-                (
-                    room_config.optimizer.min_freq,
-                    room_config.optimizer.max_freq,
-                );
-                driver_curves.len()
-            ]
-        });
+        .unwrap_or_else(|| vec![(active_min_freq, active_max_freq,); driver_curves.len()]);
     for (band, explicit) in optimization_bands.iter_mut().zip(driver_bands) {
         if let Some(explicit) = explicit {
             *band = (
-                explicit.min_hz.max(room_config.optimizer.min_freq),
-                explicit.max_hz.min(room_config.optimizer.max_freq),
+                explicit.min_hz.max(active_min_freq),
+                explicit.max_hz.min(active_max_freq),
             );
             if band.0 >= band.1 {
                 return Err(AutoeqError::InvalidConfiguration {
                     message: format!(
                         "explicit driver band [{:.1}, {:.1}] Hz does not overlap optimizer range [{:.1}, {:.1}] Hz",
-                        explicit.min_hz,
-                        explicit.max_hz,
-                        room_config.optimizer.min_freq,
-                        room_config.optimizer.max_freq
+                        explicit.min_hz, explicit.max_hz, active_min_freq, active_max_freq
                     ),
                 });
             }
@@ -651,7 +709,8 @@ fn process_speaker_topology_impl(
 
     // 7. Optimize Crossover (using linearized drivers)
     let level_reference_drivers = acoustic_drivers.clone();
-    let (mut gains, mut delays, crossover_freqs, mut combined_curve, inversions) = if n_drivers == 1 {
+    let (mut gains, mut delays, crossover_freqs, mut combined_curve, inversions) = if n_drivers == 1
+    {
         (
             vec![0.0],
             vec![0.0],
@@ -674,8 +733,16 @@ fn process_speaker_topology_impl(
     };
 
     if let Some(aligned) = crossover::align_two_band_target_levels(
-        &level_reference_drivers, &mut gains, &mut delays, &crossover_freqs, &inversions,
-        crossover_type, &room_config.optimizer, eq_resources, sample_rate, None,
+        &level_reference_drivers,
+        &mut gains,
+        &mut delays,
+        &crossover_freqs,
+        &inversions,
+        crossover_type,
+        &room_config.optimizer,
+        eq_resources,
+        sample_rate,
+        None,
     ) {
         combined_curve = aligned;
     }
@@ -709,6 +776,7 @@ fn process_speaker_topology_impl(
     // 8. Global EQ (Optional Touch-up)
     // Run global EQ on the combined response to fix any remaining issues
     // but constrain it to be gentle if possible, or normal full optimization.
+    // Keep the configured observation band for the before/after score.
     let min_freq = room_config.optimizer.min_freq;
     let max_freq = room_config.optimizer.max_freq;
     let pre_global_eq_score = flat_loss_score(&combined_curve, min_freq, max_freq);
@@ -732,14 +800,20 @@ fn process_speaker_topology_impl(
     optimizer_evidence.extend(global_result.optimizer_evidence);
 
     let global_resp = response::compute_peq_complex_response(
-        &global_eq_filters, &combined_curve.freq, sample_rate,
+        &global_eq_filters,
+        &combined_curve.freq,
+        sample_rate,
     );
     let candidate_curve = response::apply_complex_response(&combined_curve, &global_resp);
     // Compare both candidates against one target-level reference. Mean-normalized
     // flatness cannot judge a correction of the bass/treble level relationship.
     let (acceptance_pre, acceptance_post) = eq::group_upper_reference_scores(
-        &combined_curve, &candidate_curve, &room_config.optimizer, Some(eq_resources),
-    ).unwrap_or((pre_global_eq_score, post_score));
+        &combined_curve,
+        &candidate_curve,
+        &room_config.optimizer,
+        Some(eq_resources),
+    )
+    .unwrap_or((pre_global_eq_score, post_score));
     let (global_eq_filters, post_score, mut final_curve) =
         if eq_score_regressed(acceptance_pre, acceptance_post) {
             for evidence in &mut optimizer_evidence[global_evidence_start..] {
@@ -762,15 +836,29 @@ fn process_speaker_topology_impl(
     // Shape EQ can change the band mean. Finish level calibration using the
     // actual corrected complex sum, without inserting any out-of-band filters.
     if let Some(aligned) = crossover::align_two_band_target_levels(
-        &level_reference_drivers, &mut gains, &mut delays, &crossover_freqs, &inversions,
-        crossover_type, &room_config.optimizer, eq_resources, sample_rate, Some(&global_eq_filters),
+        &level_reference_drivers,
+        &mut gains,
+        &mut delays,
+        &crossover_freqs,
+        &inversions,
+        crossover_type,
+        &room_config.optimizer,
+        eq_resources,
+        sample_rate,
+        Some(&global_eq_filters),
     ) {
         combined_curve = aligned;
-        let response = response::compute_peq_complex_response(&global_eq_filters, &combined_curve.freq, sample_rate);
+        let response = response::compute_peq_complex_response(
+            &global_eq_filters,
+            &combined_curve.freq,
+            sample_rate,
+        );
         final_curve = response::apply_complex_response(&combined_curve, &response);
         for (driver_index, &band_index) in driver_band_indices.iter().enumerate() {
-            driver_gains[driver_index] = topology_bands.relative_gains[driver_index] + gains[band_index];
-            driver_delays[driver_index] = topology_bands.relative_delays[driver_index] + delays[band_index];
+            driver_gains[driver_index] =
+                topology_bands.relative_gains[driver_index] + gains[band_index];
+            driver_delays[driver_index] =
+                topology_bands.relative_delays[driver_index] + delays[band_index];
         }
     }
 
@@ -781,6 +869,15 @@ fn process_speaker_topology_impl(
     let driver_curves_for_display: Vec<Curve> = driver_curves
         .iter()
         .map(output::extend_curve_to_full_range)
+        .collect();
+    // Record each driver's measured span so plots clip the raw measurement
+    // where the extension above continues past it for DSP replay.
+    let driver_measured_bands: Vec<[f64; 2]> = driver_curves
+        .iter()
+        .map(|curve| {
+            let last = curve.freq.len() - 1;
+            [curve.freq[0], curve.freq[last]]
+        })
         .collect();
 
     let mut chain = output::build_topology_dsp_chain_with_curves(
@@ -795,6 +892,7 @@ fn process_speaker_topology_impl(
         &global_eq_filters,
         &per_driver_filters,
         &driver_curves_for_display,
+        Some(&driver_measured_bands),
     );
 
     // Detect passband
@@ -819,12 +917,16 @@ fn process_speaker_topology_impl(
     chain.eq_response = Some(output::compute_eq_response(&initial_data, &final_data));
 
     chain.target_curve = eq::group_upper_reference_target(
-        &combined_curve, &room_config.optimizer, Some(eq_resources),
-    ).map(|target| (&target).into());
+        &combined_curve,
+        &room_config.optimizer,
+        Some(eq_resources),
+    )
+    .map(|target| (&target).into());
 
-    // Use global mean for level alignment
-    let min_freq = room_config.optimizer.min_freq;
-    let max_freq = room_config.optimizer.max_freq;
+    // Use the active correction support for level alignment. The score above
+    // still covers the configured observation band.
+    let min_freq = active_min_freq;
+    let max_freq = active_max_freq;
     let freqs_f32: Vec<f32> = combined_curve.freq.iter().map(|&f| f as f32).collect();
     let spl_f32: Vec<f32> = combined_curve.spl.iter().map(|&s| s as f32).collect();
     let mean_spl = compute_average_response(
@@ -901,14 +1003,56 @@ pub fn process_multisub_group_with_callback(
             ),
         });
     }
+    // All-pass fitting is phase-sensitive even when the later dispatch uses
+    // the legacy multiseat branch. Admit it before any such branch runs.
+    if group.allpass_optimization && !group.joint_optimization {
+        let seats = prepared
+            .seat_measurements
+            .as_ref()
+            .and_then(|matrix| matrix.first())
+            .map_or(1, Vec::len);
+        let trusted = multisub::timing_scopes_are_shared(
+            prepared.reference_scope.as_deref(),
+            prepared.subwoofers.len(),
+            seats,
+        );
+        if !trusted {
+            return Err(AutoeqError::InvalidConfiguration {
+                message: format!(
+                    "all-pass multi-sub processing for '{channel_name}' requires a shared timing reference for every source and seat; no alternate optimizer was run"
+                ),
+            });
+        }
+    }
+    // Joint mode explicitly selects a different array objective. Legacy
+    // multi-seat settings must not intercept that selection (or its refusals).
     if let Some(multi_seat_config) = room_config
         .optimizer
         .multi_seat
         .as_ref()
-        .filter(|config| config.enabled)
+        .filter(|config| config.enabled && !group.joint_optimization)
     {
         match prepared.seat_measurements.clone() {
             Some(seat_measurements) => {
+                // Legacy MSO also fits coherent gains and delays. Phase columns
+                // without a common capture reference cannot support that search.
+                let seat_count = seat_measurements.first().map_or(0, Vec::len);
+                let shared_timing = multisub::timing_scopes_are_shared(
+                    prepared.reference_scope.as_deref(),
+                    prepared.subwoofers.len(),
+                    seat_count,
+                );
+                let phase_available = seat_measurements.len() == prepared.subwoofers.len()
+                    && seat_measurements.iter().all(|seats| {
+                        seats.len() == seat_count && seats.iter().all(|curve| curve.phase.is_some())
+                    });
+                if !shared_timing || !phase_available {
+                    return Err(AutoeqError::InvalidConfiguration {
+                        message: format!(
+                            "legacy multi-seat multi-sub processing for '{channel_name}' requires a shared timing reference within every seat and phase on every input; no alternate optimizer was run"
+                        ),
+                    });
+                }
                 let context = MultiSubExecutionContext {
                     channel_name,
                     group,
@@ -928,7 +1072,40 @@ pub fn process_multisub_group_with_callback(
         }
     }
 
-    let (result, combined_response, allpass_filters) = if group.allpass_optimization {
+    // An explicit joint request cannot be satisfied by a different optimizer.
+    if group.joint_optimization && prepared.seat_measurements.is_none() {
+        return Err(AutoeqError::InvalidConfiguration {
+            message: format!(
+                "joint multi-sub selected for '{}' requires a per-seat matrix; no alternate optimizer was run",
+                group.name
+            ),
+        });
+    }
+    let joint_scope_ready = group.joint_optimization && prepared.seat_measurements.is_some();
+    let mut joint_details = None;
+    let (result, combined_response, allpass_filters) = if joint_scope_ready {
+        // Joint coherent optimization over the transfer matrix; the
+        // downstream shared residual EQ stage runs unchanged. An
+        // unverified timing scope refuses the coherent result before any
+        // array search runs, including searches by alternate optimizers.
+        info!("  Using joint coherent multi-sub optimization");
+        match multisub::process_joint_sub_group_detailed(
+            channel_name,
+            group,
+            room_config,
+            sample_rate,
+            prepared,
+            prepared.reference_scope.clone(),
+        ) {
+            Ok((base, combined, details)) => {
+                joint_details = Some(details);
+                (base, combined, None)
+            }
+            Err(other) => {
+                return Err(other);
+            }
+        }
+    } else if group.allpass_optimization {
         // All-pass enhanced optimization
         info!("  Using all-pass enhanced multi-sub optimization");
         let ap_result = multisub::optimize_multisub_with_allpass(
@@ -995,7 +1172,7 @@ pub fn process_multisub_group_with_callback(
         sub_eq_config.min_freq,
         sub_eq_config.max_freq,
     );
-    let eq_result = match callback {
+    let mut eq_result = match callback {
         Some(callback) => eq::optimize_channel_eq_with_callback_detailed(
             &combined_curve,
             &multisub_eq_optimizer,
@@ -1013,6 +1190,21 @@ pub fn process_multisub_group_with_callback(
     .map_err(|e| AutoeqError::OptimizationFailed {
         message: format!("EQ optimization failed for multi-sub sum: {}", e),
     })?;
+    let shared_eq_rejection_reason = if let Some(details) = &joint_details {
+        eq::protect_shared_eq_seats(
+            &mut eq_result,
+            &combined_curve,
+            &details.per_seat_post,
+            &multisub_eq_optimizer,
+            eq_resources,
+            sample_rate,
+        )
+        .map_err(|error| AutoeqError::OptimizationFailed {
+            message: format!("shared multi-sub EQ acceptance failed: {error}"),
+        })?
+    } else {
+        None
+    };
     let eq_filters = eq_result.filters;
     let post_score = eq_result.loss;
     let optimizer_evidence = eq_result.optimizer_evidence;
@@ -1056,9 +1248,9 @@ pub fn process_multisub_group_with_callback(
     // Detect passband for normalization (used for display curves)
     let (norm_range, _passband_mean) = detect_passband_and_mean(&combined_curve);
 
-    // Level alignment: use mean SPL within the EQ optimization range
-    let min_freq = room_config.optimizer.min_freq;
-    let max_freq = room_config.optimizer.max_freq;
+    // Level alignment follows the active correction support; the pre/post
+    // score remains evaluated over the configured observation band.
+    let [min_freq, max_freq] = room_config.optimizer.active_correction_band();
     let freqs_f32: Vec<f32> = combined_curve.freq.iter().map(|&f| f as f32).collect();
     let spl_f32: Vec<f32> = combined_curve.spl.iter().map(|&s| s as f32).collect();
     let mean_spl = compute_average_response(
@@ -1081,6 +1273,19 @@ pub fn process_multisub_group_with_callback(
     chain.initial_curve = Some(initial_data.clone());
     chain.final_curve = Some(final_data.clone());
     chain.eq_response = Some(output::compute_eq_response(&initial_data, &final_data));
+
+    if let Some(details) = &joint_details {
+        chain.joint_sub = Some(multisub::joint_sub_diagnostics(
+            details,
+            &eq_filters,
+            sample_rate,
+            [min_freq, max_freq],
+            &chain,
+        )?);
+        if let Some(report) = &mut chain.joint_sub {
+            report.shared_eq_rejection_reason = shared_eq_rejection_reason;
+        }
+    }
 
     Ok((
         chain,
@@ -1123,6 +1328,7 @@ fn process_multisub_group_multiseat(
     let peq_config = multiseat_peq_config(multi_seat_config, seat_count);
     let min_freq = room_config.optimizer.min_freq;
     let max_freq = room_config.optimizer.max_freq;
+    let [active_min_freq, active_max_freq] = room_config.optimizer.active_correction_band();
     let mut optimizer_evidence = Vec::new();
 
     let raw_measurements = MultiSeatMeasurements::new(seat_measurements.clone())?;
@@ -1179,20 +1385,14 @@ fn process_multisub_group_multiseat(
             multiseat::optimize_multiseat_continuous_area(
                 &measurements,
                 multi_seat_config,
-                (
-                    room_config.optimizer.min_freq,
-                    room_config.optimizer.max_freq,
-                ),
+                (active_min_freq, active_max_freq),
                 sample_rate,
             )?
         } else {
             multiseat::optimize_multiseat(
                 &measurements,
                 multi_seat_config,
-                (
-                    room_config.optimizer.min_freq,
-                    room_config.optimizer.max_freq,
-                ),
+                (active_min_freq, active_max_freq),
                 sample_rate,
             )?
         };
@@ -1264,7 +1464,7 @@ fn process_multisub_group_multiseat(
         // lose an explicitly supplied progress callback silently.
         if let Some(mut callback) = callback {
             let realized_loss = flat_loss_score(&combined_curve, min_freq, max_freq);
-            let _ = callback(0, realized_loss, None);
+            let _ = callback(0, realized_loss, None, None);
         }
         Vec::new()
     };
@@ -1479,9 +1679,9 @@ pub fn process_dba_with_callback(
     // Detect passband for normalization (used for display curves)
     let (norm_range, _passband_mean) = detect_passband_and_mean(&combined_curve);
 
-    // Level alignment: use mean SPL within the EQ optimization range
-    let min_freq = room_config.optimizer.min_freq;
-    let max_freq = room_config.optimizer.max_freq;
+    // Level alignment follows the active correction support; the pre/post
+    // score remains evaluated over the configured observation band.
+    let [min_freq, max_freq] = room_config.optimizer.active_correction_band();
     let freqs_f32: Vec<f32> = combined_curve.freq.iter().map(|&f| f as f32).collect();
     let spl_f32: Vec<f32> = combined_curve.spl.iter().map(|&s| s as f32).collect();
     let mean_spl = compute_average_response(
@@ -1634,6 +1834,10 @@ pub fn process_cardioid_with_callback(
     }
 
     let combined_curve = Curve {
+        resolution: autoeq_core::resolution::MeasurementResolution::combine([
+            &front_curve,
+            &rear_curve,
+        ]),
         freq: front_curve.freq.clone(),
         spl: ndarray::Array1::from_iter(
             combined_complex

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// An empty `OptimizationMetadata` for tests.
 pub fn empty_metadata() -> OptimizationMetadata {
     OptimizationMetadata {
-            final_convolution_sha256: None,
+        final_convolution_sha256: None,
         pre_score: 0.0,
         post_score: 0.0,
         algorithm: "de".to_string(),
@@ -36,10 +36,17 @@ pub fn empty_metadata() -> OptimizationMetadata {
         validation_bundle: None,
         supporting_source: None,
         correction_acceptance: None,
+        audibility_veto: None,
+        veto_adjudication: None,
         optimizer_evidence: None,
         stage_outcomes: Vec::new(),
         qa_seed_distribution: None,
         effective_config: None,
+        t60_flatness_tolerance_s: None,
+        operation_gates: None,
+        provisional_decisions: Vec::new(),
+        epa_provenance: None,
+        playback_summary: None,
     }
 }
 
@@ -60,6 +67,7 @@ pub fn single_channel_room_result(channel_name: &str) -> RoomOptimizationResult 
     channels.insert(
         channel_name.to_string(),
         ChannelDspChain {
+            physical_correction_target: None,
             channel: channel_name.to_string(),
             plugins: Vec::new(),
             drivers: None,
@@ -71,12 +79,21 @@ pub fn single_channel_room_result(channel_name: &str) -> RoomOptimizationResult 
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         },
     );
     let mut channel_results = HashMap::new();
     channel_results.insert(
         channel_name.to_string(),
         ChannelOptimizationResult {
+            measurement_conditioning: None,
             name: channel_name.to_string(),
             pre_score: 0.5,
             post_score: 0.9,
@@ -85,9 +102,12 @@ pub fn single_channel_room_result(channel_name: &str) -> RoomOptimizationResult 
             biquads: Vec::new(),
             fir_coeffs: None,
             optimizer_evidence: Vec::new(),
+            audibility_veto: Vec::new(),
+            veto_adjudication: None,
         },
     );
     RoomOptimizationResult {
+        finalized_decisions: None,
         channels,
         channel_results,
         deployed_source_curves: HashMap::new(),

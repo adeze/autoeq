@@ -68,7 +68,11 @@ fn stereo_workflow_emits_supporting_source_channels_and_metadata() {
 
     let sys = SystemConfig {
         model: SystemModel::Stereo,
-        speakers: HashMap::from([("L".to_string(), "left".to_string())]),
+        speakers: HashMap::from([
+            ("L".to_string(), "left".to_string()),
+            // Reuse the synthetic response for a symmetric stereo fixture.
+            ("R".to_string(), "left".to_string()),
+        ]),
         ..Default::default()
     };
 
@@ -81,7 +85,9 @@ fn stereo_workflow_emits_supporting_source_channels_and_metadata() {
         crossovers: None,
         provenance: Default::default(),
         recording_config: None,
+        reporting: None,
         cea2034_cache: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
     };
 
@@ -178,7 +184,9 @@ fn home_cinema_workflow_emits_supporting_source_channels_and_metadata() {
         crossovers: None,
         provenance: Default::default(),
         recording_config: None,
+        reporting: None,
         cea2034_cache: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
     };
 
@@ -232,7 +240,11 @@ fn spatial_robustness_advisories_raised_for_multiple_measurements() {
 
     let sys = SystemConfig {
         model: SystemModel::Stereo,
-        speakers: HashMap::from([("L".to_string(), "left".to_string())]),
+        speakers: HashMap::from([
+            ("L".to_string(), "left".to_string()),
+            // Reuse the synthetic response for a symmetric stereo fixture.
+            ("R".to_string(), "left".to_string()),
+        ]),
         ..Default::default()
     };
 
@@ -245,7 +257,9 @@ fn spatial_robustness_advisories_raised_for_multiple_measurements() {
         crossovers: None,
         provenance: Default::default(),
         recording_config: None,
+        reporting: None,
         cea2034_cache: None,
+        measured_impulse_responses: Default::default(),
         ctc: None,
     };
 

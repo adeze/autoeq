@@ -314,6 +314,7 @@ mod tests {
             }
         };
         let chain = |plugins| roomeq_model::ChannelDspChain {
+            physical_correction_target: None,
             channel: String::new(),
             plugins,
             drivers: None,
@@ -325,6 +326,14 @@ mod tests {
             post_ir: None,
             fir_temporal_masking: None,
             direct_early_late_correction: None,
+            joint_sub: None,
+            early_reflections: None,
+            t60_octaves: None,
+            speech_transmission: None,
+            waterfall: None,
+            resonance_decays: None,
+            wavelet: None,
+            early_late_curves: None,
         };
         let chains = HashMap::from([
             ("R".to_string(), chain(vec![])),

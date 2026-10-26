@@ -41,6 +41,135 @@ pub enum MeasurementOrigin {
     Derived,
 }
 
+/// Identity namespace for the physical measurement interface represented by
+/// a rig declaration. Acoustic measurement rigs and headphone couplers are
+/// separate domains and can never match one another.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementRigKind {
+    AcousticMeasurement,
+    HeadphoneCoupler,
+}
+
+/// Optional per-machine components of an acoustic measurement chain. This is
+/// separate from [`MeasurementRigKind::HeadphoneCoupler`] and never inferred.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct AcousticMeasurementHardware {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_interface_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone_id: Option<String>,
+    /// Caller-selected profile/source identity, not proof that calibration was
+    /// applied. Applied calibration is recorded by the separate provenance
+    /// calibration fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone_calibration_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_device_id: Option<String>,
+}
+
+/// Caller-declared identity for the measurement rig used to produce a curve.
+///
+/// A matching identifier is only a declaration of identity. It does not
+/// verify calibration, reference approval, or physical equivalence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementRigIdentity {
+    pub kind: MeasurementRigKind,
+    pub domain: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acoustic_hardware: Option<AcousticMeasurementHardware>,
+}
+
+impl MeasurementRigIdentity {
+    /// Construct an identity after trimming the caller-provided strings.
+    pub fn new(
+        kind: MeasurementRigKind,
+        domain: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Result<Self, ProvenanceError> {
+        let identity = Self {
+            kind,
+            domain: domain.into().trim().to_owned(),
+            id: id.into().trim().to_owned(),
+            acoustic_hardware: None,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    /// Attach explicit acoustic-chain component identities.
+    pub fn with_acoustic_hardware(
+        mut self,
+        mut hardware: AcousticMeasurementHardware,
+    ) -> Result<Self, ProvenanceError> {
+        for identity in [
+            &mut hardware.audio_interface_id,
+            &mut hardware.microphone_id,
+            &mut hardware.microphone_calibration_profile_id,
+            &mut hardware.playback_device_id,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *identity = identity.trim().to_owned();
+        }
+        self.acoustic_hardware = Some(hardware);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Validate deserialized or directly constructed identities. Values must
+    /// be non-empty and already trimmed so stored provenance is canonical.
+    pub fn validate(&self) -> Result<(), ProvenanceError> {
+        for (field, value) in [("domain", &self.domain), ("id", &self.id)] {
+            if value.trim().is_empty() {
+                return Err(ProvenanceError::InvalidRigIdentity(format!(
+                    "{field} must not be empty"
+                )));
+            }
+            if value.trim() != value {
+                return Err(ProvenanceError::InvalidRigIdentity(format!(
+                    "{field} must not have leading or trailing whitespace"
+                )));
+            }
+        }
+        if let Some(hardware) = &self.acoustic_hardware {
+            if self.kind != MeasurementRigKind::AcousticMeasurement {
+                return Err(ProvenanceError::InvalidRigIdentity(
+                    "acoustic hardware components cannot be attached to a headphone coupler identity"
+                        .into(),
+                ));
+            }
+            for (field, value) in [
+                ("audio_interface_id", &hardware.audio_interface_id),
+                ("microphone_id", &hardware.microphone_id),
+                (
+                    "microphone_calibration_profile_id",
+                    &hardware.microphone_calibration_profile_id,
+                ),
+                ("playback_device_id", &hardware.playback_device_id),
+            ] {
+                if let Some(value) = value {
+                    if value.trim().is_empty() {
+                        return Err(ProvenanceError::InvalidRigIdentity(format!(
+                            "{field} must not be empty when provided"
+                        )));
+                    }
+                    if value.trim() != value {
+                        return Err(ProvenanceError::InvalidRigIdentity(format!(
+                            "{field} must not have leading or trailing whitespace"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RedactionProfile {
@@ -140,6 +269,105 @@ pub struct UncertaintyMetadata {
     pub warnings: Vec<String>,
 }
 
+/// How the underlying acoustic data was captured.
+///
+/// Reuses core contract K1 [`autoeq_core::evidence::CaptureKind`] verbatim:
+/// stationary IR (full impulse-response timing), spatial magnitude (no
+/// stationary timing reference), direct sound, or unknown. Unknown is the
+/// default and means no temporal/coherent claim may be derived. Shared
+/// (not duplicated) per the G2 mapping record in
+/// `reviews/plan-20260921.md` §4; the serialized form is unchanged.
+pub use autoeq_core::evidence::CaptureKind;
+
+/// Scope of the timing/gain reference an acquisition is bound to.
+///
+/// Maps to core contract K1 `common-reference scope`. Coherent
+/// operations require takes that share one reference identity within
+/// a compatible scope.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceScope {
+    PerTake,
+    PerSeat,
+    PerSource,
+    Session,
+    #[default]
+    Unknown,
+}
+
+/// Evidence grade for one acquisition fact.
+///
+/// Missing is unknown, never zero error or good quality. Legacy
+/// imports always carry [`EvidenceLevel::Unknown`], never guessed data.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceLevel {
+    Measured,
+    Derived,
+    #[default]
+    Unknown,
+}
+
+/// Whether `Curve.spl` values are calibrated absolute SPL or relative.
+///
+/// A display shift or normalization must never silently flip this to
+/// [`SplReference::CalibratedAbsolute`]. Only an explicit calibration
+/// step carrying a calibration identity may set absolute.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SplReference {
+    Relative,
+    CalibratedAbsolute,
+    #[default]
+    Unknown,
+}
+
+/// Microphone orientation at capture time.
+///
+/// Maps to core contract K1 acquisition provenance. All fields are
+/// optional so partially known orientations stay explicit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MicOrientation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azimuth_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Per-aspect evidence grades for one measurement.
+///
+/// Raw acquisition facts and derived analysis results remain
+/// distinguishable: each aspect carries its own grade instead of one
+/// blended score.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeasurementEvidence {
+    #[serde(default)]
+    pub acquisition: EvidenceLevel,
+    #[serde(default)]
+    pub calibration: EvidenceLevel,
+    #[serde(default)]
+    pub timing: EvidenceLevel,
+    #[serde(default)]
+    pub phase: EvidenceLevel,
+}
+
+impl MeasurementEvidence {
+    pub fn unknown() -> Self {
+        Self {
+            acquisition: EvidenceLevel::Unknown,
+            calibration: EvidenceLevel::Unknown,
+            timing: EvidenceLevel::Unknown,
+            phase: EvidenceLevel::Unknown,
+        }
+    }
+
+    pub fn is_fully_unknown(&self) -> bool {
+        *self == Self::unknown()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MeasurementProvenance {
     #[serde(default = "schema_name")]
@@ -156,6 +384,61 @@ pub struct MeasurementProvenance {
     pub acquisition: AcquisitionMetadata,
     #[serde(default)]
     pub uncertainty: UncertaintyMetadata,
+    /// K1 capture kind. Unknown by default: no temporal claim allowed.
+    #[serde(default)]
+    pub capture_kind: CaptureKind,
+    /// K1 source identity (which loudspeaker / logical source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Explicitly declared measurement interface/coupler identity. Missing
+    /// means unknown and is never inferred from the source URI or model name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_rig: Option<MeasurementRigIdentity>,
+    /// K1 seat identity (which listening position).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_id: Option<String>,
+    /// K1 reference identity shared by coherently combined takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_id: Option<String>,
+    /// K1 common-reference scope for `reference_id`.
+    #[serde(default)]
+    pub reference_scope: ReferenceScope,
+    /// Raw acquisition IR offset in seconds. Set once from the source
+    /// artifact and never overwritten by recentering; see
+    /// `applied_ir_offset_s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_ir_offset_s: Option<f64>,
+    /// Last requested recentering offset in seconds. The raw value in
+    /// `original_ir_offset_s` always stays recoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_ir_offset_s: Option<f64>,
+    /// K1 raw artifact hash (unprocessed capture bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_artifact_hash: Option<String>,
+    /// K1 stimulus hash (what was played during the capture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stimulus_hash: Option<String>,
+    /// K1 microphone orientation at capture time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic_orientation: Option<MicOrientation>,
+    /// K1 applied calibration identity. `None` means uncalibrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_id: Option<String>,
+    /// K1 calibration application state. Only an explicit calibration
+    /// step may set this; display/normalization paths must not.
+    #[serde(default)]
+    pub calibration_applied: bool,
+    /// K1 processing-chain identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    /// Per-aspect evidence grades. Legacy imports are fully unknown.
+    #[serde(default)]
+    pub evidence: MeasurementEvidence,
+    /// Whether `Curve.spl` is relative or calibrated absolute SPL.
+    /// Legacy curves are relative; this is preserved behavior, not a
+    /// guess about the room level.
+    #[serde(default)]
+    pub level_reference: SplReference,
     #[serde(default)]
     pub extensions: BTreeMap<String, Value>,
     /// Forward-compatible producer fields.  These are deliberately retained
@@ -165,6 +448,13 @@ pub struct MeasurementProvenance {
 }
 
 impl MeasurementProvenance {
+    /// Legacy import with explicit unknown evidence.
+    ///
+    /// No acquisition fact is guessed: capture kind, identities,
+    /// hashes, orientation, calibration and timing evidence all stay
+    /// unset/unknown. `level_reference` stays [`SplReference::Relative`],
+    /// which preserves the historical meaning of `Curve.spl` under
+    /// normalization (relative shape, never calibrated SPL).
     pub fn legacy(curve: &Curve) -> Result<Self, ProvenanceError> {
         Ok(Self {
             schema: schema_name(),
@@ -175,6 +465,22 @@ impl MeasurementProvenance {
             ledger: Vec::new(),
             acquisition: AcquisitionMetadata::default(),
             uncertainty: UncertaintyMetadata::default(),
+            capture_kind: CaptureKind::Unknown,
+            source_id: None,
+            measurement_rig: None,
+            seat_id: None,
+            reference_id: None,
+            reference_scope: ReferenceScope::Unknown,
+            original_ir_offset_s: None,
+            applied_ir_offset_s: None,
+            raw_artifact_hash: None,
+            stimulus_hash: None,
+            mic_orientation: None,
+            calibration_id: None,
+            calibration_applied: false,
+            chain_id: None,
+            evidence: MeasurementEvidence::unknown(),
+            level_reference: SplReference::Relative,
             extensions: BTreeMap::new(),
             unknown_fields: BTreeMap::new(),
         })
@@ -292,10 +598,30 @@ impl MeasurementRecord {
         if self.id.is_empty() {
             report.errors.push("measurement record id is empty".into());
         }
+        if let Some(rig) = &self.provenance.measurement_rig
+            && let Err(error) = rig.validate()
+        {
+            report.errors.push(error.to_string());
+        }
         if self.provenance.source_artifacts.is_empty() {
             report
                 .warnings
                 .push("measurement has no source artifact evidence".into());
+        }
+        if self.provenance.capture_kind == CaptureKind::Unknown {
+            report
+                .warnings
+                .push("measurement capture kind is unknown".into());
+        }
+        if self.provenance.evidence.is_fully_unknown() {
+            report
+                .warnings
+                .push("measurement evidence is unknown".into());
+        }
+        if self.provenance.calibration_applied && self.provenance.calibration_id.is_none() {
+            report.errors.push(
+                "measurement claims applied calibration without a calibration identity".into(),
+            );
         }
         if matches!(mode, ValidationMode::Strict)
             && self.provenance.origin == MeasurementOrigin::Legacy
@@ -465,6 +791,8 @@ pub enum ProvenanceError {
     SidecarTooLarge,
     #[error("unsupported provenance schema version {0}")]
     UnsupportedSchemaVersion(u32),
+    #[error("invalid measurement rig identity: {0}")]
+    InvalidRigIdentity(String),
 }
 
 pub fn sidecar_path(data_path: &Path) -> PathBuf {
@@ -685,5 +1013,78 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("common coordinate frame"))
         );
+    }
+
+    #[test]
+    fn measurement_rig_identity_is_canonical_and_validated() {
+        let rig = MeasurementRigIdentity::new(
+            MeasurementRigKind::AcousticMeasurement,
+            "  calibration-lab  ",
+            "  mic-chain-01  ",
+        )
+        .unwrap();
+        assert_eq!(rig.domain, "calibration-lab");
+        assert_eq!(rig.id, "mic-chain-01");
+
+        let empty = MeasurementRigIdentity {
+            kind: MeasurementRigKind::AcousticMeasurement,
+            domain: " ".into(),
+            id: "mic-chain-01".into(),
+            acoustic_hardware: None,
+        };
+        assert!(empty.validate().is_err());
+
+        let untrimmed = MeasurementRigIdentity {
+            kind: MeasurementRigKind::HeadphoneCoupler,
+            domain: "coupler-db".into(),
+            id: " unit-2".into(),
+            acoustic_hardware: None,
+        };
+        assert!(untrimmed.validate().is_err());
+
+        let coupler_with_mic = MeasurementRigIdentity {
+            kind: MeasurementRigKind::HeadphoneCoupler,
+            domain: "coupler-db".into(),
+            id: "fixture-x".into(),
+            acoustic_hardware: Some(AcousticMeasurementHardware {
+                microphone_id: Some("mic-x".into()),
+                ..Default::default()
+            }),
+        };
+        assert!(coupler_with_mic.validate().is_err());
+
+        let measured_chain = MeasurementRigIdentity::new(
+            MeasurementRigKind::AcousticMeasurement,
+            "room-measurement-domain",
+            "front-left-chain",
+        )
+        .unwrap()
+        .with_acoustic_hardware(AcousticMeasurementHardware {
+            audio_interface_id: Some("rme-device".into()),
+            microphone_id: Some("umik-1".into()),
+            microphone_calibration_profile_id: Some("umik-calibration-2026".into()),
+            playback_device_id: Some("speaker-output-1".into()),
+        })
+        .unwrap();
+        let hardware = measured_chain.acoustic_hardware.unwrap();
+        assert_eq!(hardware.audio_interface_id.as_deref(), Some("rme-device"));
+        assert_eq!(hardware.microphone_id.as_deref(), Some("umik-1"));
+        assert_eq!(
+            hardware.playback_device_id.as_deref(),
+            Some("speaker-output-1")
+        );
+    }
+
+    #[test]
+    fn old_provenance_without_rig_stays_unknown_on_round_trip() {
+        let record = MeasurementRecord::legacy(curve()).unwrap();
+        let mut json = serde_json::to_value(record).unwrap();
+        json["provenance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("measurement_rig");
+        let loaded: MeasurementRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.provenance.measurement_rig, None);
+        assert!(loaded.validate(ValidationMode::Warn).is_valid());
     }
 }

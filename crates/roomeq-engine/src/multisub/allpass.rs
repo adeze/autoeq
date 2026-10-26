@@ -10,8 +10,9 @@ use std::f64::consts::PI;
 pub(super) fn allpass_frequency_bounds(
     config: &OptimizerConfig,
 ) -> Result<(f64, f64), Box<dyn Error>> {
-    let min_freq = config.min_freq.max(20.0);
-    let max_freq = config.max_freq.min(200.0);
+    let [active_min_freq, active_max_freq] = config.active_correction_band();
+    let min_freq = active_min_freq.max(20.0);
+    let max_freq = active_max_freq.min(200.0);
     if max_freq <= min_freq {
         return Err(format!(
             "Multi-sub all-pass optimization requires a non-zero frequency range after clamping to 20-200 Hz, got [{min_freq:.1}, {max_freq:.1}] Hz"
@@ -19,6 +20,34 @@ pub(super) fn allpass_frequency_bounds(
         .into());
     }
     Ok((min_freq, max_freq))
+}
+
+/// Conservative common RBJ pole-bandwidth bounds over the complete AP band.
+/// This numerical sampling/smoothing bound does not qualify capture timing.
+pub(super) fn allpass_q_bounds(
+    measurements: &[Curve],
+    config: &OptimizerConfig,
+    sample_rate: f64,
+    band: (f64, f64),
+) -> Option<(f64, f64)> {
+    if !config.min_q.is_finite()
+        || !config.max_q.is_finite()
+        || config.min_q <= 0.0
+        || config.max_q < config.min_q
+    {
+        return None;
+    }
+    let support = autoeq_core::resolution::MeasurementResolution::combine(measurements)?;
+    let width = support
+        .max_width_octaves([band.0, band.1])?
+        .max(1.0 / config.smooth_n.max(1) as f64);
+    // Bilinear warping is greatest at the upper endpoint below Nyquist.
+    // A common cap keeps every searched center bounded without changing the
+    // candidate between objective evaluation and emission.
+    let cap = support.max_peak_q(band.1, sample_rate, width)?;
+    let minimum = config.min_q.max(0.3);
+    let maximum = config.max_q.min(5.0).min(cap);
+    (minimum <= maximum).then_some((minimum, maximum))
 }
 
 /// Compute combined multi-sub response with per-sub all-pass filters.
@@ -110,4 +139,26 @@ pub(super) fn allpass_complex_response(biquad: &Biquad, f: f64) -> Complex64 {
     let den = 1.0 + a1 * z_inv + a2 * z_inv2;
 
     num / den
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn resampling_cannot_raise_the_allpass_q_ceiling() {
+        let original = Curve {
+            freq: Array1::from_vec(vec![20.0, 40.0, 80.0, 160.0, 200.0]),
+            spl: Array1::zeros(5),
+            phase: Some(Array1::zeros(5)),
+            ..Default::default()
+        };
+        let grid = Array1::from_iter((0..1000).map(|i| 20.0 * 10.0_f64.powf(i as f64 / 999.0)));
+        let dense = autoeq_core::interpolate_response(&grid, &original);
+        let config = OptimizerConfig::default();
+        let sparse = allpass_q_bounds(&[original], &config, 48_000.0, (20.0, 200.0)).unwrap();
+        let densified = allpass_q_bounds(&[dense], &config, 48_000.0, (20.0, 200.0)).unwrap();
+        assert_eq!(sparse, densified);
+        assert!(sparse.1 < 0.67);
+    }
 }

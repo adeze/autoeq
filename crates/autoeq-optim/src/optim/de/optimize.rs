@@ -1,4 +1,7 @@
 use super::super::ObjectiveData;
+use super::super::constraint_envelope::{
+    OwnedConstraintSpec, finalize_candidate, project_gains_onto_envelopes,
+};
 use super::create::create_de_callback;
 use super::create::create_de_objective;
 use super::misc::process_de_results;
@@ -10,11 +13,49 @@ use crate::constraints::{
 };
 use crate::de::init_sobol::init_halton;
 use crate::de::{
-    CallbackAction, DEConfigBuilder, DEIntermediate, Init, Mutation, ParallelConfig, Strategy,
-    differential_evolution,
+    CallbackAction, DECheckpoint, DEConfigBuilder, DEIntermediate, DifferentialEvolution, Init,
+    Mutation, ParallelConfig, Strategy, differential_evolution,
 };
 use crate::initial_guess::{SmartInitConfig, create_smart_initial_guesses};
 use ndarray::Array1;
+
+/// AutoEQ DE result together with same-invocation completion counters.
+pub type AutoeqDeCompletionResult = (Result<(String, f64), (String, f64)>, Option<DECompletion>);
+
+/// Persistence callback used by exact DE continuation.
+pub type DECheckpointSaveCallback =
+    Box<dyn FnMut(&DECheckpoint) -> std::result::Result<(), String> + Send>;
+
+/// Completion facts from the same DE report that produced the selected vector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DECompletion {
+    pub success: bool,
+    pub message: String,
+    pub generations: usize,
+    pub generation_limit: usize,
+    pub evaluations: usize,
+}
+
+/// Exact continuation inputs and generation-barrier persistence callback.
+pub struct DEExactContinuation {
+    /// Previously saved DE state; None starts a new exact-checkpointed run.
+    pub checkpoint: Option<DECheckpoint>,
+    /// Caller identity for the objective and opaque callback semantics.
+    pub run_identity: String,
+    /// Saves each complete barrier state; errors stop optimization.
+    pub save_callback: DECheckpointSaveCallback,
+}
+
+impl std::fmt::Debug for DEExactContinuation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DEExactContinuation")
+            .field("checkpoint", &self.checkpoint)
+            .field("run_identity", &self.run_identity)
+            .field("save_callback", &"<generation-barrier callback>")
+            .finish()
+    }
+}
 
 /// Optimize filter parameters using AutoEQ custom algorithms
 pub fn optimize_filters_autoeq(
@@ -24,7 +65,7 @@ pub fn optimize_filters_autoeq(
     objective_data: ObjectiveData,
     autoeq_name: &str,
     params: &crate::OptimParams,
-) -> Result<(String, f64), (String, f64)> {
+) -> crate::optim::OptimizerOutcome {
     // Create the callback with all the logging and user feedback
     let callback = create_de_callback("autoeq::DE", params.quiet);
 
@@ -40,16 +81,249 @@ pub fn optimize_filters_autoeq(
     )
 }
 
+/// Run the ordinary AutoEQ DE path while retaining the solver's typed stop
+/// and actual evaluation counters for production evidence.
+pub fn optimize_filters_autoeq_with_completion(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
+    autoeq_name: &str,
+    params: &crate::OptimParams,
+) -> AutoeqDeCompletionResult {
+    let callback = create_de_callback("autoeq::DE", params.quiet);
+    let mut completion = None;
+    let result = optimize_filters_autoeq_with_callback_and_initial_and_exact(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        autoeq_name,
+        params,
+        None,
+        callback,
+        None,
+        Some(&mut completion),
+    );
+    (result, completion)
+}
+
 /// AutoEQ DE optimization with external progress callback
 pub fn optimize_filters_autoeq_with_callback(
     x: &mut [f64],
     lower_bounds: &[f64],
     upper_bounds: &[f64],
     objective_data: ObjectiveData,
+    autoeq_name: &str,
+    params: &crate::OptimParams,
+    callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+) -> crate::optim::OptimizerOutcome {
+    optimize_filters_autoeq_with_callback_and_completion(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        autoeq_name,
+        params,
+        callback,
+    )
+    .0
+}
+
+/// Retain native DE completion while reporting external iteration progress.
+pub(crate) fn optimize_filters_autoeq_with_callback_and_completion(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
+    autoeq_name: &str,
+    params: &crate::OptimParams,
+    callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+) -> AutoeqDeCompletionResult {
+    let mut completion = None;
+    let result = optimize_filters_autoeq_with_callback_and_initial_and_exact(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        autoeq_name,
+        params,
+        None,
+        callback,
+        None,
+        Some(&mut completion),
+    );
+    (result, completion)
+}
+
+/// AutoEQ DE optimization whose first individual is an explicit candidate
+/// when one is supplied. The remaining population is initialized normally.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the explicit DE inputs keep bounds, objective, candidate, parameters, and callback visible"
+)]
+pub fn optimize_filters_autoeq_with_callback_and_initial(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
     _autoeq_name: &str,
     params: &crate::OptimParams,
+    initial_candidate: Option<&[f64]>,
+    callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+) -> crate::optim::OptimizerOutcome {
+    optimize_filters_autoeq_with_callback_and_initial_and_exact(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        _autoeq_name,
+        params,
+        initial_candidate,
+        callback,
+        None,
+        None,
+    )
+}
+
+/// AutoEQ DE optimization with safe-barrier exact-state persistence.
+///
+/// This mode is deliberately separate from candidate warm starts. It always
+/// uses a deterministic seed and validates the state against the full DE
+/// configuration before any objective evaluation.
+///
+/// # Errors
+///
+/// Returns an error tuple when bounds, configuration, or the saved checkpoint
+/// are invalid, the exact run identity differs, or checkpoint persistence
+/// fails. The error value is set to positive infinity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the explicit optimizer inputs and exact-continuation control stay visible at the production boundary"
+)]
+pub fn optimize_filters_autoeq_with_exact_checkpoint(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
+    autoeq_name: &str,
+    params: &crate::OptimParams,
+    callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+    continuation: DEExactContinuation,
+) -> crate::optim::OptimizerOutcome {
+    optimize_filters_autoeq_with_callback_and_initial_and_exact(
+        x,
+        lower_bounds,
+        upper_bounds,
+        objective_data,
+        autoeq_name,
+        params,
+        None,
+        callback,
+        Some(continuation),
+        None,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the legacy typed callback plus optional initial candidate are preserved while exact state is additive"
+)]
+fn optimize_filters_autoeq_with_callback_and_initial_and_exact(
+    x: &mut [f64],
+    lower_bounds: &[f64],
+    upper_bounds: &[f64],
+    objective_data: ObjectiveData,
+    _autoeq_name: &str,
+    params: &crate::OptimParams,
+    initial_candidate: Option<&[f64]>,
     mut callback: Box<dyn FnMut(&DEIntermediate) -> CallbackAction + Send>,
+    mut exact: Option<DEExactContinuation>,
+    report_summary: Option<&mut Option<DECompletion>>,
 ) -> Result<(String, f64), (String, f64)> {
+    let explicit_initial_candidate = if let Some(candidate) = initial_candidate {
+        if candidate.is_empty()
+            || candidate.len() != x.len()
+            || candidate.len() != lower_bounds.len()
+            || candidate.len() != upper_bounds.len()
+        {
+            return Err((
+                format!(
+                    "warm-start candidate has {} parameters; x/lower/upper dimensions are {}/{}/{}",
+                    candidate.len(),
+                    x.len(),
+                    lower_bounds.len(),
+                    upper_bounds.len()
+                ),
+                f64::INFINITY,
+            ));
+        }
+        for (index, (&value, (&lower, &upper))) in candidate
+            .iter()
+            .zip(lower_bounds.iter().zip(upper_bounds))
+            .enumerate()
+        {
+            if !lower.is_finite() || !upper.is_finite() || lower > upper {
+                return Err((
+                    format!(
+                        "warm-start bounds at parameter {index} are invalid: [{lower}, {upper}]"
+                    ),
+                    f64::INFINITY,
+                ));
+            }
+            if !value.is_finite() {
+                return Err((
+                    format!("warm-start candidate parameter {index} is not finite"),
+                    f64::INFINITY,
+                ));
+            }
+            if value < lower || value > upper {
+                return Err((
+                    format!(
+                        "warm-start candidate parameter {index}={value} is outside bounds [{lower}, {upper}]"
+                    ),
+                    f64::INFINITY,
+                ));
+            }
+        }
+        let constraint_spec = OwnedConstraintSpec::from_params(params).map_err(|reason| {
+            (
+                format!("current warm-start constraint spec is invalid: {reason}"),
+                f64::INFINITY,
+            )
+        })?;
+        let finalized = finalize_candidate(
+            "de-warm-start",
+            candidate,
+            &objective_data,
+            &constraint_spec.as_spec(),
+        )
+        .map_err(|reason| {
+            (
+                format!("warm-start candidate fails current constraint checks: {reason}"),
+                f64::INFINITY,
+            )
+        })?;
+        for (index, (&value, (&lower, &upper))) in finalized
+            .params
+            .iter()
+            .zip(lower_bounds.iter().zip(upper_bounds))
+            .enumerate()
+        {
+            if !value.is_finite() || value < lower || value > upper {
+                return Err((
+                    format!(
+                        "finalized warm-start parameter {index}={value} is outside bounds [{lower}, {upper}]"
+                    ),
+                    f64::INFINITY,
+                ));
+            }
+        }
+        Some(finalized.params)
+    } else {
+        None
+    };
+
     // Extract parameters from args
     let population = params.population;
     let maxeval = params.maxeval;
@@ -116,7 +390,22 @@ pub fn optimize_filters_autoeq_with_callback(
         if !params.quiet {
             log::debug!("📊 Generated {} smart initial guesses", guesses.len());
         }
+        // O1: project seeds onto the configured per-filter gain envelopes.
+        // Deterministic post-processing that consumes no RNG; bit-identical
+        // without envelopes.
         guesses
+            .into_iter()
+            .map(|guess| {
+                project_gains_onto_envelopes(
+                    &guess,
+                    params.peq_model,
+                    setup.penalty_data.loss_type,
+                    setup.penalty_data.max_boost_envelope.as_deref(),
+                    setup.penalty_data.min_cut_envelope.as_deref(),
+                )
+                .0
+            })
+            .collect()
     };
 
     // Generate Sobol quasi-random population for better space coverage
@@ -133,17 +422,13 @@ pub fn optimize_filters_autoeq_with_callback(
         );
     }
 
-    // Use the best smart guess as initial x0, fall back to Sobol initialization
-    let best_initial_guess = if !smart_guesses.is_empty() {
-        // Use the first (best) smart guess
-        Array1::from(smart_guesses[0].clone())
-    } else if !sobol_samples.is_empty() {
-        // Fallback to the first Sobol sample if no smart guesses
-        Array1::from(sobol_samples[0].clone())
-    } else {
-        // Ultimate fallback: use current x as initial guess
-        Array1::from(x.to_vec())
-    };
+    // A validated warm-start candidate takes precedence as DE's x0.
+    let best_initial_guess = choose_best_initial_guess(
+        explicit_initial_candidate.as_deref(),
+        &smart_guesses,
+        &sobol_samples,
+        x,
+    );
 
     if !params.quiet {
         log::debug!("🚀 Using smart initial guess with Sobol population initialization");
@@ -191,6 +476,16 @@ pub fn optimize_filters_autoeq_with_callback(
     // Use constraint helpers for nonlinear constraints
     let mut config_builder = DEConfigBuilder::new()
         .maxiter(setup.max_iter)
+        // Speaker-score searches can have a narrow population-fitness spread
+        // before the scored preference has improved. Use the existing
+        // generation/evaluation cap before accepting population convergence.
+        .min_convergence_iter(
+            if setup.penalty_data.loss_type == crate::LossType::SpeakerScore {
+                setup.max_iter
+            } else {
+                0
+            },
+        )
         .popsize(setup.pop_multiplier)
         .tol(tolerance)
         .atol(atolerance)
@@ -202,12 +497,12 @@ pub fn optimize_filters_autoeq_with_callback(
         .disp(false)
         .callback(Box::new(move |intermediate| callback(intermediate)));
 
-    // Add seed if provided for deterministic results
-    if let Some(seed_value) = params.seed {
-        config_builder = config_builder.seed(seed_value);
-        if !params.quiet {
-            log::debug!("🎲 Using deterministic seed: {}", seed_value);
-        }
+    // Unspecified never means nondeterministic: unseeded runs use the shared
+    // default seed instead of OS entropy.
+    let seed_value = params.seed.unwrap_or(crate::DEFAULT_SEED);
+    config_builder = config_builder.seed(seed_value);
+    if !params.quiet {
+        log::debug!("🎲 Using deterministic seed: {}", seed_value);
     }
 
     // Add adaptive configuration if present
@@ -278,7 +573,73 @@ pub fn optimize_filters_autoeq_with_callback(
         );
     }
 
-    let result = differential_evolution(&base_objective_fn, &setup.bounds, config)
-        .map_err(|e| (format!("DE optimization failed: {:?}", e), f64::INFINITY))?;
+    if exact.is_some() && explicit_initial_candidate.is_some() {
+        return Err((
+            "exact DE continuation cannot be combined with a warm-start candidate".to_owned(),
+            f64::INFINITY,
+        ));
+    }
+    let result = if let Some(continuation) = exact.as_mut() {
+        let lower = Array1::from_iter(setup.bounds.iter().map(|(lower, _)| *lower));
+        let upper = Array1::from_iter(setup.bounds.iter().map(|(_, upper)| *upper));
+        let mut solver = DifferentialEvolution::new(&base_objective_fn, lower, upper)
+            .map_err(|error| (format!("DE initialization failed: {error}"), f64::INFINITY))?;
+        *solver.config_mut() = config;
+        solver.solve_with_checkpoint(
+            continuation.checkpoint.as_ref(),
+            &continuation.run_identity,
+            Some(&mut *continuation.save_callback),
+        )
+    } else {
+        differential_evolution(&base_objective_fn, &setup.bounds, config)
+    }
+    .map_err(|error| (format!("DE optimization failed: {error:?}"), f64::INFINITY))?;
+    if let Some(summary) = report_summary {
+        *summary = Some(DECompletion {
+            success: result.success,
+            message: result.message.clone(),
+            generations: result.nit,
+            generation_limit: setup.max_iter,
+            evaluations: result.nfev,
+        });
+    }
     process_de_results(x, result, "AutoDE")
+}
+
+fn choose_best_initial_guess(
+    explicit_candidate: Option<&[f64]>,
+    smart_guesses: &[Vec<f64>],
+    sobol_samples: &[Vec<f64>],
+    current: &[f64],
+) -> Array1<f64> {
+    if let Some(candidate) = explicit_candidate {
+        Array1::from(candidate.to_vec())
+    } else if let Some(candidate) = smart_guesses.first() {
+        Array1::from(candidate.clone())
+    } else if let Some(candidate) = sobol_samples.first() {
+        Array1::from(candidate.clone())
+    } else {
+        Array1::from(current.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod warm_start_initialization_tests {
+    use super::choose_best_initial_guess;
+
+    #[test]
+    fn explicit_candidate_is_the_de_initial_vector() {
+        let saved = [0.25, 1.75, -2.0];
+        let smart_guesses = vec![vec![0.5, 0.9, 1.0]];
+        let sobol_samples = vec![vec![0.7, 0.8, 1.5]];
+
+        let selected = choose_best_initial_guess(
+            Some(&saved),
+            &smart_guesses,
+            &sobol_samples,
+            &[0.9, 0.6, 0.0],
+        );
+
+        assert_eq!(selected.to_vec(), saved);
+    }
 }

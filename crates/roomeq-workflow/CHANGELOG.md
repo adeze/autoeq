@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Carry each branch's deployed FIR latency prior into acceptance-replay
+  scorecards so induced group delay unwraps against the real bulk delay
+  instead of a zero prior on sparse grids.
+- Strip stale staged final-channel alignment in post-DSP recalibration
+  before re-deriving input trims, fixing a ~5.5 dB useful-output
+  transplant loss on routed graphs.
+- Release FIR coefficients and temporal masking on Hybrid-stage reverts,
+  and rejoin reverted branches to their crossover partner's surviving
+  bulk with a standalone latency alignment that tracks the live gap
+  across safety gates.
+
+- Optimize stereo 2.1/2.2 bass routing independently from home-cinema bass
+  management: evaluate dual-mono, direct-pair, and crossed-pair matrices, reject
+  candidates that fail serialized-graph splice or electrical-headroom replay,
+  apply deterministic robust tie-breaking, and report every candidate plus the
+  selected topology, coefficients, physical outputs, and selection evidence.
+
 - Replay the serialized routed graph until every mains splice sums safely, reverting splice-breaking post-route correction stages role by role (mains-only FIR first, then post-route correction EQ) instead of failing the whole run; unfixable splices keep the hard error, and reverts are recorded as degraded stage outcomes.
 - Drop home-cinema Post-EQ candidates that improve the predicted splice sum while regressing the mains published channel score, preserving the main correction the final safety gate would otherwise revert wholesale.
 - Carry the correction-acceptance report and gate-added stage outcomes across routed-safety restores, marked as restored rather than blessed.
@@ -15,6 +32,11 @@
 - Prepare file-backed targets before engine execution and preserve calibrated SPL across IIR, FIR, and hybrid paths.
 - Stage main-channel correction after redirected-bass routing, preserve residual height delays, and reject duplicate phase mappings and supporting-source output collisions.
 - Keep mixed-phase ownership, CTC response caches, broadband correction, and reported final curves consistent with the exported DSP chain.
+
+## 0.5.34
+
+- Compute full indirect IR-only STI from declared native measured impulse responses with `math-rir` 0.5.12. Preserve channel results in native bundles and physical-driver results in measured-acoustics sidecars; retain legacy JSON compatibility and warn on short captures.
+
 ## 0.4.53
 
 - Keep canonical final curves aligned with topology gain and tolerate only

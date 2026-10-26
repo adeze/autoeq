@@ -37,11 +37,14 @@ pub(super) fn enable_multi_measurement_paths(
             MeasurementSource::Multiple(MeasurementMultiple {
                 measurements,
                 speaker_name: None,
+                provenance: Default::default(),
+                estimated_position: None,
             })
         } else if measurements.len() == 1 {
             MeasurementSource::Single(MeasurementSingle {
                 measurement: measurements.remove(0),
                 speaker_name: None,
+                provenance: Default::default(),
             })
         } else {
             // Keep original if no lp files found
@@ -104,6 +107,8 @@ pub(super) fn enable_multisub_multi_seat_paths(
                 *source = MeasurementSource::Multiple(MeasurementMultiple {
                     measurements,
                     speaker_name: None,
+                    provenance: Default::default(),
+                    estimated_position: None,
                 });
             }
         }

@@ -125,6 +125,11 @@ impl SpinoramaBundleBuilder {
                     freq: listening_window.freq.clone(),
                     spl: pir_spl,
                     phase: None,
+                    resolution: autoeq_core::resolution::MeasurementResolution::combine([
+                        &listening_window,
+                        &early_reflections,
+                        &sound_power,
+                    ]),
                     ..Default::default()
                 }
             }

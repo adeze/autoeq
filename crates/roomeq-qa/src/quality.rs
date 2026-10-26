@@ -28,7 +28,7 @@ mod enable;
 mod group;
 mod group_delay_qa_profile;
 mod metric_scorecard;
-mod misc;
+pub(crate) mod misc;
 mod mutation;
 mod option;
 mod option_override;
@@ -165,6 +165,36 @@ fn parse_seed_runs(args: &[String]) -> Result<usize> {
     Ok(seed_runs)
 }
 
+/// Print the root-package executable version when `-V` or
+/// `--program-version` is present before the argument terminator.
+///
+/// The library package version is labeled separately so it cannot be mistaken
+/// for the installed executable's version.
+pub fn print_program_version_if_requested(program_version: &str) -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if !program_version_requested(&args) {
+        return false;
+    }
+    println!(
+        "roomeq-qa-quality {program_version} (roomeq-qa library {})",
+        env!("CARGO_PKG_VERSION")
+    );
+    true
+}
+
+fn program_version_requested(args: &[String]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = args.get(index).map(String::as_str) {
+        match argument {
+            "--" => return false,
+            "--program-version" | "-V" => return true,
+            "--jobs" | "--maxeval" | "--seed-runs" | "--case" => index += 2,
+            _ => index += 1,
+        }
+    }
+    false
+}
+
 /// Run the quality QA command and report whether failed cases should produce
 /// a non-zero process exit.
 pub fn run() -> Result<bool> {
@@ -198,6 +228,7 @@ pub fn run() -> Result<bool> {
                --seed-runs N     1 for contracts, 5 for convergence (default: 5)\n\
                --list            List available test cases and exit\n\
                --case TEXT       Run cases whose name contains TEXT, case-insensitive\n\
+               --program-version, -V  Print installed program and QA library versions\n\
                --help, -h        Print this help"
         );
         return Ok(false);
@@ -288,133 +319,140 @@ pub fn run() -> Result<bool> {
             let sem = Arc::clone(&semaphore);
             let evidence_path = evidence_path.clone();
             std::thread::spawn(move || -> Result<(String, Vec<TestResult>)> {
-                sem.acquire();
+                let _permit = sem.acquire();
                 let RegisteredTestCase {
                     id,
                     claims,
                     expect,
                     case,
                 } = tc;
-                let mut result = match case {
-                    TestCase::Workflow {
-                        name,
-                        fem_subdir,
-                        optim_subdir,
-                    } => {
-                        let base_path = fem_dir.join(format!("{}/config.json", fem_subdir));
-                        let scenario_override_dir = optim_dir.join(optim_subdir);
-                        let override_path = scenario_override_dir.join("optimiser-iir.json");
-                        let (_, mut results) = run_stereo_workflow_tests(
-                            &name,
-                            &base_path,
-                            Some(&override_path),
-                            maxeval,
-                            seed_runs,
-                        )?;
-
-                        for (mode_name, expected_mode, file_name) in [
-                            ("FIR", ProcessingMode::PhaseLinear, "optimiser-fir.json"),
-                            ("Hybrid", ProcessingMode::Hybrid, "optimiser-mixed.json"),
-                        ] {
-                            let scenario_override = scenario_override_dir.join(file_name);
-                            let mode_override = optim_dir.join("modes").join(file_name);
-                            let override_path = if scenario_override.exists() {
-                                scenario_override
-                            } else {
-                                mode_override
-                            };
-                            let (_, mode_results) = run_workflow_override_smoke(
+                let mut result = (|| -> Result<(String, Vec<TestResult>)> {
+                    match case {
+                        TestCase::Workflow {
+                            name,
+                            fem_subdir,
+                            optim_subdir,
+                        } => {
+                            let base_path = fem_dir.join(format!("{}/config.json", fem_subdir));
+                            let scenario_override_dir = optim_dir.join(optim_subdir);
+                            let override_path = scenario_override_dir.join("optimiser-iir.json");
+                            let (_, mut results) = run_stereo_workflow_tests(
                                 &name,
-                                mode_name,
-                                expected_mode,
                                 &base_path,
-                                &override_path,
+                                Some(&override_path),
                                 maxeval,
                                 seed_runs,
                             )?;
-                            results.extend(mode_results);
-                        }
 
-                        let (_, generic_results) = run_generic_path_tests(
-                            &name,
-                            &base_path,
-                            &scenario_override_dir,
-                            maxeval,
-                            seed_runs,
-                        )?;
-                        results.extend(generic_results);
-                        Ok((name.to_string(), results))
-                    }
-                    TestCase::Generic {
-                        name,
-                        fem_subdir,
-                        optim_subdir,
-                    } => {
-                        let base_path = fem_dir.join(format!("{}/config.json", fem_subdir));
-                        let override_dir = optim_dir.join(optim_subdir);
-                        run_generic_path_tests(&name, &base_path, &override_dir, maxeval, seed_runs)
-                    }
-                    TestCase::CrossModeConvergence {
-                        name,
-                        fem_subdir,
-                        optim_subdir,
-                        config_path,
-                        override_dir,
-                        preserve_system,
-                        strict,
-                    } => {
-                        let base_path = config_path.map_or_else(
-                            || fem_dir.join(format!("{fem_subdir}/config.json")),
-                            |path| project_root.join(path),
-                        );
-                        let override_dir = override_dir.map_or_else(
-                            || optim_dir.join(optim_subdir),
-                            |path| project_root.join(path),
-                        );
-                        run_cross_mode_convergence_tests(
-                            &name,
-                            &base_path,
-                            &override_dir,
+                            for (mode_name, expected_mode, file_name) in [
+                                ("FIR", ProcessingMode::PhaseLinear, "optimiser-fir.json"),
+                                ("Hybrid", ProcessingMode::Hybrid, "optimiser-mixed.json"),
+                            ] {
+                                let scenario_override = scenario_override_dir.join(file_name);
+                                let mode_override = optim_dir.join("modes").join(file_name);
+                                let override_path = if scenario_override.exists() {
+                                    scenario_override
+                                } else {
+                                    mode_override
+                                };
+                                let (_, mode_results) = run_workflow_override_smoke(
+                                    &name,
+                                    mode_name,
+                                    expected_mode,
+                                    &base_path,
+                                    &override_path,
+                                    maxeval,
+                                    seed_runs,
+                                )?;
+                                results.extend(mode_results);
+                            }
+
+                            let (_, generic_results) = run_generic_path_tests(
+                                &name,
+                                &base_path,
+                                &scenario_override_dir,
+                                maxeval,
+                                seed_runs,
+                            )?;
+                            results.extend(generic_results);
+                            Ok((name.to_string(), results))
+                        }
+                        TestCase::Generic {
+                            name,
+                            fem_subdir,
+                            optim_subdir,
+                        } => {
+                            let base_path = fem_dir.join(format!("{}/config.json", fem_subdir));
+                            let override_dir = optim_dir.join(optim_subdir);
+                            run_generic_path_tests(
+                                &name,
+                                &base_path,
+                                &override_dir,
+                                maxeval,
+                                seed_runs,
+                            )
+                        }
+                        TestCase::CrossModeConvergence {
+                            name,
+                            fem_subdir,
+                            optim_subdir,
+                            config_path,
+                            override_dir,
                             preserve_system,
                             strict,
+                        } => {
+                            let base_path = config_path.map_or_else(
+                                || fem_dir.join(format!("{fem_subdir}/config.json")),
+                                |path| project_root.join(path),
+                            );
+                            let override_dir = override_dir.map_or_else(
+                                || optim_dir.join(optim_subdir),
+                                |path| project_root.join(path),
+                            );
+                            run_cross_mode_convergence_tests(
+                                &name,
+                                &base_path,
+                                &override_dir,
+                                preserve_system,
+                                strict,
+                                maxeval,
+                                seed_runs,
+                            )
+                        }
+                        TestCase::OptionEffect {
+                            name,
+                            fem_subdir,
+                            optim_subdir,
+                            options,
+                        } => run_option_effect_test(
+                            &name,
+                            &fem_dir,
+                            &fem_subdir,
+                            &optim_dir,
+                            &optim_subdir,
+                            &options,
                             maxeval,
                             seed_runs,
-                        )
+                        ),
                     }
-                    TestCase::OptionEffect {
-                        name,
-                        fem_subdir,
-                        optim_subdir,
-                        options,
-                    } => run_option_effect_test(
-                        &name,
-                        &fem_dir,
-                        &fem_subdir,
-                        &optim_dir,
-                        &optim_subdir,
-                        &options,
-                        maxeval,
-                        seed_runs,
-                    ),
-                };
+                })();
                 if let Ok((_, results)) = &mut result {
                     enforce_registry_expectations(&id, &claims, expect, results);
                     if let Err(error) = electrical::append_evidence(&evidence_path, &id, results) {
                         result = Err(error.context("failed to retain electrical QA evidence"));
                     }
                 }
-                if let Err(error) = &result {
-                    if let Err(evidence_error) = electrical::append_execution_failure(
+                if let Err(error) = &result
+                    && let Err(evidence_error) = electrical::append_execution_failure(
                         &evidence_path,
                         &id,
                         &format!("{error:#}"),
-                    ) {
-                        result = Err(anyhow!(
-                            "{error:#}; failed to retain execution failure: {evidence_error:#}"
-                        ));
-                    }
+                    )
+                {
+                    result = Err(anyhow!(
+                        "{error:#}; failed to retain execution failure: {evidence_error:#}"
+                    ));
                 }
-                sem.release();
                 result
             })
         })

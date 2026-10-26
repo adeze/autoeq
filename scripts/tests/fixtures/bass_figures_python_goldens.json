@@ -1,0 +1,338 @@
+[
+  {
+    "name": "routing_branches_fanout_and_classical_driver_order",
+    "builder": "routing",
+    "data": {
+      "channels": {
+        "SUB 2": {
+          "drivers": [
+            {
+              "name": "Right Sub",
+              "plugins": [
+                {
+                  "plugin_type": "gain",
+                  "parameters": {
+                    "gain_db": -3.0
+                  }
+                },
+                {
+                  "plugin_type": "delay",
+                  "parameters": {
+                    "delay_ms": 2.5
+                  }
+                }
+              ]
+            },
+            {
+              "name": "bad entry",
+              "plugins": []
+            }
+          ]
+        },
+        "R": {
+          "drivers": [
+            {
+              "name": "not routed",
+              "plugins": []
+            }
+          ]
+        },
+        "LFE": {
+          "drivers": [
+            {
+              "name": "LFE A",
+              "plugins": [
+                {
+                  "plugin_type": "gain",
+                  "parameters": {
+                    "gain_db": 6.0,
+                    "invert": true
+                  }
+                },
+                {
+                  "plugin_type": "gain",
+                  "parameters": {
+                    "gain_db": -1.0
+                  }
+                },
+                {
+                  "plugin_type": "delay",
+                  "parameters": {
+                    "delay_ms": 4
+                  }
+                }
+              ]
+            },
+            {
+              "name": "LFE B",
+              "plugins": []
+            }
+          ]
+        },
+        "L": {
+          "drivers": []
+        }
+      },
+      "metadata": {
+        "bass_management": {
+          "routing_graph": {
+            "routes": [
+              {
+                "source_channel": "L",
+                "destination": "L",
+                "route_kind": "main_highpass_to_self",
+                "gain_linear": 0.5
+              },
+              {
+                "source_channel": "L",
+                "destination": "SUB 2",
+                "route_kind": "redirected_bass_lowpass_to_sub",
+                "gain_linear": 0.0,
+                "matrix_gain": 0.25
+              },
+              {
+                "source_channel": "LFE",
+                "destination": "SUB 2",
+                "route_kind": "lfe_lowpass_to_sub",
+                "gain_linear": "bad"
+              },
+              {
+                "source_channel": "C",
+                "destination": "mystery",
+                "route_kind": "custom_route",
+                "gain_linear": -0.01
+              }
+            ]
+          }
+        }
+      }
+    },
+    "tab": "Overview",
+    "expected": {
+      "kind": "sankey",
+      "chart": {
+        "title": "Bass Management Routing Graph",
+        "nodes": [
+          "in: L",
+          "out: L",
+          "out: SUB 2",
+          "in: LFE",
+          "in: C",
+          "out: mystery",
+          "sub: Right Sub",
+          "sub: bad entry"
+        ],
+        "links": [
+          {
+            "source": 0,
+            "target": 1,
+            "value": 0.5,
+            "color": "rgba(74, 144, 217, 0.58)"
+          },
+          {
+            "source": 0,
+            "target": 2,
+            "value": 0.25,
+            "color": "rgba(46, 204, 113, 0.58)"
+          },
+          {
+            "source": 3,
+            "target": 2,
+            "value": 1.0,
+            "color": "rgba(231, 126, 34, 0.58)"
+          },
+          {
+            "source": 4,
+            "target": 5,
+            "value": 0.05,
+            "color": "rgba(127, 140, 141, 0.58)"
+          },
+          {
+            "source": 2,
+            "target": 6,
+            "value": 0.7079457843841379,
+            "color": "rgba(148, 103, 189, 0.58)"
+          },
+          {
+            "source": 2,
+            "target": 7,
+            "value": 1.0,
+            "color": "rgba(148, 103, 189, 0.58)"
+          }
+        ]
+      },
+      "tab": "Overview"
+    }
+  },
+  {
+    "name": "routing_without_routes_is_absent",
+    "builder": "routing",
+    "data": {
+      "metadata": {
+        "bass_management": {
+          "routing_graph": {
+            "routes": []
+          }
+        }
+      }
+    },
+    "tab": null,
+    "expected": null
+  },
+  {
+    "name": "headroom_multiple_outputs_margin_and_coercion",
+    "builder": "headroom",
+    "data": {
+      "metadata": {
+        "bass_management": {
+          "headroom_simulation": {
+            "headroom_margin_db": -3.2,
+            "per_output": [
+              {
+                "output_role": "Sub A",
+                "rms_bus_gain_db": -4.5,
+                "coherent_peak_gain_db": -1.25,
+                "lfe_contribution_db": -8
+              },
+              {
+                "output_role": "LFE",
+                "rms_bus_gain_db": null,
+                "coherent_peak_gain_db": "2.5",
+                "lfe_contribution_db": "bad"
+              },
+              {
+                "rms_bus_gain_db": 1.0
+              }
+            ]
+          }
+        }
+      }
+    },
+    "tab": "Bass",
+    "expected": {
+      "kind": "bar",
+      "chart": {
+        "title": "Bass Bus Headroom Simulation",
+        "categories": [
+          "Sub A",
+          "LFE",
+          "out 3"
+        ],
+        "groups": [
+          {
+            "name": "RMS programme gain",
+            "values": [
+              -4.5,
+              0.0,
+              1.0
+            ],
+            "color": "rgba(74, 144, 217, 0.75)"
+          },
+          {
+            "name": "Coherent peak gain",
+            "values": [
+              -1.25,
+              2.5,
+              0.0
+            ],
+            "color": "rgba(231, 76, 60, 0.78)"
+          },
+          {
+            "name": "LFE contribution",
+            "values": [
+              -8.0,
+              0.0,
+              0.0
+            ],
+            "color": "rgba(230, 126, 34, 0.72)"
+          }
+        ],
+        "ylabel": "Gain vs programme reference (dB)",
+        "ymin": null,
+        "ymax": null,
+        "legend": true,
+        "hlines": [
+          {
+            "at": -3.2,
+            "color": "rgba(40, 40, 40, 0.7)",
+            "dash": "dash",
+            "width": 2.0,
+            "label": "headroom limit -3.2 dB"
+          }
+        ]
+      },
+      "tab": "Bass"
+    }
+  },
+  {
+    "name": "headroom_without_limit_line",
+    "builder": "headroom",
+    "data": {
+      "metadata": {
+        "bass_management": {
+          "headroom_simulation": {
+            "per_output": [
+              {
+                "output_role": "out-X"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "tab": null,
+    "expected": {
+      "kind": "bar",
+      "chart": {
+        "title": "Bass Bus Headroom Simulation",
+        "categories": [
+          "out-X"
+        ],
+        "groups": [
+          {
+            "name": "RMS programme gain",
+            "values": [
+              0.0
+            ],
+            "color": "rgba(74, 144, 217, 0.75)"
+          },
+          {
+            "name": "Coherent peak gain",
+            "values": [
+              0.0
+            ],
+            "color": "rgba(231, 76, 60, 0.78)"
+          },
+          {
+            "name": "LFE contribution",
+            "values": [
+              0.0
+            ],
+            "color": "rgba(230, 126, 34, 0.72)"
+          }
+        ],
+        "ylabel": "Gain vs programme reference (dB)",
+        "ymin": null,
+        "ymax": null,
+        "legend": true,
+        "hlines": []
+      },
+      "tab": null
+    }
+  },
+  {
+    "name": "headroom_without_outputs_is_absent",
+    "builder": "headroom",
+    "data": {
+      "metadata": {
+        "bass_management": {
+          "headroom_simulation": {
+            "per_output": []
+          }
+        }
+      }
+    },
+    "tab": "Bass",
+    "expected": null
+  }
+]

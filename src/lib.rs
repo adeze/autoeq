@@ -1,8 +1,12 @@
 #![doc = include_str!("../README.md")]
 
+/// Capture-clock and measurement acquisition contracts.
+#[doc(inline)]
+pub use autoeq_core::{
+    MeasurementProvenance, ProvenanceCaptureKind, capture_handoff, capture_provenance,
+};
 pub use autoeq_workflow::qa_println;
 
-// Re-export external crate functionality
 pub use math_audio_iir_fir as iir;
 pub use math_audio_optimisation as de;
 
@@ -32,8 +36,7 @@ pub mod loss;
 pub mod optim;
 /// Parameter vector utilities for different PEQ models
 pub mod param_utils;
-/// Plotting and visualization functions (requires the `plotly` feature).
-#[cfg(feature = "plotly")]
+/// Plotting and visualization functions (HTML+WASM reports).
 pub use autoeq_plot as plot;
 /// Data reading and parsing functions
 pub mod read;
@@ -61,12 +64,10 @@ pub use optim::de as optim_de;
 pub use optim::mh as optim_mh;
 pub use optim::params as optim_params;
 
-// Re-export commonly used items
 pub use cli::*;
 pub use loss::{CrossoverType, HeadphoneLossData, LossType, SpeakerLossData};
-pub use optim::params::{OptimParams, PeqModel};
+pub use optim::params::{OptimParams, PeqModel, TiltBandsHz};
 pub use optim::*;
-#[cfg(feature = "plotly")]
 pub use plot::*;
 pub use read::*;
 pub use workflow::*;

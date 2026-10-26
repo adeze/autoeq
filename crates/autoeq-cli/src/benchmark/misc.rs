@@ -6,11 +6,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use tokio::select;
+use std::sync::{Arc, Mutex};
+use tokio::task::JoinHandle;
+
+use super::ShutdownSignal;
 
 pub(super) fn fmt_opt_f64(v: Option<f64>) -> String {
     match v {
@@ -109,17 +110,17 @@ pub(super) fn list_speakers<P: AsRef<Path>>(data_dir: P) -> Result<Vec<String>, 
 
 pub(super) async fn run_one(
     args: &autoeq::cli::Args,
-    shutdown: Arc<AtomicBool>,
-) -> Result<score::ScoreMetrics, String> {
+    shutdown: ShutdownSignal,
+) -> Result<(score::ScoreMetrics, Option<String>), String> {
     // Check for shutdown before starting
-    if shutdown.load(Ordering::Relaxed) {
+    if shutdown.is_requested() {
         return Err("Task cancelled due to shutdown".into());
     }
 
     let (input_curve, spin_data_raw) = load_input_curve(args).await.map_err(|e| e.to_string())?;
 
     // Check for shutdown after data loading
-    if shutdown.load(Ordering::Relaxed) {
+    if shutdown.is_requested() {
         return Err("Task cancelled during data loading".into());
     }
 
@@ -153,20 +154,25 @@ pub(super) async fn run_one(
     .map_err(|e| e.to_string())?;
 
     // Check for shutdown before optimization
-    if shutdown.load(Ordering::Relaxed) {
+    if shutdown.is_requested() {
         return Err("Task cancelled before optimization".into());
     }
 
     let params = autoeq::OptimParams::from(args);
-    let x = perform_optimization(&params, &objective_data, Arc::clone(&shutdown))
+    let optimization = perform_optimization(&params, &objective_data, shutdown.clone())
         .await
         .map_err(|e| e.to_string())?;
 
+    if shutdown.is_requested() {
+        return Err("Task cancelled before score extraction".into());
+    }
+
+    let x = &optimization.parameters;
     if use_cea {
         let freq = &standard_freq;
         let peq_after = autoeq::x2peq::compute_peq_response_from_x(
             freq,
-            &x,
+            x,
             args.sample_rate,
             args.effective_peq_model(),
         );
@@ -174,7 +180,24 @@ pub(super) async fn run_one(
             score::compute_cea2034_metrics(freq, spin_data.as_ref().unwrap(), Some(&peq_after))
                 .await
                 .map_err(|e| e.to_string())?;
-        Ok(metrics)
+        let qa_failure = if let Some(threshold) = args.qa {
+            let pre = score::compute_cea2034_metrics(freq, spin_data.as_ref().unwrap(), None)
+                .await
+                .map_err(|e| e.to_string())?;
+            let converged = optimization.selected_converged();
+            let spacing_ok = crate::autoeq_command::spacing::check_spacing_constraints(x, &params);
+            scenario_qa_failure(
+                converged,
+                spacing_ok,
+                pre.pref_score,
+                metrics.pref_score,
+                threshold,
+                false,
+            )
+        } else {
+            None
+        };
+        Ok((metrics, qa_failure))
     } else {
         Err("CEA2034 data required to compute preference score".to_string())
     }
@@ -217,38 +240,307 @@ pub(super) fn setup_objective_data(
     )
 }
 
-pub(super) async fn perform_optimization(
+async fn perform_optimization(
     params: &autoeq::OptimParams,
     objective_data: &ObjectiveData,
-    shutdown: Arc<AtomicBool>,
-) -> Result<Vec<f64>, String> {
-    if shutdown.load(Ordering::Relaxed) {
+    shutdown: ShutdownSignal,
+) -> Result<ControlledOptimization, String> {
+    if shutdown.is_requested() {
         return Err("Optimization cancelled by shutdown".to_string());
     }
 
     let params_clone = params.clone();
     let objective_data_clone = objective_data.clone();
-
-    let mut optimization_task = tokio::task::spawn_blocking(move || {
-        autoeq::workflow::perform_optimization(&params_clone, &objective_data_clone)
-            .map_err(|e| e.to_string())
+    let active_control = ActiveRunControl::default();
+    let worker_control = active_control.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        optimize_with_controlled_stages(&params_clone, &objective_data_clone, &worker_control)
     });
 
-    // Wait for optimization with periodic shutdown checks
-    loop {
-        select! {
-            result = &mut optimization_task => {
-                match result {
-                    Ok(opt_result) => return opt_result.map_err(|e| format!("Optimization error: {}", e)),
-                    Err(e) => return Err(format!("Optimization task failed: {}", e)),
-                }
+    match await_blocking_worker(worker, shutdown, active_control).await? {
+        BlockingOutcome::Completed(output) => output.into_result(),
+        BlockingOutcome::Cancelled(output) => {
+            eprintln!(
+                "Optimizer stopped after shutdown: {}",
+                output.evidence_summary()
+            );
+            Err("Optimization cancelled by shutdown".to_string())
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ActiveRunControl {
+    state: Arc<Mutex<ActiveRunState>>,
+}
+
+#[derive(Default)]
+struct ActiveRunState {
+    cancel_requested: bool,
+    current: Option<autoeq::optim::run_control::OptimizerRunControl>,
+}
+
+impl ActiveRunControl {
+    pub(super) fn register(&self, control: autoeq::optim::run_control::OptimizerRunControl) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.cancel_requested {
+            control.request_cancel();
+        }
+        state.current = Some(control);
+    }
+
+    fn request_cancel(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.cancel_requested = true;
+        if let Some(control) = &state.current {
+            control.request_cancel();
+        }
+    }
+
+    fn was_cancelled(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel_requested
+    }
+
+    #[cfg(test)]
+    fn current_control(&self) -> Option<autoeq::optim::run_control::OptimizerRunControl> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .clone()
+    }
+}
+
+struct ControlledOptimization {
+    parameters: Vec<f64>,
+    runs: Vec<autoeq::optim::ControlledOptimizerRun>,
+    failure: Option<String>,
+}
+
+impl ControlledOptimization {
+    fn selected_converged(&self) -> bool {
+        let mut selected = self
+            .runs
+            .iter()
+            .filter(|run| run.evidence.selected_for_output);
+        selected.next().is_some_and(|run| run.evidence.converged) && selected.next().is_none()
+    }
+
+    fn into_result(self) -> Result<Self, String> {
+        if let Some(error) = &self.failure {
+            Err(format!("Optimization error: {error}"))
+        } else {
+            Ok(self)
+        }
+    }
+
+    fn evidence_summary(&self) -> String {
+        let mut summary = self
+            .runs
+            .iter()
+            .map(|run| {
+                format!(
+                    "{} termination={:?} admitted={} budget={} status={:?}",
+                    run.evidence.algorithm,
+                    run.evidence.termination,
+                    run.snapshot.evaluations_started,
+                    run.snapshot.evaluation_budget,
+                    run.evidence.status
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        if let Some(error) = &self.failure {
+            if !summary.is_empty() {
+                summary.push_str("; ");
             }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                if shutdown.load(Ordering::Relaxed) {
-                    optimization_task.abort();
-                    return Err("Optimization cancelled by shutdown".to_string());
+            summary.push_str("worker_error=");
+            summary.push_str(error);
+        }
+        summary
+    }
+}
+
+fn optimize_with_controlled_stages(
+    params: &autoeq::OptimParams,
+    objective_data: &ObjectiveData,
+    active: &ActiveRunControl,
+) -> ControlledOptimization {
+    let (lower_bounds, upper_bounds) = autoeq::optim::setup::setup_bounds(params);
+    let initial = autoeq::optim::setup::initial_guess(params, &lower_bounds, &upper_bounds);
+    let (mut parameters, _) = autoeq::optim::constraint_envelope::project_gains_onto_envelopes(
+        &initial,
+        params.peq_model,
+        objective_data.loss_type,
+        objective_data.max_boost_envelope.as_deref(),
+        objective_data.min_cut_envelope.as_deref(),
+    );
+    let mut runs = Vec::with_capacity(2);
+
+    let mut global = match run_controlled_stage(params, objective_data, &mut parameters, active) {
+        Ok(run) => run,
+        Err(error) => {
+            return ControlledOptimization {
+                parameters,
+                runs,
+                failure: Some(error),
+            };
+        }
+    };
+    let global_objective = global.evidence.objective;
+    let global_error = controlled_run_error(&global);
+    global.evidence.selected_for_output = true;
+    runs.push(global);
+    if let Some(error) = global_error {
+        return ControlledOptimization {
+            parameters,
+            runs,
+            failure: Some(error),
+        };
+    }
+
+    let resolved_bo = autoeq::optim::backend::resolve(&params.algo)
+        .is_some_and(|backend| backend.name().eq_ignore_ascii_case("autoeq:bo"));
+    if params.refine && !resolved_bo && !active.was_cancelled() {
+        let before_refine = parameters.clone();
+        let mut local_params = params.clone();
+        local_params.algo = params.local_algo.clone();
+        local_params.refine = false;
+        let local =
+            match run_controlled_stage(&local_params, objective_data, &mut parameters, active) {
+                Ok(run) => run,
+                Err(error) => {
+                    return ControlledOptimization {
+                        parameters: before_refine,
+                        runs,
+                        failure: Some(error),
+                    };
                 }
+            };
+        let local_objective = local.evidence.objective;
+        let local_error = controlled_run_error(&local);
+        runs.push(local);
+        if let Some(error) = local_error {
+            return ControlledOptimization {
+                parameters: before_refine,
+                runs,
+                failure: Some(error),
+            };
+        }
+        let selected_local = refinement_is_selected(global_objective, local_objective);
+        runs[0].evidence.selected_for_output = !selected_local;
+        runs[1].evidence.selected_for_output = selected_local;
+        parameters =
+            select_refined_candidate(before_refine, parameters, global_objective, local_objective);
+    }
+
+    let (parameters, _) = autoeq::optim::constraint_envelope::project_gains_onto_envelopes(
+        &parameters,
+        params.peq_model,
+        objective_data.loss_type,
+        objective_data.max_boost_envelope.as_deref(),
+        objective_data.min_cut_envelope.as_deref(),
+    );
+    ControlledOptimization {
+        parameters,
+        runs,
+        failure: None,
+    }
+}
+
+fn refinement_is_selected(global: Option<f64>, refined: Option<f64>) -> bool {
+    refined
+        .zip(global)
+        .is_some_and(|(refined, global)| refined <= global)
+}
+
+fn select_refined_candidate(
+    global_parameters: Vec<f64>,
+    refined_parameters: Vec<f64>,
+    global_objective: Option<f64>,
+    refined_objective: Option<f64>,
+) -> Vec<f64> {
+    if refinement_is_selected(global_objective, refined_objective) {
+        refined_parameters
+    } else {
+        global_parameters
+    }
+}
+
+fn run_controlled_stage(
+    params: &autoeq::OptimParams,
+    objective_data: &ObjectiveData,
+    parameters: &mut [f64],
+    active: &ActiveRunControl,
+) -> Result<autoeq::optim::ControlledOptimizerRun, String> {
+    let budget = NonZeroUsize::new(params.maxeval)
+        .ok_or_else(|| "Optimizer evaluation budget must be positive".to_string())?;
+    let control = autoeq::optim::run_control::OptimizerRunControl::new(budget);
+    active.register(control.clone());
+    let (lower_bounds, upper_bounds) = autoeq::optim::setup::setup_bounds(params);
+    Ok(autoeq::optim::optimize_filters_with_run_control_detailed(
+        parameters,
+        &lower_bounds,
+        &upper_bounds,
+        objective_data.clone(),
+        params,
+        &control,
+    ))
+}
+
+fn controlled_run_error(run: &autoeq::optim::ControlledOptimizerRun) -> Option<String> {
+    if let Err((error, _)) = &run.result {
+        return Some(error.clone());
+    }
+    if !run.evidence.has_valid_candidate() {
+        return Some(format!(
+            "{} returned no finite feasible candidate ({:?})",
+            run.evidence.algorithm, run.evidence.termination
+        ));
+    }
+    None
+}
+
+pub(super) enum BlockingOutcome<T> {
+    Completed(T),
+    Cancelled(T),
+}
+
+pub(super) async fn await_blocking_worker<T>(
+    mut worker: JoinHandle<T>,
+    shutdown: ShutdownSignal,
+    active: ActiveRunControl,
+) -> Result<BlockingOutcome<T>, String>
+where
+    T: Send + 'static,
+{
+    tokio::select! {
+        biased;
+        result = &mut worker => {
+            let output = result.map_err(|error| format!("Optimization worker failed: {error}"))?;
+            // A latched stop wins over a concurrent finish: without this,
+            // a worker that completes after the stop request is
+            // intermittently reported as clean completion.
+            if shutdown.is_requested() {
+                Ok(BlockingOutcome::Cancelled(output))
+            } else {
+                Ok(BlockingOutcome::Completed(output))
             }
+        }
+        _ = shutdown.cancelled() => {
+            active.request_cancel();
+            worker.await
+                .map(BlockingOutcome::Cancelled)
+                .map_err(|error| format!("Cancelled optimizer worker failed: {error}"))
         }
     }
 }
@@ -276,4 +568,580 @@ pub(super) fn extract_pref_from_metadata_value(v: &Value) -> Option<f64> {
     let m = measurements.get(default_measurement)?;
     let pref = m.get("pref_rating_eq")?;
     pref.get("pref_score").and_then(|x| x.as_f64())
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use ndarray::Array1;
+
+    use super::{
+        ActiveRunControl, BlockingOutcome, ShutdownSignal, await_blocking_worker,
+        optimize_with_controlled_stages, select_refined_candidate,
+    };
+
+    struct QuadraticObjective;
+
+    impl autoeq::optim::loss::Objective for QuadraticObjective {
+        fn compute(&self, x: &[f64], _ctx: &autoeq::optim::loss::ObjectiveContext<'_>) -> f64 {
+            x.iter().map(|value| value * value).sum()
+        }
+    }
+
+    struct NthEvaluationGate {
+        calls: std::sync::atomic::AtomicUsize,
+        block_at: usize,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl autoeq::optim::loss::Objective for NthEvaluationGate {
+        fn compute(&self, x: &[f64], _ctx: &autoeq::optim::loss::ObjectiveContext<'_>) -> f64 {
+            if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == self.block_at {
+                let _ = self.entered.send(());
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+            }
+            x.iter().map(|value| value * value).sum()
+        }
+    }
+
+    fn test_optimizer(refine: bool) -> (autoeq::OptimParams, super::ObjectiveData) {
+        use clap::Parser;
+
+        let mut args = autoeq::cli::Args::parse_from(["autoeq"]);
+        args.algo = "autoeq:de".to_string();
+        args.local_algo = "autoeq:cobyla".to_string();
+        args.loss = autoeq::LossType::Epa;
+        args.num_filters = 1;
+        args.population = 6;
+        args.maxeval = 48;
+        args.refine = refine;
+        args.seed = Some(7);
+        args.sample_rate = 48_000.0;
+        args.min_freq = 40.0;
+        args.max_freq = 16_000.0;
+        args.min_q = 0.1;
+        args.max_q = 8.0;
+        args.min_db = -6.0;
+        args.max_db = 6.0;
+        let params = autoeq::OptimParams::from(&args);
+        let mut objective = autoeq::optim::ObjectiveDataBuilder::new(
+            Array1::from_vec(vec![40.0, 200.0, 1_000.0, 16_000.0]),
+            Array1::zeros(4),
+            Array1::zeros(4),
+            48_000.0,
+            autoeq::PeqModel::Pk,
+            autoeq::LossType::Epa,
+        )
+        .max_db(6.0)
+        .min_db(-6.0)
+        .freq_range(40.0, 16_000.0)
+        .build()
+        .expect("valid analytic objective");
+        objective.objective = Some(Arc::new(QuadraticObjective));
+        (params, objective)
+    }
+
+    fn gated_objective(
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        block_at: usize,
+    ) -> super::ObjectiveData {
+        let mut objective = autoeq::optim::ObjectiveDataBuilder::new(
+            Array1::from_vec(vec![40.0, 200.0, 1_000.0, 16_000.0]),
+            Array1::zeros(4),
+            Array1::zeros(4),
+            48_000.0,
+            autoeq::PeqModel::Pk,
+            autoeq::LossType::Epa,
+        )
+        .max_db(6.0)
+        .min_db(-6.0)
+        .freq_range(40.0, 16_000.0)
+        .build()
+        .expect("valid analytic objective");
+        objective.objective = Some(Arc::new(NthEvaluationGate {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            block_at,
+            entered,
+            release: Mutex::new(release),
+        }));
+        objective
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_requests_control_and_joins_started_blocking_worker() {
+        let shutdown = ShutdownSignal::new();
+        let active = ActiveRunControl::default();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_worker = Arc::clone(&completed);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let worker_control = active.clone();
+        let blocking_worker = tokio::task::spawn_blocking(move || {
+            let control = autoeq::optim::run_control::OptimizerRunControl::new(
+                NonZeroUsize::new(8).expect("nonzero test budget"),
+            );
+            worker_control.register(control.clone());
+            let _ = started_tx.send(());
+            while !control.stop_requested() {
+                std::thread::yield_now();
+            }
+            completed_worker.store(true, Ordering::Release);
+            17
+        });
+
+        let waiter = tokio::spawn(await_blocking_worker(
+            blocking_worker,
+            shutdown.clone(),
+            active,
+        ));
+        started_rx.await.expect("blocking worker started");
+        shutdown.request();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("worker join should not detach")
+            .expect("join helper should complete")
+            .expect("blocking worker should not panic");
+        assert!(matches!(outcome, BlockingOutcome::Cancelled(17)));
+        assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_drains_started_work_skips_queued_jobs_and_flushes_last() {
+        let shutdown = ShutdownSignal::new();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let active_permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("active slot");
+        let active_control = ActiveRunControl::default();
+        let worker_control = active_control.clone();
+        let worker_shutdown = shutdown.clone();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_worker = Arc::clone(&completed);
+        let queued_started = Arc::new(AtomicBool::new(false));
+        let queued_started_worker = Arc::clone(&queued_started);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (rows_tx, mut rows_rx) = tokio::sync::mpsc::channel(2);
+        let active_rows_tx = rows_tx.clone();
+        let mut workers = tokio::task::JoinSet::new();
+
+        workers.spawn(async move {
+            let _permit = active_permit;
+            let control_holder = worker_control.clone();
+            let worker_done = Arc::clone(&completed_worker);
+            let blocking_worker = tokio::task::spawn_blocking(move || {
+                let control = autoeq::optim::run_control::OptimizerRunControl::new(
+                    NonZeroUsize::new(8).expect("nonzero test budget"),
+                );
+                control_holder.register(control.clone());
+                let _ = started_tx.send(());
+                while !control.stop_requested() {
+                    std::thread::yield_now();
+                }
+                worker_done.store(true, Ordering::Release);
+            });
+            let outcome = await_blocking_worker(blocking_worker, worker_shutdown, worker_control)
+                .await
+                .expect("blocking worker joined");
+            assert!(matches!(outcome, BlockingOutcome::Cancelled(())));
+            active_rows_tx
+                .send(super::super::BenchRow {
+                    speaker: "started-speaker".into(),
+                    flat_cea2034_lw: Some(1.0),
+                    flat_eir: None,
+                    score_cea2034_mh_rga: None,
+                    score_cea2034_mh_pso: None,
+                    score_cea2034_autoeq_de: None,
+                    score_cea2034_autoeq_cmaes: None,
+                    metadata_pref: None,
+                })
+                .await
+                .expect("partial result row is recorded");
+        });
+
+        let queued_semaphore = Arc::clone(&semaphore);
+        let queued_shutdown = shutdown.clone();
+        workers.spawn(async move {
+            if let Some(_permit) =
+                super::super::acquire_slot_or_shutdown(queued_semaphore, queued_shutdown).await
+            {
+                queued_started_worker.store(true, Ordering::Release);
+            }
+        });
+        drop(rows_tx);
+
+        started_rx.await.expect("active blocking job started");
+        shutdown.request();
+
+        let mut recorded_rows = Vec::new();
+        while let Some(row) = rows_rx.recv().await {
+            recorded_rows.push(row);
+        }
+        let flushed = Arc::new(AtomicBool::new(false));
+        let flushed_after_join = Arc::clone(&flushed);
+        let drain_error = super::super::join_workers_then_flush(&mut workers, Vec::new(), || {
+            assert!(completed.load(Ordering::Acquire));
+            flushed_after_join.store(true, Ordering::Release);
+            Ok(())
+        })
+        .await;
+
+        assert!(
+            drain_error.is_none(),
+            "unexpected drain error: {drain_error:?}"
+        );
+        assert_eq!(recorded_rows.len(), 1);
+        assert_eq!(recorded_rows[0].flat_cea2034_lw, Some(1.0));
+        assert!(completed.load(Ordering::Acquire));
+        assert!(!queued_started.load(Ordering::Acquire));
+        assert!(flushed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancellation_is_latched_across_optimizer_stage_registration() {
+        let active = ActiveRunControl::default();
+        active.request_cancel();
+        let control = autoeq::optim::run_control::OptimizerRunControl::new(
+            NonZeroUsize::new(8).expect("nonzero test budget"),
+        );
+        active.register(control.clone());
+        assert!(control.stop_requested());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actual_controlled_optimizer_stops_admitting_scores_after_cancel() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        // Block a late evaluation with the search running sequentially: by
+        // then the backend has established a finite best, so cancellation
+        // deterministically reports UserStopped with a valid candidate.
+        // Gating the first evaluation races the backend's best-update against
+        // its stop check and intermittently yields InvalidResult instead.
+        let objective = gated_objective(entered_tx, release_rx, 20);
+        let (mut params, _) = test_optimizer(false);
+        params.no_parallel = true;
+        let active = ActiveRunControl::default();
+        let worker_active = active.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            optimize_with_controlled_stages(&params, &objective, &worker_active)
+        });
+        let shutdown = ShutdownSignal::new();
+        let waiter = tokio::spawn(await_blocking_worker(
+            worker,
+            shutdown.clone(),
+            active.clone(),
+        ));
+
+        tokio::task::spawn_blocking(move || entered_rx.recv())
+            .await
+            .expect("entry receiver task")
+            .expect("optimizer entered the objective");
+        let control = active
+            .current_control()
+            .expect("optimizer registered its run control before scoring");
+        shutdown.request();
+        active.request_cancel();
+        let stopped_snapshot = control.snapshot();
+        assert!(stopped_snapshot.cancellation_requested);
+        release_tx.send(()).expect("release in-flight score");
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("controlled optimizer responds to stop")
+            .expect("worker waiter task")
+            .expect("blocking worker joined");
+        let BlockingOutcome::Cancelled(run) = outcome else {
+            panic!("a latched stop must be reported as cancellation");
+        };
+        assert_eq!(run.runs.len(), 1);
+        let final_run = &run.runs[0];
+        assert_eq!(
+            final_run.evidence.termination,
+            autoeq::optim::OptimizerTermination::UserStopped
+        );
+        assert_eq!(
+            final_run.snapshot.evaluations_started, stopped_snapshot.evaluations_started,
+            "no candidate score is admitted after cancellation returns"
+        );
+        assert!(final_run.evidence.has_valid_candidate());
+    }
+
+    #[test]
+    fn uncancelled_refined_run_executes_both_finalized_stages() {
+        let (global_params, global_objective_data) = test_optimizer(false);
+        let global_only = optimize_with_controlled_stages(
+            &global_params,
+            &global_objective_data,
+            &ActiveRunControl::default(),
+        );
+        assert!(global_only.failure.is_none());
+
+        let (params, objective) = test_optimizer(true);
+        let active = ActiveRunControl::default();
+        let run = optimize_with_controlled_stages(&params, &objective, &active);
+
+        assert!(
+            run.failure.is_none(),
+            "unexpected failure: {:?}",
+            run.failure
+        );
+        assert_eq!(run.runs.len(), 2);
+        assert_eq!(run.runs[0].evidence.algorithm, "autoeq:de");
+        assert_eq!(run.runs[1].evidence.algorithm, "autoeq:cobyla");
+        assert!(run.runs.iter().all(|stage| {
+            stage.evidence.has_valid_candidate()
+                && stage.result.is_ok()
+                && stage.snapshot.evaluations_started > 0
+        }));
+        assert!(run.parameters.iter().all(|value| value.is_finite()));
+        assert!(!active.was_cancelled());
+        let final_objective: f64 = run.parameters.iter().map(|value| value * value).sum();
+        let global_only_objective: f64 = global_only
+            .parameters
+            .iter()
+            .map(|value| value * value)
+            .sum();
+        assert!(
+            final_objective <= global_only_objective + 1.0e-10,
+            "refinement regressed the selected objective: {final_objective} > {global_only_objective}"
+        );
+        assert_eq!(
+            run.runs[0].evidence.objective, global_only.runs[0].evidence.objective,
+            "the seeded global stage must match the global-only run"
+        );
+    }
+
+    #[test]
+    fn worse_or_unscored_refinement_rolls_back_to_global_parameters() {
+        let global = vec![1.0, 2.0];
+        let regressed = vec![9.0, 9.0];
+        assert_eq!(
+            select_refined_candidate(global.clone(), regressed, Some(1.0), Some(2.0)),
+            global
+        );
+        let global = vec![1.0, 2.0];
+        assert_eq!(
+            select_refined_candidate(global.clone(), vec![9.0, 9.0], Some(1.0), None),
+            global
+        );
+    }
+
+    #[test]
+    fn actual_controlled_runs_retain_selected_convergence_provenance() {
+        let (params, objective) = test_optimizer(false);
+        let global =
+            optimize_with_controlled_stages(&params, &objective, &ActiveRunControl::default());
+        assert!(global.failure.is_none());
+        assert_eq!(global.runs.len(), 1);
+        assert!(global.runs[0].evidence.selected_for_output);
+        assert_eq!(
+            global.selected_converged(),
+            global.runs[0].evidence.converged
+        );
+
+        let (params, objective) = test_optimizer(true);
+        let mut refined =
+            optimize_with_controlled_stages(&params, &objective, &ActiveRunControl::default());
+        assert!(refined.failure.is_none());
+        assert_eq!(refined.runs.len(), 2);
+        let selected = usize::from(super::refinement_is_selected(
+            refined.runs[0].evidence.objective,
+            refined.runs[1].evidence.objective,
+        ));
+        assert_eq!(
+            refined
+                .runs
+                .iter()
+                .filter(|run| run.evidence.selected_for_output)
+                .count(),
+            1
+        );
+        assert!(refined.runs[selected].evidence.selected_for_output);
+        assert_eq!(
+            refined.selected_converged(),
+            refined.runs[selected].evidence.converged
+        );
+        // Metamorphic negative proof: a superseded pass cannot supply QA convergence.
+        refined.runs[selected].evidence.converged = false;
+        refined.runs[1 - selected].evidence.converged = true;
+        assert!(!refined.selected_converged());
+        refined.runs[selected].evidence.converged = true;
+        refined.runs[1 - selected].evidence.converged = false;
+        assert!(refined.selected_converged());
+        // Ambiguous or absent selection never confers convergence.
+        refined.runs[1 - selected].evidence.selected_for_output = true;
+        assert!(!refined.selected_converged());
+        for run in &mut refined.runs {
+            run.evidence.selected_for_output = false;
+        }
+        assert!(!refined.selected_converged());
+    }
+
+    #[test]
+    fn parameter_selection_and_convergence_ownership_agree_on_edge_cases() {
+        for (global, local, selected_local) in [
+            (Some(1.0), Some(0.5), true),
+            (Some(1.0), Some(1.0), true),
+            (Some(1.0), Some(2.0), false),
+            (None, Some(1.0), false),
+            (Some(1.0), None, false),
+            (Some(f64::NAN), Some(1.0), false),
+            (Some(1.0), Some(f64::NAN), false),
+            (Some(1.0), Some(f64::INFINITY), false),
+            (Some(f64::INFINITY), Some(1.0), true),
+            (Some(f64::INFINITY), Some(f64::INFINITY), true),
+        ] {
+            assert_eq!(super::refinement_is_selected(global, local), selected_local);
+            assert_eq!(
+                select_refined_candidate(vec![1.0], vec![2.0], global, local),
+                if selected_local { vec![2.0] } else { vec![1.0] }
+            );
+        }
+        // Nonfinite objectives cannot reach selection in production: controlled_run_error
+        // rejects evidence without a finite valid candidate. The comparator stays unchanged.
+    }
+}
+
+pub(super) fn scenario_qa_failure(
+    converged: bool,
+    spacing_ok: bool,
+    pre: f64,
+    post: f64,
+    threshold: f64,
+    lower_is_better: bool,
+) -> Option<String> {
+    let analysis = crate::autoeq_command::qa::perform_qa_analysis(
+        converged,
+        spacing_ok,
+        Some(pre),
+        Some(post),
+        threshold,
+        lower_is_better,
+    );
+    crate::autoeq_command::qa::require_qa_pass(&analysis)
+        .err()
+        .map(|error| error.to_string())
+}
+
+pub(super) fn record_scenario(
+    result: Result<(f64, Option<String>), String>,
+    speaker: &str,
+    scenario: &str,
+    failures: &Mutex<Vec<String>>,
+) -> Option<f64> {
+    let (score, failure) = match result {
+        Ok((score, failure)) => (Some(score), failure),
+        Err(error) => (None, Some(error)),
+    };
+    if let Some(error) = failure {
+        failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("{speaker} / {scenario}: {error}"));
+    }
+    score
+}
+
+pub(super) fn require_complete_benchmark(
+    expected: usize,
+    completed: usize,
+    failures: &[String],
+) -> Result<(), String> {
+    if expected == 0 || completed != expected || !failures.is_empty() {
+        Err(format!(
+            "Benchmark QA failed: completed {completed}/{expected} speakers; {} scenario failures",
+            failures.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod qa_contract_tests {
+    use super::{record_scenario, require_complete_benchmark, scenario_qa_failure};
+    use std::sync::Mutex;
+
+    #[test]
+    fn owning_qa_rejects_nonconvergence_spacing_and_nonpositive_improvement() {
+        assert!(scenario_qa_failure(true, true, 5.0, 6.0, 0.0, false).is_none());
+        for (converged, spacing, post, threshold) in [
+            (false, true, 6.0, 0.0),
+            (true, false, 6.0, 0.0),
+            (true, true, 5.0, 0.0),
+            (true, true, 4.0, 0.0),
+            (true, true, 6.0, 1.0),
+            (true, true, f64::NAN, 0.0),
+        ] {
+            assert!(scenario_qa_failure(converged, spacing, 5.0, post, threshold, false).is_some());
+        }
+        assert!(scenario_qa_failure(true, true, 5.0, 6.01, 1.0, false).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 4.0, 0.5, true).is_none());
+        assert!(scenario_qa_failure(true, true, 5.0, 4.9, 0.5, true).is_some());
+    }
+
+    #[test]
+    fn incomplete_scenarios_refuse_qa_without_discarding_actual_scores() {
+        let failures = Mutex::new(Vec::new());
+        assert_eq!(
+            record_scenario(
+                Ok((6.0, Some("not converged".into()))),
+                "A",
+                "score",
+                &failures
+            ),
+            Some(6.0)
+        );
+        assert_eq!(
+            record_scenario(
+                Err("missing Listening Window".into()),
+                "B",
+                "flat",
+                &failures
+            ),
+            None
+        );
+        let failures = failures.into_inner().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].contains("A / score: not converged"));
+        assert!(failures[1].contains("B / flat: missing Listening Window"));
+        assert!(require_complete_benchmark(2, 2, &failures).is_err());
+        assert!(require_complete_benchmark(0, 0, &[]).is_err());
+        assert!(require_complete_benchmark(2, 1, &[]).is_err());
+        assert!(require_complete_benchmark(2, 2, &[]).is_ok());
+    }
+
+    #[test]
+    fn bare_and_explicit_qa_thresholds_parse_without_changing_explicit_values() {
+        use crate::benchmark::BenchArgs;
+        use clap::Parser;
+        assert_eq!(
+            BenchArgs::parse_from(["benchmark", "--qa", "--jobs", "1"])
+                .base
+                .qa,
+            Some(0.0)
+        );
+        assert_eq!(
+            BenchArgs::parse_from(["benchmark", "--qa", "1.5", "--jobs", "1"])
+                .base
+                .qa,
+            Some(1.5)
+        );
+        assert_eq!(
+            BenchArgs::parse_from(["benchmark", "--jobs", "1"]).base.qa,
+            None
+        );
+    }
 }

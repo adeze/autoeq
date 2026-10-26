@@ -26,3 +26,11 @@ pub use compute::*;
 pub use consts::*;
 pub use create::*;
 pub use types::*;
+
+/// Whether the correction band includes both broadband shelf centers.
+///
+/// The joint shelf/gain fit needs support for both shelves before it can
+/// alter the delivered correction graph.
+pub fn broadband_shelves_supported_by_band((min_freq_hz, max_freq_hz): (f64, f64)) -> bool {
+    min_freq_hz <= LOWSHELF_FREQ && max_freq_hz >= HIGHSHELF_FREQ
+}

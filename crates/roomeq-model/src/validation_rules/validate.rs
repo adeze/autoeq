@@ -129,6 +129,13 @@ fn validate_room_config_rules(config: &RoomConfig) -> ValidationResult {
     // Validate speaker configurations
     validate_speakers(&config.speakers, &mut result);
 
+    // Validate measured-IR declarations (file existence is verified at
+    // ingestion, where the configuration directory is known).
+    if let Err(reason) = crate::config::validate_measured_ir_map(&config.measured_impulse_responses)
+    {
+        result.add_error(reason);
+    }
+
     // Validate crossover references
     validate_crossovers(&config.speakers, config.crossovers.as_ref(), &mut result);
 
@@ -172,7 +179,7 @@ fn validate_room_config_rules(config: &RoomConfig) -> ValidationResult {
                 let collides_with_subwoofer = system
                     .subwoofers
                     .as_ref()
-                    .is_some_and(|subwoofers| subwoofers.mapping.contains_key(&support_name));
+                    .is_some_and(|subwoofers| subwoofers.output(&support_name).is_some());
                 if system.speakers.contains_key(&support_name) || collides_with_subwoofer {
                     result.add_error(format!(
                         "supporting-source output '{support_name}' collides with an existing logical channel"
@@ -181,14 +188,6 @@ fn validate_room_config_rules(config: &RoomConfig) -> ValidationResult {
             }
         }
         if let Some(subwoofers) = system.subwoofers.as_ref() {
-            let mut main_to_sub = HashMap::<&str, &str>::new();
-            for (sub, main) in &subwoofers.mapping {
-                if let Some(previous_sub) = main_to_sub.insert(main.as_str(), sub.as_str()) {
-                    result.add_error(format!(
-                        "subwoofers '{previous_sub}' and '{sub}' both map to main '{main}'; multiple phase-alignment constraints per main are not supported"
-                    ));
-                }
-            }
             validate_subwoofer_crossovers(subwoofers, config, &mut result);
         }
     }
@@ -247,6 +246,7 @@ fn measurement_paths(source: &MeasurementSource) -> Vec<PathBuf> {
 
 fn measurement_path(measurement: &crate::MeasurementRef) -> Option<PathBuf> {
     match measurement {
+        crate::MeasurementRef::Loaded { .. } => None,
         crate::MeasurementRef::Path(path) | crate::MeasurementRef::Named { path, .. } => {
             Some(path.clone())
         }
@@ -290,6 +290,9 @@ fn validate_acoustic_inputs(config: &RoomConfig) -> Vec<String> {
                 MeasurementSource::InMemory(curve) => vec![curve],
                 MeasurementSource::InMemoryMultiple(curves) => curves.iter().collect(),
                 MeasurementSource::Single(single) => match &single.measurement {
+                    crate::MeasurementRef::Loaded {
+                        loaded_response, ..
+                    } => vec![loaded_response.as_ref()],
                     crate::MeasurementRef::Inline(inline) => {
                         validate_inline_measurement(
                             inline,
@@ -302,7 +305,14 @@ fn validate_acoustic_inputs(config: &RoomConfig) -> Vec<String> {
                     _ => Vec::new(),
                 },
                 MeasurementSource::Multiple(multiple) => {
+                    let mut retained = Vec::new();
                     for measurement in &multiple.measurements {
+                        if let crate::MeasurementRef::Loaded {
+                            loaded_response, ..
+                        } = measurement
+                        {
+                            retained.push(loaded_response.as_ref());
+                        }
                         if let crate::MeasurementRef::Inline(inline) = measurement {
                             validate_inline_measurement(
                                 inline,
@@ -312,7 +322,7 @@ fn validate_acoustic_inputs(config: &RoomConfig) -> Vec<String> {
                             );
                         }
                     }
-                    Vec::new()
+                    retained
                 }
             };
             if matches!(source, MeasurementSource::InMemoryMultiple(curves) if curves.is_empty()) {
@@ -516,8 +526,8 @@ fn validate_speakers(speakers: &HashMap<String, SpeakerConfig>, result: &mut Val
                     result.add_error(format!("Multi-sub '{}' has no subwoofers", name));
                 }
                 if ms.subwoofers.len() == 1 {
-                    result.add_warning(format!(
-                        "Multi-sub '{}' has only 1 subwoofer, consider using Single config",
+                    result.add_error(format!(
+                        "Multi-sub '{}' has only 1 subwoofer; MSO requires at least 2 subwoofers, use Single config for a single sub",
                         name
                     ));
                 }
@@ -726,6 +736,11 @@ fn validate_subwoofer_crossovers(
     let Some(crossover) = subwoofers.crossover.as_ref() else {
         return;
     };
+    if matches!(crossover, crate::config::SubwooferCrossoverRef::Shared(_)) {
+        result.add_error(
+            "system.subwoofers.crossover must be an array in config version 3.0.x".to_string(),
+        );
+    }
     let keys = crossover.as_list();
     let Some(crossovers) = config.crossovers.as_ref() else {
         result.add_error(format!(
@@ -742,9 +757,9 @@ fn validate_subwoofer_crossovers(
         }
     }
     let sub_count = subwoofer_count(subwoofers, &config.speakers);
-    if keys.len() != 1 && keys.len() != sub_count {
+    if keys.len() != sub_count {
         result.add_error(format!(
-            "subwoofers crossover list has {} entries but {} subwoofer(s) configured; expected 1 or {}",
+            "subwoofers crossover list has {} entries but {} physical sub output(s) configured; expected {}",
             keys.len(),
             sub_count,
             sub_count
@@ -752,21 +767,12 @@ fn validate_subwoofer_crossovers(
     }
 }
 
-/// Number of physical subwoofers behind the MSO mapping: each mapped
-/// speaker key contributes its multi-sub driver count (1 otherwise, so
-/// unresolved keys still count as a single sub).
+/// Number of explicitly declared physical subwoofer outputs.
 fn subwoofer_count(
     subwoofers: &crate::config::SubwooferSystemConfig,
-    speakers: &HashMap<String, SpeakerConfig>,
+    _speakers: &HashMap<String, SpeakerConfig>,
 ) -> usize {
-    subwoofers
-        .mapping
-        .keys()
-        .map(|key| match speakers.get(key) {
-            Some(SpeakerConfig::MultiSub(group)) => group.subwoofers.len().max(1),
-            _ => 1,
-        })
-        .sum()
+    subwoofers.outputs.len()
 }
 
 /// Validate interactions between optimizer options and the resolved speaker map.
@@ -1668,7 +1674,9 @@ mod room_config_validation_tests {
             optimizer: OptimizerConfig::default(),
             provenance: Default::default(),
             recording_config: None,
+            measured_impulse_responses: Default::default(),
             ctc: None,
+            reporting: None,
             cea2034_cache: None,
         }
     }
@@ -1677,6 +1685,7 @@ mod room_config_validation_tests {
         MeasurementSource::Single(MeasurementSingle {
             measurement: MeasurementRef::Path(PathBuf::from(path)),
             speaker_name: speaker_name.map(String::from),
+            provenance: Default::default(),
         })
     }
 
@@ -1691,6 +1700,7 @@ mod room_config_validation_tests {
                 csv_path: csv_path.map(String::from),
             }),
             speaker_name: None,
+            provenance: Default::default(),
         })
     }
 
@@ -1734,7 +1744,7 @@ mod room_config_validation_tests {
     #[test]
     fn unsupported_config_version_is_a_validation_error() {
         let mut config = default_room();
-        config.version = "3.0.0".to_string();
+        config.version = "4.0.0".to_string();
         config.speakers.insert(
             "L".to_string(),
             SpeakerConfig::Single(single_source("l.csv", None)),
@@ -1844,6 +1854,7 @@ mod room_config_validation_tests {
                 speaker_name: None,
                 subwoofers: vec![],
                 allpass_optimization: false,
+                joint_optimization: false,
             }),
         );
         let result = validate_room_config(&config);
@@ -1862,15 +1873,11 @@ mod room_config_validation_tests {
                 speaker_name: None,
                 subwoofers: vec![single_source("s.csv", None)],
                 allpass_optimization: false,
+                joint_optimization: false,
             }),
         );
         let result = validate_room_config(&config);
-        assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("only 1 subwoofer"))
-        );
+        assert!(result.errors.iter().any(|e| e.contains("only 1 subwoofer")));
 
         // DBA empty front/rear
         let mut config = default_room();
@@ -2660,19 +2667,13 @@ mod room_config_validation_tests {
 
         // Canonical order passes
         assert!(
-            area.check_source_seat_coverage(
-                Some(ids.as_slice()),
-                &[ids.clone(), ids.clone()],
-            )
-            .is_empty()
+            area.check_source_seat_coverage(Some(ids.as_slice()), &[ids.clone(), ids.clone()],)
+                .is_empty()
         );
 
         // Reordered source list is flagged with the expected position
         let swapped = vec!["right".to_string(), "left".to_string()];
-        let errors = area.check_source_seat_coverage(
-            Some(ids.as_slice()),
-            &[ids.clone(), swapped],
-        );
+        let errors = area.check_source_seat_coverage(Some(ids.as_slice()), &[ids.clone(), swapped]);
         assert_eq!(errors.len(), 2, "got {errors:?}");
         assert!(
             errors.iter().all(|e| e.contains("source[1]")),
@@ -2680,10 +2681,8 @@ mod room_config_validation_tests {
         );
 
         // Incomplete coverage is flagged
-        let errors = area.check_source_seat_coverage(
-            Some(ids.as_slice()),
-            &[vec!["left".to_string()]],
-        );
+        let errors =
+            area.check_source_seat_coverage(Some(ids.as_slice()), &[vec!["left".to_string()]]);
         assert!(
             errors.iter().any(|e| e.contains("covers 1 seats")),
             "got {errors:?}"
@@ -2695,10 +2694,8 @@ mod room_config_validation_tests {
             area.check_source_seat_coverage(None, std::slice::from_ref(&positional))
                 .is_empty()
         );
-        let errors = area.check_source_seat_coverage(
-            None,
-            &[vec!["seat-1".to_string(), "seat-0".to_string()]],
-        );
+        let errors = area
+            .check_source_seat_coverage(None, &[vec!["seat-1".to_string(), "seat-0".to_string()]]);
         assert!(
             errors.iter().any(|e| e.contains("expected 'seat-0'")),
             "got {errors:?}"
@@ -2712,9 +2709,7 @@ mod room_config_validation_tests {
             map.effective_ids(2),
             vec!["left".to_string(), "right".to_string()]
         );
-        assert!(
-            map.check_source_seat_coverage(2, &[ids]).is_empty()
-        );
+        assert!(map.check_source_seat_coverage(2, &[ids]).is_empty());
     }
 
     #[test]
@@ -2735,20 +2730,16 @@ mod room_config_validation_tests {
         }
         let result = validate_room_config(&config);
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("num_points 8 exceeds")
-                    && e.contains("max_quadrature_points 4")),
+            result.errors.iter().any(
+                |e| e.contains("num_points 8 exceeds") && e.contains("max_quadrature_points 4")
+            ),
             "got {:?}",
             result.errors
         );
 
         // Gauss-Legendre totals above the cap are rejected
         let mut gl_area = area_1d(2);
-        gl_area.quadrature = AreaQuadratureKind::GaussLegendre {
-            points_per_axis: 8,
-        };
+        gl_area.quadrature = AreaQuadratureKind::GaussLegendre { points_per_axis: 8 };
         let mut config = make_seat_config(gl_area, None);
         if let Some(ms) = config.optimizer.multi_seat.as_mut() {
             ms.search = Some(MultiSeatSearchConfig {
@@ -2758,10 +2749,7 @@ mod room_config_validation_tests {
         }
         let result = validate_room_config(&config);
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("total points 8")),
+            result.errors.iter().any(|e| e.contains("total points 8")),
             "got {:?}",
             result.errors
         );
@@ -2851,10 +2839,7 @@ mod room_config_validation_tests {
         let result = validate_room_config(&config);
         assert!(result.errors.is_empty(), "got {:?}", result.errors);
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("not consulted")),
+            result.warnings.iter().any(|w| w.contains("not consulted")),
             "got {:?}",
             result.warnings
         );
@@ -2904,11 +2889,9 @@ mod room_config_validation_tests {
             }),
         );
         let legacy_result = validate_room_config(&config);
-        let staged =
-            validate_room_config_staged(&config, RoomValidationContext::structural());
+        let staged = validate_room_config_staged(&config, RoomValidationContext::structural());
         let mut legacy_errors = legacy_result.errors.clone();
-        let mut staged_errors: Vec<String> =
-            staged.errors().cloned().collect();
+        let mut staged_errors: Vec<String> = staged.errors().cloned().collect();
         legacy_errors.sort();
         staged_errors.sort();
         assert_eq!(legacy_errors, staged_errors);
@@ -2940,14 +2923,12 @@ mod room_config_validation_tests {
         assert!(metrics.is_evaluated());
         assert_eq!(metrics.area_variance, Some(0.0));
         let back: ContinuousAreaMetrics =
-            serde_json::from_str(&serde_json::to_string(&metrics).expect("ser"))
-                .expect("de");
+            serde_json::from_str(&serde_json::to_string(&metrics).expect("ser")).expect("de");
         assert_eq!(back, metrics);
 
         // Schema exposes the optional metrics
-        let schema_json =
-            serde_json::to_value(schemars::schema_for!(ContinuousAreaMetrics))
-                .expect("schema json");
+        let schema_json = serde_json::to_value(schemars::schema_for!(ContinuousAreaMetrics))
+            .expect("schema json");
         assert!(schema_json.to_string().contains("area_variance"));
     }
 
@@ -3183,7 +3164,7 @@ mod room_config_validation_tests {
     }
 
     #[test]
-    fn duplicate_subwoofer_phase_alignment_mapping_is_rejected() {
+    fn duplicate_physical_sub_output_ids_are_rejected() {
         let mut config = default_room();
         config.speakers.insert(
             "Left".to_string(),
@@ -3194,22 +3175,30 @@ mod room_config_validation_tests {
             speakers: HashMap::from([("L".to_string(), "Left".to_string())]),
             subwoofers: Some(crate::roomeq::types::SubwooferSystemConfig {
                 config: Default::default(),
+                routing: Default::default(),
+                outputs: vec![
+                    crate::SubwooferOutput {
+                        id: "Sub1".to_string(),
+                        speaker: "Left".to_string(),
+                    },
+                    crate::SubwooferOutput {
+                        id: "Sub1".to_string(),
+                        speaker: "Left".to_string(),
+                    },
+                ],
                 crossover: None,
-                mapping: HashMap::from([
-                    ("Sub1".to_string(), "L".to_string()),
-                    ("Sub2".to_string(), "L".to_string()),
-                ]),
             }),
             bass_management: None,
             supporting_source_outputs: None,
         });
 
         let result = validate_room_config(&config);
-        assert!(result.errors.iter().any(|error| {
-            error.contains("Sub1")
-                && error.contains("Sub2")
-                && error.contains("both map to main 'L'")
-        }));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("duplicate output id 'Sub1'"))
+        );
     }
 
     #[test]

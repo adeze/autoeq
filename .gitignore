@@ -26,11 +26,19 @@ _site
 [a-z]*.md
 !artifacts.md
 !docs/CRATE_PARTITION_PLAN.md
+!docs/ROOMEQ_INCREMENTAL_PLAN.md
+!docs/ARCHITECTURE.md
+!docs/RERUN_TELEMETRY.md
+!crates/*/ARCHITECTURE.md
+!crates/*/README.md
+!crates/*/CHANGELOG.md
 
 # python
-__pycache__
-.venv
-venv
+__pycache__/
+.venv/
+venv/
+*.egg-info/
+build/
 
 # MCP
 /.chunkhound
@@ -52,6 +60,7 @@ check_output_*.txt
 /.evo
 /.muse
 /reviews
+/autoeq-agent
 
 # Logs
 logs
@@ -81,3 +90,15 @@ CTAGS
 *#
 .#*
 .idea
+
+# Reproducible derivatives of tracked measured REW captures.
+/data_tests/roomeq/measured/*/*_csv/
+
+# Keep the measured-IR provenance and remaining import limitations.
+!/docs/MEASURED_IR_IMPORT.md
+
+# Generated report-shell WASM bundles (rebuild with `just report-dist`
+# and `just report-dist-gpui`; never merge these by hand).
+crates/autoeq-report-wasm/dist/
+crates/autoeq-report-wasm/pkg2d/
+crates/autoeq-report-gpui/pkg/

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use autoeq_core::Result;
+pub use autoeq_optim::optim::OptimizerResponseSnapshot;
 use roomeq_model::RoomConfig;
 
 /// Prepared in-memory data required to execute a RoomEQ pipeline.
@@ -159,6 +160,8 @@ pub enum PipelineControl {
 /// Structured event emitted by the RoomEQ pipeline.
 #[derive(Debug, Clone)]
 pub struct PipelineEvent {
+    /// Optional prediction from the actual optimizer candidate; absent is unavailable.
+    pub response: Option<std::sync::Arc<autoeq_optim::optim::OptimizerResponseSnapshot>>,
     /// Stable step identifier.
     pub step_id: PipelineStepId,
     /// Lifecycle status for this event.
@@ -187,6 +190,7 @@ impl PipelineEvent {
     /// Create a new event with default optional fields.
     pub fn new(step_id: PipelineStepId, status: PipelineStepStatus) -> Self {
         Self {
+            response: None,
             step_id,
             status,
             channel: None,

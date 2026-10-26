@@ -1,8 +1,122 @@
 use crate::Curve;
 use crate::PeqModel;
-use crate::config_adapter::OptimizerConfigExt;
+use crate::config_adapter::{OptimizerConfigExt, apply_tilt_stage};
 use autoeq_optim::loss::LossType;
 use roomeq_model::OptimizerConfig;
+
+pub(super) fn apply_resolution_guard(
+    objective: &mut autoeq_optim::ObjectiveData,
+    curve: &Curve,
+    config: &OptimizerConfig,
+) {
+    objective.peak_resolution_guard = Some(autoeq_optim::optim::PeakResolutionGuard {
+        support: curve.retained_resolution(),
+        minimum_q: config.min_q,
+        maximum_q: config.max_q,
+        smoothing_octaves: if objective.smooth {
+            1.0 / objective.smooth_n.max(1) as f64
+        } else {
+            0.0
+        },
+    });
+}
+
+/// Whether any evaluated frequency can host a peak whose broadest
+/// permitted shape the retained support warrants. Mirrors the combined
+/// cap and minimum the resolution projection applies across the primary
+/// objective and its sub-objectives.
+fn resolution_supports_any_placement(objective: &autoeq_optim::ObjectiveData) -> bool {
+    fn collect<'a>(
+        objective: &'a autoeq_optim::ObjectiveData,
+        guards: &mut Vec<(&'a autoeq_optim::optim::PeakResolutionGuard, f64)>,
+    ) {
+        if let Some(guard) = &objective.peak_resolution_guard {
+            guards.push((guard, objective.srate));
+        }
+        if let Some(multi) = &objective.multi_objective {
+            for sub_objective in &multi.objectives {
+                collect(sub_objective, guards);
+            }
+        }
+    }
+    let mut guards = Vec::new();
+    collect(objective, &mut guards);
+    if guards.is_empty() {
+        return true;
+    }
+    objective.freqs.iter().any(|&frequency| {
+        let mut cap = f64::INFINITY;
+        let mut minimum = 0.0_f64;
+        for (guard, srate) in &guards {
+            let Some(local_cap) =
+                guard
+                    .support
+                    .max_peak_q(frequency, *srate, guard.smoothing_octaves)
+            else {
+                return false;
+            };
+            cap = cap.min(local_cap.min(guard.maximum_q));
+            minimum = minimum.max(guard.minimum_q.max(0.1));
+        }
+        cap >= minimum
+    })
+}
+
+pub(super) fn resolution_refusal_identity_loss(
+    objective: &autoeq_optim::ObjectiveData,
+    evidence: &autoeq_optim::optim::OptimizerRunEvidence,
+) -> Option<f64> {
+    // Keep the failed optimizer receipt intact. Only a native bandwidth
+    // refusal can take this path; cancellation and malformed configuration
+    // continue through their existing typed error handling.
+    if evidence.converged
+        || evidence.best_effort
+        || (objective.peak_resolution_guard.is_none() && objective.multi_objective.is_none())
+    {
+        return None;
+    }
+    // Error-aborting backends surface the refusal in their status, while
+    // population backends absorb refused candidates as infinite fitness
+    // and finish with a generic non-convergence status. Detect the total
+    // refusal structurally there: no evaluated frequency can host the
+    // broadest permitted peak within the retained support.
+    if !evidence.status.contains("measurement resolution")
+        && resolution_supports_any_placement(objective)
+    {
+        return None;
+    }
+    let loss = autoeq_optim::optim::compute_fitness_penalties_ref(&[], objective);
+    if !loss.is_finite() {
+        return None;
+    }
+    log::warn!(
+        "  Measurement bandwidth refused PEQ correction; retaining uncorrected response: {}",
+        evidence.status
+    );
+    Some(loss)
+}
+
+pub(super) fn apply_q_rail_penalty(
+    objective: &mut autoeq_optim::ObjectiveData,
+    config: &OptimizerConfig,
+) {
+    // A rail filter pays two percent of its absolute gain in the dB-scaled
+    // flat objective. Fourth-power decay leaves broad corrections nearly
+    // unaffected; this is complexity regularization, not listener evidence.
+    const RELATIVE_GAIN_COST: f64 = 0.02;
+    objective.q_rail_penalty = matches!(
+        objective.loss_type,
+        LossType::SpeakerFlat | LossType::SpeakerFlatAsymmetric | LossType::HeadphoneFlat
+    )
+    .then_some((config.max_q, RELATIVE_GAIN_COST));
+    // A dB of supported EPA spectral regression pays one dB-scaled objective
+    // unit. This is a soft model cost, not a listener-preference guarantee.
+    objective.epa_flatness_regression_weight = if objective.q_rail_penalty.is_some() {
+        1.0
+    } else {
+        0.0
+    };
+}
 
 /// Find the length (in samples) at which to truncate an impulse
 /// response so the Schroeder backward integration sees clean decay
@@ -173,6 +287,13 @@ pub(super) fn build_optim_params(
     params.min_freq = effective_min_freq;
     params.max_freq = effective_max_freq;
     params.loss = loss_type;
+    // Re-apply the tilt mapping deterministically from base values: the model
+    // override above would otherwise clobber the adapter's PkLsHs mapping
+    // while keeping its num_filters + 2 count.
+    let (peq_model, num_filters, tilt_bands_hz) =
+        apply_tilt_stage(peq_model, config.num_filters, config.tilt_stage);
     params.peq_model = peq_model;
+    params.num_filters = num_filters;
+    params.tilt_bands_hz = tilt_bands_hz;
     params
 }

@@ -1,0 +1,324 @@
+{
+  "combinations": {
+    "2.0_8361a/fir": {
+      "improvement_db": 0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "2.0_8361a/iir": {
+      "improvement_db": 0.556506,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_8361a/mixed": {
+      "improvement_db": 0.257107,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_8361a/mixed-phase": {
+      "improvement_db": 0.361427,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab1/fir": {
+      "improvement_db": 1.37916,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab1/iir": {
+      "improvement_db": 1.955403,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab1/mixed": {
+      "improvement_db": 0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "2.0_ascilab1/mixed-phase": {
+      "improvement_db": 0.517682,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab2/fir": {
+      "improvement_db": 0.448337,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab2/iir": {
+      "improvement_db": 1.379392,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab2/mixed": {
+      "improvement_db": 0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "2.0_ascilab2/mixed-phase": {
+      "improvement_db": 0.411542,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab3/fir": {
+      "improvement_db": 0.508994,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab3/iir": {
+      "improvement_db": 1.760338,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_ascilab3/mixed": {
+      "improvement_db": 0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "2.0_ascilab3/mixed-phase": {
+      "improvement_db": 0.572761,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_d3v/fir": {
+      "improvement_db": 0.500923,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_d3v/iir": {
+      "improvement_db": 0.29317,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_d3v/mixed": {
+      "improvement_db": 0.167494,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_d3v/mixed-phase": {
+      "improvement_db": 0.277675,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_fidelia/fir": {
+      "improvement_db": 0.551087,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_fidelia/iir": {
+      "improvement_db": 0.884359,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_fidelia/mixed": {
+      "improvement_db": 0.204149,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_fidelia/mixed-phase": {
+      "improvement_db": 0.782811,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2024/fir": {
+      "improvement_db": 1.566304,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2024/iir": {
+      "improvement_db": 0.696404,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2024/mixed": {
+      "improvement_db": 0.368129,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2024/mixed-phase": {
+      "improvement_db": 0.539969,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2026/fir": {
+      "improvement_db": 0.360647,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2026/iir": {
+      "improvement_db": 0.54056,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2026/mixed": {
+      "improvement_db": 0.035132,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.0_t7v_2026/mixed-phase": {
+      "improvement_db": 0.169496,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_genelec/fir": {
+      "improvement_db": 0.658514,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_genelec/iir": {
+      "improvement_db": 0.447014,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_genelec/mixed": {
+      "improvement_db": null,
+      "outcome": null,
+      "status": "error"
+    },
+    "2.2_genelec/mixed-phase": {
+      "improvement_db": 0.481773,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg1/fir": {
+      "improvement_db": 1.098668,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg1/iir": {
+      "improvement_db": 0.515787,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg1/mixed": {
+      "improvement_db": 0.246115,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg1/mixed-phase": {
+      "improvement_db": 0.528389,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg2/fir": {
+      "improvement_db": 0.325788,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg2/iir": {
+      "improvement_db": 0.437941,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg2/mixed": {
+      "improvement_db": 0.446756,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg2/mixed-phase": {
+      "improvement_db": 1.033417,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg3/fir": {
+      "improvement_db": 3.439509,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg3/iir": {
+      "improvement_db": 4.205882,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg3/mixed": {
+      "improvement_db": 3.439509,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_sigberg3/mixed-phase": {
+      "improvement_db": 4.205882,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_unknown/fir": {
+      "improvement_db": 0.30364,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_unknown/iir": {
+      "improvement_db": 0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "2.2_unknown/mixed": {
+      "improvement_db": 0.067436,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "2.2_unknown/mixed-phase": {
+      "improvement_db": -0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "5.0_genelec/fir": {
+      "improvement_db": 0.389134,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.0_genelec/iir": {
+      "improvement_db": 0.527739,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.0_genelec/mixed": {
+      "improvement_db": 0.110491,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.0_genelec/mixed-phase": {
+      "improvement_db": 0.225217,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.1.4_genelec/fir": {
+      "improvement_db": -0.0,
+      "outcome": "unchanged",
+      "status": "unchanged"
+    },
+    "5.1.4_genelec/iir": {
+      "improvement_db": 0.052179,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.1.4_genelec/mixed": {
+      "improvement_db": null,
+      "outcome": null,
+      "status": "error"
+    },
+    "5.1.4_genelec/mixed-phase": {
+      "improvement_db": null,
+      "outcome": null,
+      "status": "error"
+    },
+    "5.1_kef/fir": {
+      "improvement_db": null,
+      "outcome": null,
+      "status": "error"
+    },
+    "5.1_kef/iir": {
+      "improvement_db": 0.29899,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.1_kef/mixed": {
+      "improvement_db": 0.059805,
+      "outcome": "accepted",
+      "status": "accepted"
+    },
+    "5.1_kef/mixed-phase": {
+      "improvement_db": null,
+      "outcome": null,
+      "status": "error"
+    }
+  }
+}
