@@ -84,6 +84,7 @@ fn python_target_normalization_and_serialized_fir_vectors() {
     let resources = EqResources {
         target: Some(PreparedEqTarget::Curve(Box::new(sampled_target))),
         impulse_response: None,
+        ..EqResources::default()
     };
     let normalized = prepared_fir_target_curve(&measurement, &config, &resources);
     assert_eq!(normalized.spl.len(), vectors.normalized_target_db.len());

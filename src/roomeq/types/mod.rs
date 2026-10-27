@@ -7,8 +7,8 @@
 pub mod config {
     pub use roomeq_model::config::*;
 }
-pub use roomeq_model::config::*;
 pub use roomeq_model::DesignerLimits;
+pub use roomeq_model::config::*;
 
 // Simple wizard preset types
 pub mod preset {

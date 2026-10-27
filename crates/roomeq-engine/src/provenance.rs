@@ -112,6 +112,7 @@ mod tests {
                         sidecar_path: path,
                     },
                 )]),
+                ..ProvenanceConfig::default()
             },
             ..RoomConfig::default()
         }

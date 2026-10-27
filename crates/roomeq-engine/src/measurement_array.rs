@@ -4,10 +4,42 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, error::Error, fs, path::Path, sync::Arc};
+use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use zarrs::{array::Array, filesystem::FilesystemStore};
 
 type ReadResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[derive(Debug)]
+struct MetadataError {
+    path: PathBuf,
+    source: Box<dyn Error + Send + Sync>,
+}
+
+impl MetadataError {
+    fn new(path: &Path, source: impl Error + Send + Sync + 'static) -> Self {
+        Self {
+            path: path.to_owned(),
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for MetadataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.source)
+    }
+}
+
+impl Error for MetadataError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
 
 #[derive(Debug)]
 pub struct MeasurementImpulse {
@@ -112,18 +144,21 @@ pub fn read_orcmeasurement_impulse(
                         .is_some_and(|d| d.len() == 1 && d[0] == "sample"),
                 "impulse axis mismatch",
             )?;
-            selected = Some(data.clone());
+            selected = Some(values.len());
         }
         values.push((descriptor, data));
     }
-    let samples = selected.ok_or("impulse not declared")?;
+    let selected = selected.ok_or("impulse not declared")?;
     let digest = logical_digest(&manifest, &values)?;
-    let recorded = fs::read_to_string(package.join("logical.sha256"))?;
+    let digest_path = package.join("logical.sha256");
+    let recorded = fs::read_to_string(&digest_path)
+        .map_err(|error| MetadataError::new(&digest_path, error))?;
     ensure(recorded.trim() == digest, "package logical digest mismatch")?;
     ensure(
         expected_logical_digest == digest,
         "expected logical digest mismatch",
     )?;
+    let samples = values.swap_remove(selected).1;
     Ok(MeasurementImpulse {
         samples,
         sample_rate_hz,
@@ -277,7 +312,8 @@ fn logical_digest(manifest: &Value, arrays: &[(&Value, Vec<f32>)]) -> ReadResult
 }
 
 fn json_file(path: &Path) -> ReadResult<Value> {
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
+    let bytes = fs::read(path).map_err(|error| MetadataError::new(path, error))?;
+    Ok(serde_json::from_slice(&bytes).map_err(|error| MetadataError::new(path, error))?)
 }
 fn string(value: &Value) -> ReadResult<&str> {
     value.as_str().ok_or_else(|| "missing string".into())
@@ -294,4 +330,35 @@ fn valid_path(path: &str) -> bool {
     !path.starts_with('/')
         && !path.contains("..")
         && path.split('/').all(|part| !part.is_empty() && part != ".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_file;
+    use std::{fs, io};
+
+    #[test]
+    fn missing_metadata_preserves_filename_and_io_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let error = json_file(&path).unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
+        let source = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn malformed_metadata_preserves_filename_and_json_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zarr.json");
+        fs::write(&path, b"{").unwrap();
+        let error = json_file(&path).unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<serde_json::Error>()
+            .unwrap();
+        assert!(source.is_eof());
+    }
 }
